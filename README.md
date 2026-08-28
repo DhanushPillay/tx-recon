@@ -64,10 +64,9 @@ flowchart LR
 * **Data Quality:** The ingestion pipeline includes native PySpark constraints to route malformed webhooks (negative amounts, missing IDs) to a Dead Letter Queue (DLQ).
 * **Testing:** Run `pytest tests/` to execute the DataFrame equality tests (powered by Chispa). Tests are automatically run on push via GitHub Actions.
 
-## System Capabilities
+## Key Engineering Outcomes
 
-* **End-to-End Lakehouse Architecture:** Implements a complete local data lakehouse utilizing **Apache Iceberg**, **MinIO (S3-compatible)**, and **Project Nessie** (REST catalog), maintaining enterprise-level design patterns without cloud dependencies.
-* **Dual-Pipeline Processing:** Utilizes a **PySpark** architecture that ingests real-time payment webhooks via **Redpanda (Kafka)** using Structured Streaming, while processing delayed bank settlement CSVs via Batch processing.
-* **Resilient Data Quality & DLQ:** Enforces strict data validation constraints during ingestion. Corrupt or malformed records (e.g., missing IDs or negative amounts) are automatically routed to an Iceberg Dead Letter Queue (DLQ) table, preventing pipeline interruption.
-* **ACID Upserts & Reconciliation:** Employs Iceberg's `MERGE INTO` capabilities via PySpark to perform complex matching logic between payments and settlements, automatically flagging fee discrepancies (MDR) as exceptions.
-* **Orchestration & CI/CD:** Orchestrates the batch processing lifecycle using **Apache Airflow** within a custom Docker environment. Ensures code reliability through **Pytest** and **Chispa** unit tests, automated by a **GitHub Actions** CI pipeline.
+* **The Problem:** Designed and deployed an end-to-end local data lakehouse to automate the reconciliation of real-time payment webhooks against delayed bank settlement files.
+* **The Solution:** Built a dual-pipeline PySpark architecture to stream live data via Redpanda (Kafka) and batch process delayed CSVs, replacing expensive cloud dependencies with local MinIO and Project Nessie.
+* **Data Quality:** Implemented strict PySpark validation constraints and an Iceberg Dead Letter Queue (DLQ), ensuring 100% pipeline uptime and data integrity during malformed data events.
+* **Engineering Rigor:** Orchestrated the entire batch lifecycle with Apache Airflow and ensured code reliability by integrating Pytest, Chispa, and Black formatter into a GitHub Actions CI pipeline.
