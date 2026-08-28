@@ -3,7 +3,7 @@ import time
 import random
 import uuid
 from datetime import datetime, timezone
-from confluent_kafka import Producer
+from kafka import KafkaProducer
 
 # Configuration for local Redpanda/Kafka
 KAFKA_BROKER = "localhost:19092"
@@ -23,30 +23,29 @@ def generate_webhook_event():
     }
     return event
 
-def receipt(err, msg):
-    if err:
-        print(f"Error producing message: {err}")
-    else:
-        print(f"Produced message to {msg.topic()} partition [{msg.partition()}] @ offset {msg.offset()}")
+def on_send_success(record_metadata):
+    print(f"Produced message to {record_metadata.topic} partition [{record_metadata.partition}] @ offset {record_metadata.offset}")
+
+def on_send_error(excp):
+    print(f"Error producing message: {excp}")
 
 def main():
-    conf = {
-        'bootstrap.servers': KAFKA_BROKER,
-        'client.id': 'python-producer'
-    }
-    
-    producer = Producer(conf)
+    producer = KafkaProducer(
+        bootstrap_servers=[KAFKA_BROKER],
+        client_id='python-producer',
+        value_serializer=lambda m: json.dumps(m).encode('ascii'),
+        key_serializer=lambda k: k.encode('ascii')
+    )
     
     print(f"Starting webhook stream to {TOPIC_NAME}...")
     try:
         while True:
             event = generate_webhook_event()
-            # Serialize JSON
-            payload = json.dumps(event)
             
             # Produce to Redpanda
-            producer.produce(TOPIC_NAME, key=event["transaction_id"], value=payload, callback=receipt)
-            producer.poll(0) # Serve delivery reports
+            producer.send(TOPIC_NAME, key=event["transaction_id"], value=event) \
+                    .add_callback(on_send_success) \
+                    .add_errback(on_send_error)
             
             # Streaming cadence
             time.sleep(random.uniform(0.1, 1.5))
