@@ -2,6 +2,7 @@ import json
 import time
 import random
 import uuid
+import argparse
 from datetime import datetime, timezone
 from kafka import KafkaProducer
 
@@ -36,6 +37,15 @@ def on_send_error(excp):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Webhook Producer for Redpanda")
+    parser.add_argument(
+        "--stress",
+        type=int,
+        help="Run a high-throughput stress test with N messages",
+        default=0,
+    )
+    args = parser.parse_args()
+
     producer = KafkaProducer(
         bootstrap_servers=[KAFKA_BROKER],
         client_id="python-producer",
@@ -43,19 +53,34 @@ def main():
         key_serializer=lambda k: k.encode("ascii"),
     )
 
+    if args.stress > 0:
+        print(
+            f"Starting STRESS TEST mode. Pushing {args.stress} messages to {TOPIC_NAME}..."
+        )
+        start_time = time.time()
+        for i in range(args.stress):
+            event = generate_webhook_event()
+            # Do not use callbacks for stress test as console IO bottlenecks throughput
+            producer.send(TOPIC_NAME, key=event["transaction_id"], value=event)
+
+            if i > 0 and i % 10000 == 0:
+                print(f"Pushed {i} messages...")
+
+        producer.flush()
+        elapsed = time.time() - start_time
+        print(
+            f"STRESS TEST COMPLETE: {args.stress} messages in {elapsed:.2f} seconds ({args.stress / elapsed:.2f} msgs/sec)"
+        )
+        return
+
     print(f"Starting webhook stream to {TOPIC_NAME}...")
     try:
         while True:
             event = generate_webhook_event()
-
-            # Produce to Redpanda
             producer.send(
                 TOPIC_NAME, key=event["transaction_id"], value=event
             ).add_callback(on_send_success).add_errback(on_send_error)
-
-            # Streaming cadence
             time.sleep(random.uniform(0.1, 1.5))
-
     except KeyboardInterrupt:
         print("Stopping producer...")
     finally:
