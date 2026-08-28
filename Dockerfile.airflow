@@ -1,0 +1,11 @@
+FROM apache/airflow:2.8.1
+USER root
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+         default-jre-headless \
+         procps \
+  && apt-get autoremove -yqq --purge \
+  && apt-get clean \
+  && rm -rf /var/lib/apt/lists/*
+USER airflow
+RUN pip install --no-cache-dir pyspark==3.5.1 chispa==0.9.2
