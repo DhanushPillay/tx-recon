@@ -64,12 +64,10 @@ flowchart LR
 * **Data Quality:** The ingestion pipeline includes native PySpark constraints to route malformed webhooks (negative amounts, missing IDs) to a Dead Letter Queue (DLQ).
 * **Testing:** Run `pytest tests/` to execute the DataFrame equality tests (powered by Chispa). Tests are automatically run on push via GitHub Actions.
 
-## Resume / Portfolio Highlights
+## System Capabilities
 
-This project was built to demonstrate production-grade Data Engineering skills. When adding this to your resume, you can highlight the following achievements:
-
-* **Engineered an End-to-End Lakehouse:** Designed and deployed a local data lakehouse using **Apache Iceberg**, **MinIO (S3-compatible)**, and **Project Nessie** (REST catalog), bypassing expensive cloud costs while maintaining enterprise-level architecture.
-* **Stream & Batch Processing Pipelines:** Built a dual-pipeline architecture using **PySpark**. Ingested real-time mock payment webhooks via **Redpanda (Kafka)** using Structured Streaming, and processed delayed, late-arriving bank settlement CSVs via Batch processing.
-* **Data Quality & Dead Letter Queues (DLQ):** Implemented strict data validation constraints during ingestion. Corrupt or malformed records (e.g., missing IDs or negative amounts) are automatically filtered and routed to an Iceberg DLQ table without interrupting the main pipeline.
-* **Complex Data Reconciliation:** Wrote PySpark jobs leveraging Iceberg's `MERGE INTO` capabilities to perform ACID upserts, successfully matching payments with settlements, and automatically flagging fee discrepancies as exceptions.
-* **Workflow Orchestration & CI/CD:** Orchestrated the entire batch lifecycle (data generation & reconciliation) using **Apache Airflow** inside a custom Docker environment. Secured code reliability by integrating **Pytest** and **Chispa** into a **GitHub Actions** CI/CD pipeline.
+* **End-to-End Lakehouse Architecture:** Implements a complete local data lakehouse utilizing **Apache Iceberg**, **MinIO (S3-compatible)**, and **Project Nessie** (REST catalog), maintaining enterprise-level design patterns without cloud dependencies.
+* **Dual-Pipeline Processing:** Utilizes a **PySpark** architecture that ingests real-time payment webhooks via **Redpanda (Kafka)** using Structured Streaming, while processing delayed bank settlement CSVs via Batch processing.
+* **Resilient Data Quality & DLQ:** Enforces strict data validation constraints during ingestion. Corrupt or malformed records (e.g., missing IDs or negative amounts) are automatically routed to an Iceberg Dead Letter Queue (DLQ) table, preventing pipeline interruption.
+* **ACID Upserts & Reconciliation:** Employs Iceberg's `MERGE INTO` capabilities via PySpark to perform complex matching logic between payments and settlements, automatically flagging fee discrepancies (MDR) as exceptions.
+* **Orchestration & CI/CD:** Orchestrates the batch processing lifecycle using **Apache Airflow** within a custom Docker environment. Ensures code reliability through **Pytest** and **Chispa** unit tests, automated by a **GitHub Actions** CI pipeline.
