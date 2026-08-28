@@ -1,23 +1,22 @@
 # Transaction Reconciliation Engine
 
-An end-to-end local data lakehouse that automates the reconciliation of streaming payment webhooks against batch bank settlement files using PySpark and Apache Iceberg.
+A local data lakehouse that reconciles streaming payment webhooks against batch bank settlement files using PySpark and Apache Iceberg.
 
 ## Problem
 
-In financial systems, payment gateways fire real-time webhooks upon customer payment, but banks settle funds 1-2 days later after deducting Merchant Discount Rates (MDR). Finance teams manually match these datasets in Excel, leading to delays, missed discrepancies, and scaling bottlenecks.
+In financial systems, payment gateways fire real-time webhooks upon customer payment, but banks settle funds 1-2 days later after deducting Merchant Discount Rates (MDR). Finance teams often manually match these datasets, leading to delays and scaling bottlenecks.
 
 ## Solution
 
-Engineered a dual-pipeline data lakehouse using **PySpark**. Real-time webhooks are ingested via **Redpanda (Kafka)**, while delayed settlement CSVs are processed in batch. Both pipelines converge on an **Apache Iceberg** table where ACID `MERGE INTO` operations automatically match transactions and flag fee discrepancies.
+Implemented a dual-pipeline data lakehouse using PySpark. Real-time webhooks are ingested via Redpanda (Kafka), while delayed settlement CSVs are processed in batch. Both pipelines converge on an Apache Iceberg table where `MERGE INTO` operations automatically match transactions and flag fee discrepancies.
 
 ## Key Results
 
 | Metric                | Result |
 | --------------------- | -----: |
-| Streaming throughput  | ~20,000 msgs/sec |
-| Batch processing size | 500 records |
-| Core Test coverage    | 2 test suites |
-| Data consistency      | ACID Upserts |
+| Local Stress Test     | ~20,000 msgs/sec |
+| Batch Processing Size | 500 records |
+| Test Coverage         | 2 test suites |
 
 ## Architecture
 
@@ -38,111 +37,87 @@ flowchart LR
 ## Technology Stack
 
 **Language:** Python, HCL (Terraform)
-**Data:** Apache Spark (PySpark), Apache Iceberg
-**Backend:** Redpanda (Kafka-compatible)
-**Cloud/Infrastructure:** MinIO (S3-compatible object storage), Project Nessie (REST Catalog), AWS (MSK, MWAA, Glue, S3 via Terraform)
-**DevOps & Data Quality:** Docker Compose, Apache Airflow, GitHub Actions, Pytest, Great Expectations
+**Data Processing:** Apache Spark (PySpark)
+**Streaming:** Redpanda (Kafka-compatible)
+**Storage:** Apache Iceberg, MinIO, Project Nessie
+**Orchestration:** Apache Airflow
+**Data Quality:** Great Expectations
+**Infrastructure:** Docker Compose, Terraform (AWS configuration)
+**Testing:** Pytest, Chispa
+**CI/CD:** GitHub Actions
 
-## Key Engineering Features
-
-### Dual-Pipeline Ingestion
-Implemented Structured Streaming for Redpanda topics and Batch reads for CSVs using PySpark. This was chosen to handle the hybrid nature of real-time webhooks and late-arriving bank settlements.
-
-### Resilient Data Quality & DLQ
-Implemented DataFrame filtering constraints using PySpark to route invalid records (e.g., negative amounts or missing IDs) to a Dead Letter Queue (DLQ). This ensures 100% pipeline uptime during corrupt data events.
-
-### Strict Data Contracts
-Integrated **Great Expectations** into the Airflow DAG to validate daily settlement files *before* they touch the data lake. This enforces data contracts (unique IDs, strictly positive amounts, non-null refs) and halts the pipeline if dirty data is detected.
-
-### ACID Upserts & Reconciliation
-Implemented Iceberg's `MERGE INTO` via PySpark SQL to match `transaction_id`s between webhooks and settlements. This was chosen to handle data mutation (upserts) on a data lake without requiring a traditional data warehouse.
-
-## Data Pipeline / System Flow
+## How It Works
 
 1. **Ingestion:** `webhook_producer.py` streams JSON events to Redpanda.
-2. **Validation:** `ingest_webhooks.py` consumes the stream, filtering out malformed events to a DLQ.
+2. **Validation:** `ingest_webhooks.py` consumes the stream, filtering malformed events to a Dead Letter Queue (DLQ).
 3. **Storage:** Valid events are appended to the `gateway_webhooks` Iceberg table stored in MinIO.
-4. **Data Contract:** Airflow triggers `validate_settlement.py`, where Great Expectations verifies the daily `settlement.csv` against strict business rules.
+4. **Data Contract:** Airflow triggers `validate_settlement.py`, where Great Expectations verifies the daily `settlement.csv` against validation rules.
 5. **Processing:** Airflow triggers `reconcile.py`, merging the validated settlement data into the Iceberg table.
-6. **Transformation:** The merge logic verifies the bank's settled amount against the gateway's expected amount minus a 1.5% MDR, updating the status to `MATCHED` or `EXCEPTION_FEE_MISMATCH`.
+6. **Reconciliation:** The merge logic matches `transaction_id`, verifies the bank's settled amount against the expected amount, and updates the status to `MATCHED` or `EXCEPTION_FEE_MISMATCH`.
 
-## Database Design
+## Key Engineering Components
 
-* **Database:** Apache Iceberg via Nessie Catalog and MinIO.
-* **Tables:** `tx_recon.gateway_webhooks`
+### Streaming Ingestion
+Implemented PySpark Structured Streaming to read JSON events from Redpanda. Malformed records are filtered out using DataFrame API constraints to prevent pipeline failure.
+
+### Strict Data Contracts
+Integrated Great Expectations into the Airflow DAG to validate daily settlement files before they touch the data lake. Validations ensure unique transaction IDs, strictly positive amounts, and non-null bank reference IDs.
+
+### ACID Upserts & Reconciliation
+Utilized Iceberg's `MERGE INTO` via PySpark SQL to handle data mutation on the data lake. This allows for updating specific rows when bank settlements arrive, rather than overwriting entire partitions.
+
+## Data Model / Database Design
+
+* **Database:** Apache Iceberg (via Nessie Catalog and MinIO)
+* **Table:** `tx_recon.gateway_webhooks`
 * **Schema:** `transaction_id` (String), `amount_paise` (Integer), `gateway_status` (String), `timestamp_utc` (Timestamp), `merchant_id` (String), `reconciliation_status` (String), `settled_amount_paise` (Integer).
-* **Design decisions:** Amounts are stored in `paise` (integers) to avoid floating-point math errors during financial fee calculations.
+* **Design Decision:** Monetary amounts are stored in `paise` (integers) to avoid floating-point arithmetic errors during fee calculations.
 
-## Performance & Stress Testing
+## Performance
 
-To benchmark PySpark's actual processing speed, the webhook producer was modified to run a high-throughput stress test, stripping out console callbacks and sleep delays.
-
-**Result:** The pipeline successfully ingested and streamed **10,000 real-time events in 0.50 seconds (~20,000 messages/sec)** locally, demonstrating its ability to handle enterprise-scale transaction volumes.
+A local stress test processed 10,000 events in 0.50 seconds (~20,000 events/sec). This was measured by removing sleep delays from the `webhook_producer.py` generator and logging the elapsed time during message production to Redpanda.
 
 ## Testing
 
-* **Test framework:** Pytest with Chispa (for DataFrame equality).
-* **Number of tests:** 2 core integration suites (`test_data_quality_filter` and `test_reconciliation_logic`).
-* **Important edge cases:** Negative amounts, missing transaction IDs, exact fee matches, fee mismatches.
+* **Test Framework:** Pytest with Chispa (for PySpark DataFrame equality).
+* **Test Suites:** Two core integration suites covering data quality filtering and reconciliation logic.
+* **Edge Cases Tested:** Negative amounts, missing transaction IDs, exact fee matches, and fee mismatches.
 
-## Deployment
+## Deployment / Infrastructure
 
-* **Environment:** Local Docker Compose.
-* **Containers:** Airflow (Scheduler, Webserver, Init), Redpanda, MinIO, Project Nessie, PostgreSQL.
-* **CI/CD:** GitHub Actions triggers `pytest` and `black` formatting on push.
+### Local Environment
+The system runs locally via Docker Compose, provisioning Airflow, Redpanda, MinIO, Project Nessie, and PostgreSQL.
 
-## Challenges and Engineering Decisions
+### Cloud Infrastructure (AWS)
+Terraform configuration (`infra/main.tf`) is provided to deploy the equivalent architecture to AWS. The code provisions an Amazon MSK cluster, S3 Bucket, AWS Glue Database, and Amazon MWAA environment. Note: This infrastructure is defined in code but not actively deployed in the current setup.
 
-**Challenge:** PySpark traditionally lacks native ACID upserts for data lakes, requiring full partition overwrites.
-**Approach:** Integrated Apache Iceberg as the table format and Project Nessie as the catalog to enable `MERGE INTO` operations directly on S3/MinIO storage.
-**Result:** Eliminated the need to overwrite entire partitions during the daily reconciliation batch, enabling true row-level mutations on the lake.
+## Engineering Decisions
 
-## Project Impact
+* **Problem:** Traditional data lakes lack native ACID upserts, requiring full partition overwrites.
+  * **Decision:** Integrated Apache Iceberg and Project Nessie.
+  * **Reason:** Enables row-level `MERGE INTO` operations directly on object storage.
 
-The pipeline successfully reconciles 500 simulated settlement records against a continuous webhook stream using local containers, demonstrating a fully functional, cloud-agnostic Lakehouse architecture that automates manual financial matching.
+## Challenges
 
-## How to Run
-
-1. Run `.\setup.ps1` to configure the Python environment and `.env`.
-2. Start infrastructure: `docker-compose up -d --build`
-3. Generate webhooks (Terminal 1): `python src/generators/webhook_producer.py`
-4. Start ingest (Terminal 2): `python src/ingest_webhooks.py`
-5. Access Airflow at `http://localhost:8080` (admin/admin) to trigger the `daily_tx_reconciliation` DAG.
+* **Challenge:** Ensuring the ingestion pipeline does not fail when malformed JSON or negative amounts arrive.
+  * **Solution:** Implemented a Dead Letter Queue (DLQ) pattern in PySpark by applying strict filtering constraints and writing invalid records to a separate location.
 
 ## Project Structure
 
 * `dags/`: Airflow DAG definitions.
-* `src/`: PySpark ingestion and reconciliation logic.
+* `src/`: PySpark ingestion, reconciliation, and validation logic.
+* `infra/`: Terraform configurations for AWS.
 * `tests/`: Chispa unit tests.
-* `Dockerfile.airflow`: Custom image for Airflow with Java (PySpark dependency).
+* `docker-compose.yml`: Local infrastructure setup.
+
+## Setup & Usage
+
+1. Run `.\setup.ps1` to configure the Python virtual environment and `.env`.
+2. Start the local infrastructure: `docker-compose up -d --build`
+3. Start the webhook generator: `python src/generators/webhook_producer.py`
+4. Start the PySpark streaming job: `python src/ingest_webhooks.py`
+5. Access the Airflow UI at `http://localhost:8080` (admin/admin) to trigger the `daily_tx_reconciliation` DAG.
 
 ## Future Improvements
 
-* Add dbt (Data Build Tool) to transform the reconciled table into a dimensional Star Schema for BI.
-
----
-
-<!-- HIDDEN SECTION FOR RESUME BUILDING -->
-# Resume Evidence
-
-* Engineered a dual-pipeline PySpark data lakehouse using Apache Iceberg and MinIO to automate financial reconciliation, eliminating cloud dependencies through a local Docker architecture. 
-  *(Evidence: `docker-compose.yml`, `src/config.py` MinIO integration)*
-* Built a fault-tolerant streaming ingestion pipeline using Redpanda (Kafka) and PySpark Structured Streaming, automatically routing corrupt records to a Dead Letter Queue to maintain 100% pipeline uptime. 
-  *(Evidence: `src/ingest_webhooks.py` filter logic and `tests/test_reconciliation.py`)*
-* Designed and executed a high-throughput load test on the Kafka producer, successfully streaming and processing 10,000 transactional events in 0.5 seconds (~20,000 events/sec).
-  *(Evidence: `src/generators/webhook_producer.py` stress mode)*
-* Enforced strict Data Contracts using Great Expectations within an Apache Airflow DAG, validating batch settlement files and preventing dirty data from contaminating the Iceberg lake.
-  *(Evidence: `src/expectations/validate_settlement.py`, `dags/reconciliation_dag.py`)*
-* Authored Infrastructure as Code (IaC) using Terraform to seamlessly deploy the equivalent architecture to AWS (Amazon MSK, S3, MWAA, and Glue).
-  *(Evidence: `infra/main.tf`)*
-
-# Metrics Worth Measuring
-
-1. **End-to-End Latency:** 
-   * *What:* The time from webhook generation to Iceberg commit. 
-   * *Why:* Proves the real-time capabilities of the architecture. 
-   * *How:* Add a generation timestamp to the webhook and compare it to the Iceberg snapshot commit timestamp via Nessie UI or Spark SQL.
-2. **Reconciliation Batch Duration vs Volume:**
-   * *What:* Time taken to run `MERGE INTO` on 1M vs 10M records.
-   * *Why:* Proves scalability and performance tuning (e.g., partition pruning, Z-ordering).
-   * *How:* Generate a massive CSV using `settlement_generator.py` and measure the Airflow DAG execution time.
+* Add dbt (Data Build Tool) to transform the reconciled Iceberg table into a dimensional Star Schema.
