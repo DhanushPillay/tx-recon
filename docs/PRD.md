@@ -17,6 +17,8 @@ Our goal is to build an engine that handles this matching automatically.
 3. **Automated Matching:** Match records exactly on `transaction_id`.
 4. **Fee Deduction Logic:** Calculate the expected bank amount by deducting a flat 1.5% MDR from the gateway amount.
 5. **Exception Routing:** Flag unmatched or mathematically incorrect records with exact statuses (e.g., `EXCEPTION_FEE_MISMATCH`, `PENDING_SETTLEMENT`).
+6. **Data Contracts:** Validate incoming bank settlement files for schema integrity and business rules before processing.
+7. **Dead Letter Queue (DLQ):** Route malformed real-time events to a DLQ without crashing the ingestion pipeline.
 
 ## 4. Non-Functional Requirements
 1. **Idempotency:** Re-running the pipeline for the same day must not duplicate records or inflate balances.
@@ -26,9 +28,11 @@ Our goal is to build an engine that handles this matching automatically.
 
 ## 5. Scope
 **In Scope:** 
-- Ingesting raw data.
+- Ingesting raw data (streaming and batch).
 - Two-way reconciliation.
-- Lakehouse storage.
+- Lakehouse storage with ACID upserts.
+- Data Quality enforcement (Data Contracts).
+- Infrastructure as Code (IaC) definitions.
 
 **Out of Scope:**
 - Three-way reconciliation (e.g., checking against an ERP system).
