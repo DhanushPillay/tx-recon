@@ -1,0 +1,49 @@
+version: '3.7'
+
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v23.2.2
+    container_name: redpanda
+    command:
+      - redpanda
+      - start
+      - --smp 1
+      - --memory 1G
+      - --reserve-memory 0M
+      - --overprovisioned
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+    ports:
+      - "19092:19092"
+      - "9092:9092"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    environment:
+      - MINIO_ROOT_USER=admin
+      - MINIO_ROOT_PASSWORD=password
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  minio-createbucket:
+    image: minio/mc
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until (/usr/bin/mc config host add myminio http://minio:9000 admin password) do echo '...waiting...' && sleep 1; done;
+      /usr/bin/mc mb myminio/lakehouse;
+      /usr/bin/mc policy set public myminio/lakehouse;
+      exit 0;
+      "
+
+volumes:
+  redpanda_data:
+  minio_data:
