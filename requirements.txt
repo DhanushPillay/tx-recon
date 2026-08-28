@@ -1,6 +1,6 @@
 pyspark==3.5.1
-pyiceberg==0.6.0
-confluent-kafka==2.3.0
+kafka-python-ng==2.2.3
 python-dotenv==1.0.1
 pytest==8.0.0
+chispa==0.9.2
 black==24.2.0
