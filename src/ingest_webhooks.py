@@ -1,6 +1,6 @@
 import logging
-from pyspark.sql.functions import from_json, col, current_timestamp
-from pyspark.sql.types import StructType, StructField, StringType, IntegerType
+from pyspark.sql.functions import col, current_timestamp, expr
+from pyspark.sql.avro.functions import from_avro
 from config import get_spark_session, redpanda_host
 
 # Configure logging
@@ -9,20 +9,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+avro_schema_str = """
+{
+  "type": "record",
+  "name": "WebhookEvent",
+  "fields": [
+    {"name": "transaction_id", "type": "string"},
+    {"name": "amount_paise", "type": "int"},
+    {"name": "gateway_status", "type": "string"},
+    {"name": "timestamp_utc", "type": "string"},
+    {"name": "merchant_id", "type": "string"}
+  ]
+}
+"""
+
 
 def run_ingestion():
     logger.info("Initializing Spark Session for Webhook Ingestion")
     spark = get_spark_session("WebhookIngestion")
-
-    schema = StructType(
-        [
-            StructField("transaction_id", StringType(), True),
-            StructField("amount_paise", IntegerType(), True),
-            StructField("gateway_status", StringType(), True),
-            StructField("timestamp_utc", StringType(), True),
-            StructField("merchant_id", StringType(), True),
-        ]
-    )
 
     logger.info(f"Connecting to Redpanda at {redpanda_host}:9092")
     df = (
@@ -33,8 +37,11 @@ def run_ingestion():
         .load()
     )
 
+    # Confluent Avro wire format: Magic Byte (1 byte) + Schema ID (4 bytes)
+    df = df.withColumn("fixed_value", expr("substring(value, 6, length(value)-5)"))
+
     parsed_df = df.select(
-        from_json(col("value").cast("string"), schema).alias("data")
+        from_avro(col("fixed_value"), avro_schema_str).alias("data")
     ).select("data.*")
 
     # DATA QUALITY CHECKS (Filter good vs bad records)
@@ -80,8 +87,7 @@ if __name__ == "__main__":
     spark.sql("CREATE NAMESPACE IF NOT EXISTS nessie.db")
 
     # Initialize valid table
-    spark.sql(
-        """
+    spark.sql("""
         CREATE TABLE IF NOT EXISTS nessie.db.webhooks (
             transaction_id string,
             amount_paise int,
@@ -92,12 +98,10 @@ if __name__ == "__main__":
             bank_ref_id string,
             ingested_at timestamp
         ) USING iceberg
-    """
-    )
+    """)
 
     # Initialize DLQ table
-    spark.sql(
-        """
+    spark.sql("""
         CREATE TABLE IF NOT EXISTS nessie.db.webhooks_dlq (
             transaction_id string,
             amount_paise int,
@@ -105,7 +109,6 @@ if __name__ == "__main__":
             timestamp_utc string,
             merchant_id string
         ) USING iceberg
-    """
-    )
+    """)
 
     run_ingestion()

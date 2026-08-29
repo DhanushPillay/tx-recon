@@ -4,54 +4,72 @@ import random
 import uuid
 import argparse
 from datetime import datetime, timezone
-from kafka import KafkaProducer
+from confluent_kafka import SerializingProducer
+from confluent_kafka.serialization import StringSerializer
+from confluent_kafka.schema_registry import SchemaRegistryClient
+from confluent_kafka.schema_registry.avro import AvroSerializer
 
-# Configuration for local Redpanda/Kafka
 KAFKA_BROKER = "localhost:19092"
+SCHEMA_REGISTRY_URL = "http://localhost:8081"
 TOPIC_NAME = "gateway_webhooks"
+
+avro_schema_str = """
+{
+  "type": "record",
+  "name": "WebhookEvent",
+  "fields": [
+    {"name": "transaction_id", "type": "string"},
+    {"name": "amount_paise", "type": "int"},
+    {"name": "gateway_status", "type": "string"},
+    {"name": "timestamp_utc", "type": "string"},
+    {"name": "merchant_id", "type": "string"}
+  ]
+}
+"""
 
 
 def generate_webhook_event():
-    # Random gateway amounts between ₹10 and ₹10,000
     amount_paise = random.randint(1000, 1000000)
     tx_id = f"tx_{uuid.uuid4().hex[:12]}"
 
-    event = {
+    return {
         "transaction_id": tx_id,
-        "amount_paise": amount_paise,  # Keep currency as integers to avoid floating point math errors
+        "amount_paise": amount_paise,
         "gateway_status": "SUCCESS",
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "merchant_id": "merch_12345",
     }
-    return event
 
 
-def on_send_success(record_metadata):
-    print(
-        f"Produced message to {record_metadata.topic} partition [{record_metadata.partition}] @ offset {record_metadata.offset}"
-    )
-
-
-def on_send_error(excp):
-    print(f"Error producing message: {excp}")
+def delivery_report(err, msg):
+    if err is not None:
+        print(f"Delivery failed: {err}")
+    else:
+        print(
+            f"Produced record to {msg.topic()} [{msg.partition()}] @ offset {msg.offset()}"
+        )
 
 
 def main():
     parser = argparse.ArgumentParser(description="Webhook Producer for Redpanda")
     parser.add_argument(
-        "--stress",
-        type=int,
-        help="Run a high-throughput stress test with N messages",
-        default=0,
+        "--stress", type=int, help="Run a high-throughput stress test", default=0
     )
     args = parser.parse_args()
 
-    producer = KafkaProducer(
-        bootstrap_servers=[KAFKA_BROKER],
-        client_id="python-producer",
-        value_serializer=lambda m: json.dumps(m).encode("ascii"),
-        key_serializer=lambda k: k.encode("ascii"),
+    schema_registry_client = SchemaRegistryClient({"url": SCHEMA_REGISTRY_URL})
+
+    avro_serializer = AvroSerializer(
+        schema_registry_client, avro_schema_str, lambda event, ctx: event
     )
+
+    producer_conf = {
+        "bootstrap.servers": KAFKA_BROKER,
+        "key.serializer": StringSerializer("utf_8"),
+        "value.serializer": avro_serializer,
+    }
+
+    producer = SerializingProducer(producer_conf)
 
     if args.stress > 0:
         print(
@@ -60,12 +78,9 @@ def main():
         start_time = time.time()
         for i in range(args.stress):
             event = generate_webhook_event()
-            # Do not use callbacks for stress test as console IO bottlenecks throughput
-            producer.send(TOPIC_NAME, key=event["transaction_id"], value=event)
-
+            producer.produce(topic=TOPIC_NAME, key=event["transaction_id"], value=event)
             if i > 0 and i % 10000 == 0:
                 print(f"Pushed {i} messages...")
-
         producer.flush()
         elapsed = time.time() - start_time
         print(
@@ -77,9 +92,13 @@ def main():
     try:
         while True:
             event = generate_webhook_event()
-            producer.send(
-                TOPIC_NAME, key=event["transaction_id"], value=event
-            ).add_callback(on_send_success).add_errback(on_send_error)
+            producer.produce(
+                topic=TOPIC_NAME,
+                key=event["transaction_id"],
+                value=event,
+                on_delivery=delivery_report,
+            )
+            producer.poll(0)
             time.sleep(random.uniform(0.1, 1.5))
     except KeyboardInterrupt:
         print("Stopping producer...")
