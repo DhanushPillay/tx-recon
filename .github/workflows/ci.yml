@@ -31,5 +31,7 @@ jobs:
           black --check src/ tests/
           
       - name: Run Pytest
+        env:
+          PYTHONPATH: .
         run: |
           pytest tests/
