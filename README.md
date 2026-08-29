@@ -26,12 +26,13 @@ flowchart LR
     B -->|Structured Streaming| C[PySpark Ingestion]
     C -->|Append| D[(Apache Iceberg / MinIO)]
     
-    E[Settlement Generator] -->|Batch CSV| V{Great Expectations}
+    E[Settlement Generator] -->|Batch CSV| V{Pandas Validation}
     V -->|Data Contract| F[PySpark Reconciliation]
     F -->|MERGE INTO| D
     
     G[Apache Airflow] -->|Triggers| V
     D <--> H(Project Nessie Catalog)
+    D -->|Lakehouse| I[dbt Transformations]
 ```
 
 ## Technology Stack
@@ -41,7 +42,8 @@ flowchart LR
 **Streaming:** Redpanda (Kafka-compatible)
 **Storage:** Apache Iceberg, MinIO, Project Nessie
 **Orchestration:** Apache Airflow
-**Data Quality:** Great Expectations
+**Data Quality:** Native Pandas (Ponytail principles)
+**Data Modeling:** dbt (Data Build Tool)
 **Infrastructure:** Docker Compose, Terraform (AWS configuration)
 **Testing:** Pytest, Chispa
 **CI/CD:** GitHub Actions
@@ -61,7 +63,7 @@ flowchart LR
 Implemented PySpark Structured Streaming to read JSON events from Redpanda. Malformed records are filtered out using DataFrame API constraints to prevent pipeline failure.
 
 ### Strict Data Contracts
-Integrated Great Expectations into the Airflow DAG to validate daily settlement files before they touch the data lake. Validations ensure unique transaction IDs, strictly positive amounts, and non-null bank reference IDs.
+Integrated native Pandas validation into the Airflow DAG to validate daily settlement files before they touch the data lake. Validations ensure unique transaction IDs, strictly positive amounts, and non-null bank reference IDs, adhering to minimalist engineering principles by avoiding heavy external dependencies.
 
 ### ACID Upserts & Reconciliation
 Utilized Iceberg's `MERGE INTO` via PySpark SQL to handle data mutation on the data lake. This allows for updating specific rows when bank settlements arrive, rather than overwriting entire partitions.
@@ -106,6 +108,7 @@ Terraform configuration (`infra/main.tf`) is provided to deploy the equivalent a
 
 * `dags/`: Airflow DAG definitions.
 * `src/`: PySpark ingestion, reconciliation, and validation logic.
+* `dbt_recon/`: dbt project for star schema modeling and downstream marts.
 * `infra/`: Terraform configurations for AWS.
 * `tests/`: Chispa unit tests.
 * `docker-compose.yml`: Local infrastructure setup.
@@ -117,7 +120,8 @@ Terraform configuration (`infra/main.tf`) is provided to deploy the equivalent a
 3. Start the webhook generator: `python src/generators/webhook_producer.py`
 4. Start the PySpark streaming job: `python src/ingest_webhooks.py`
 5. Access the Airflow UI at `http://localhost:8080` (admin/admin) to trigger the `daily_tx_reconciliation` DAG.
+6. Trigger the `dbt_reconciliation_modeling` DAG to build the dimensional data marts.
 
 ## Future Improvements
 
-* Add dbt (Data Build Tool) to transform the reconciled Iceberg table into a dimensional Star Schema.
+* Real-time alerting for reconciliation exceptions via Slack/Teams.
