@@ -5,3 +5,4 @@ warehouse/
 data/
 .pytest_cache/
 .DS_Store
+.agents/
