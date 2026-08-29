@@ -87,7 +87,8 @@ if __name__ == "__main__":
     spark.sql("CREATE NAMESPACE IF NOT EXISTS nessie.db")
 
     # Initialize valid table
-    spark.sql("""
+    spark.sql(
+        """
         CREATE TABLE IF NOT EXISTS nessie.db.webhooks (
             transaction_id string,
             amount_paise int,
@@ -98,10 +99,12 @@ if __name__ == "__main__":
             bank_ref_id string,
             ingested_at timestamp
         ) USING iceberg
-    """)
+    """
+    )
 
     # Initialize DLQ table
-    spark.sql("""
+    spark.sql(
+        """
         CREATE TABLE IF NOT EXISTS nessie.db.webhooks_dlq (
             transaction_id string,
             amount_paise int,
@@ -109,6 +112,7 @@ if __name__ == "__main__":
             timestamp_utc string,
             merchant_id string
         ) USING iceberg
-    """)
+    """
+    )
 
     run_ingestion()
