@@ -27,13 +27,13 @@ with DAG(
     # Step 1: Generate Mock Settlement Data (Simulating a file landing in S3/SFTP)
     generate_settlement = BashOperator(
         task_id="generate_bank_settlement",
-        bash_command="pip install pyspark==3.5.1 chispa==0.9.2 great_expectations && python /opt/airflow/src/generators/settlement_generator.py",
+        bash_command="pip install pyspark==3.5.1 pandas && python /opt/airflow/src/generators/settlement_generator.py",
     )
 
-    # Step 1.5: Validate the Data Contract using Great Expectations
-    validate_data_contract = BashOperator(
-        task_id="validate_data_contract",
-        bash_command="python /opt/airflow/src/expectations/validate_settlement.py",
+    # Step 1.5: Validate the Data Contract using Pandas
+    validate_settlement_task = BashOperator(
+        task_id="validate_settlement",
+        bash_command="python /opt/airflow/src/validate_settlement.py",
     )
 
     # Step 2: Run the PySpark Batch Reconciliation Job
@@ -56,7 +56,7 @@ with DAG(
 
     (
         generate_settlement
-        >> validate_data_contract
+        >> validate_settlement_task
         >> run_reconciliation_job
         >> dbt_gold_layer
     )

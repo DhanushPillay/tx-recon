@@ -51,7 +51,7 @@ flowchart LR
 1. **Ingestion:** `webhook_producer.py` streams JSON events to Redpanda.
 2. **Validation:** `ingest_webhooks.py` consumes the stream, filtering malformed events to a Dead Letter Queue (DLQ).
 3. **Storage:** Valid events are appended to the `gateway_webhooks` Iceberg table stored in MinIO.
-4. **Data Contract:** Airflow triggers `validate_settlement.py`, where Great Expectations verifies the daily `settlement.csv` against validation rules.
+4. **Data Contract:** Airflow triggers `validate_settlement.py`, where Pandas verifies the daily `settlement.csv` against validation rules.
 5. **Processing:** Airflow triggers `reconcile.py`, merging the validated settlement data into the Iceberg table.
 6. **Reconciliation:** The merge logic matches `transaction_id`, verifies the bank's settled amount against the expected amount, and updates the status to `MATCHED` or `EXCEPTION_FEE_MISMATCH`.
 
