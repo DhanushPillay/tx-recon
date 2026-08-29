@@ -1,6 +1,6 @@
 import logging
 from pyspark.sql.functions import col
-from config import get_spark_session
+from src.config import get_spark_session
 
 # Configure logging
 logging.basicConfig(
