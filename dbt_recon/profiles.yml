@@ -1,0 +1,10 @@
+dbt_recon:
+  target: dev
+  outputs:
+    dev:
+      type: spark
+      method: thrift
+      host: localhost
+      port: 10000
+      schema: nessie.db
+      threads: 4

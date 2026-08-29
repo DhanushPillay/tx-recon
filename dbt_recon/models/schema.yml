@@ -1,0 +1,37 @@
+version: 2
+
+sources:
+  - name: nessie
+    database: nessie
+    schema: db
+    tables:
+      - name: webhooks
+
+models:
+  - name: stg_webhooks
+    columns:
+      - name: transaction_id
+        tests:
+          - not_null
+          - unique
+      - name: amount_paise
+        tests:
+          - not_null
+
+  - name: fact_reconciliations
+    columns:
+      - name: transaction_id
+        tests:
+          - not_null
+          - unique
+      - name: reconciliation_status
+        tests:
+          - accepted_values:
+              values: ['SUCCESS', 'MATCHED', 'EXCEPTION_FEE_MISMATCH', 'PENDING']
+
+  - name: dim_merchant
+    columns:
+      - name: merchant_id
+        tests:
+          - not_null
+          - unique

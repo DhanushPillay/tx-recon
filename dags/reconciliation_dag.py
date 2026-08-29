@@ -1,42 +1,62 @@
 from datetime import datetime, timedelta
+import os
 from airflow import DAG
 from airflow.operators.bash import BashOperator
+from cosmos import DbtTaskGroup, ProjectConfig, ProfileConfig, ExecutionConfig
+from cosmos.profiles import SparkThriftProfileMapping
 
 default_args = {
-    'owner': 'data_engineering',
-    'depends_on_past': False,
-    'email_on_failure': False,
-    'email_on_retry': False,
-    'retries': 1,
-    'retry_delay': timedelta(minutes=5),
+    "owner": "data_engineering",
+    "depends_on_past": False,
+    "email_on_failure": False,
+    "email_on_retry": False,
+    "retries": 1,
+    "retry_delay": timedelta(minutes=5),
 }
 
 with DAG(
-    'daily_tx_reconciliation',
+    "daily_tx_reconciliation",
     default_args=default_args,
-    description='Daily reconciliation of payment gateway webhooks against bank settlements',
+    description="Daily reconciliation of payment gateway webhooks against bank settlements",
     schedule_interval=timedelta(days=1),
     start_date=datetime(2023, 1, 1),
     catchup=False,
-    tags=['finance', 'reconciliation'],
+    tags=["finance", "reconciliation"],
 ) as dag:
 
     # Step 1: Generate Mock Settlement Data (Simulating a file landing in S3/SFTP)
     generate_settlement = BashOperator(
-        task_id='generate_bank_settlement',
-        bash_command='pip install pyspark==3.5.1 chispa==0.9.2 great_expectations && python /opt/airflow/src/generators/settlement_generator.py',
+        task_id="generate_bank_settlement",
+        bash_command="pip install pyspark==3.5.1 chispa==0.9.2 great_expectations && python /opt/airflow/src/generators/settlement_generator.py",
     )
 
     # Step 1.5: Validate the Data Contract using Great Expectations
     validate_data_contract = BashOperator(
-        task_id='validate_data_contract',
-        bash_command='python /opt/airflow/src/expectations/validate_settlement.py',
+        task_id="validate_data_contract",
+        bash_command="python /opt/airflow/src/expectations/validate_settlement.py",
     )
 
     # Step 2: Run the PySpark Batch Reconciliation Job
     run_reconciliation_job = BashOperator(
-        task_id='run_pyspark_reconciliation',
-        bash_command='python /opt/airflow/src/reconcile.py',
+        task_id="run_pyspark_reconciliation",
+        bash_command="python /opt/airflow/src/reconcile.py",
     )
 
-    generate_settlement >> validate_data_contract >> run_reconciliation_job
+    # Step 3: Run the dbt Gold Layer Transformations
+    dbt_gold_layer = DbtTaskGroup(
+        group_id="dbt_gold_layer",
+        project_config=ProjectConfig("/opt/airflow/dbt_recon"),
+        profile_config=ProfileConfig(
+            profile_name="dbt_recon",
+            target_name="dev",
+            profiles_yml_filepath="/opt/airflow/dbt_recon/profiles.yml",
+        ),
+        execution_config=ExecutionConfig(dbt_executable_path="/usr/local/bin/dbt"),
+    )
+
+    (
+        generate_settlement
+        >> validate_data_contract
+        >> run_reconciliation_job
+        >> dbt_gold_layer
+    )
