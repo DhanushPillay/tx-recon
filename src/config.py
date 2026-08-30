@@ -8,6 +8,10 @@ redpanda_host = "redpanda" if is_airflow else "localhost"
 
 
 def get_spark_session(app_name="TxRecon"):
+    # Clear invalid global SPARK_HOME if it exists to allow pip-installed pyspark to work
+    if "SPARK_HOME" in os.environ:
+        del os.environ["SPARK_HOME"]
+
     # Iceberg requires Nessie and AWS S3 SDK for MinIO
     packages = [
         "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.4.3",
