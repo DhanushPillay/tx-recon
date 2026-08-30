@@ -1,14 +1,9 @@
 # Transaction Reconciliation Engine
 
-A local data lakehouse that reconciles streaming payment webhooks against batch bank settlement files using PySpark and Apache Iceberg.
-
-## Problem
-
-In financial systems, payment gateways fire real-time webhooks upon customer payment, but banks settle funds 1-2 days later after deducting Merchant Discount Rates (MDR). Finance teams often manually match these datasets, leading to delays and scaling bottlenecks.
-
-## Solution
-
-Implemented a dual-pipeline data lakehouse using PySpark. Real-time webhooks are ingested via Redpanda (Kafka), while delayed settlement CSVs are processed in batch. Both pipelines converge on an Apache Iceberg table where `MERGE INTO` operations automatically match transactions and flag fee discrepancies.
+**What it is:** A local data lakehouse designed to automate financial reconciliation.
+**What it does:** It matches real-time payment gateway webhooks against delayed batch bank settlement files.
+**How it does it:** Real-time webhooks are streamed via Redpanda/Kafka and ingested via PySpark into Apache Iceberg. Settlement CSVs are validated using Pandas and merged into the Iceberg table using ACID `MERGE INTO` upserts.
+**Why it's needed:** Finance teams typically manually match these datasets (which arrive days apart) to verify Merchant Discount Rates (MDR) and settle funds. This system automates the matching and flags fee discrepancies at scale.
 
 ## Key Results
 
@@ -75,32 +70,38 @@ Utilized Iceberg's `MERGE INTO` via PySpark SQL to handle data mutation on the d
 * **Schema:** `transaction_id` (String), `amount_paise` (Integer), `gateway_status` (String), `timestamp_utc` (Timestamp), `merchant_id` (String), `reconciliation_status` (String), `settled_amount_paise` (Integer).
 * **Design Decision:** Monetary amounts are stored in `paise` (integers) to avoid floating-point arithmetic errors during fee calculations.
 
-## Performance
+## Performance & Benchmarks
 
-* A local stress test processed 1,000,000 events in 39.06 seconds (~25,600 events/sec). This was measured by running the dedicated load-test script in the [benchmarks/](benchmarks/) directory, pushing synthetic JSON events to Redpanda.
+We run a full 1,000,000 row stress test across the entire pipeline. The results demonstrate the system's ability to handle high-throughput financial data on a single machine:
 
-```text
-Initializing KafkaProducer connected to localhost:19092...
-Starting STRESS TEST mode. Pushing 1000000 messages to gateway_webhooks...
-Pushed 10000 messages...
-Pushed 20000 messages...
-Pushed 30000 messages...
-...
-Pushed 980000 messages...
-Pushed 990000 messages...
-Pushed 1000000 messages...
-Flushing messages to broker...
-STRESS TEST COMPLETE: 1000000 messages in 39.06 seconds (25600.15 msgs/sec)
-```
+* **Pandas CSV Validation:** 0.77 seconds
+* **Webhook Producer (1M events):** 8.77 seconds (113,967 msgs/sec)
+* **PySpark Ingestion to Iceberg (1M events):** 11.43 seconds
+* **Iceberg Reconciliation (MERGE INTO 1M rows):** 10.53 seconds
 
-### Running the Benchmark
+### How to Run the Benchmarks
 
-To stress test the Kafka ingestion throughput on your own machine:
-1. Ensure the infrastructure is running (`docker-compose up -d redpanda`).
-2. Execute the benchmark script from the virtual environment:
+To reproduce these results on your own machine:
+
+1. Ensure the infrastructure is running (`docker-compose up -d`).
+2. Ensure dependencies are fully installed (`pip install -r requirements.txt`).
+3. Generate the 1M Webhooks (Kafka Producer):
    ```powershell
-   .\.venv\Scripts\python.exe benchmarks\kafka_producer_benchmark.py --count 1000000
+   .\.venv\Scripts\python.exe src/generators/webhook_producer.py --stress 1000000
    ```
+4. Run PySpark Ingestion (Kafka -> Iceberg):
+   ```powershell
+   .\.venv\Scripts\python.exe benchmarks/pyspark_ingestion_benchmark.py
+   ```
+5. Run Pandas Validation (CSV reading rules):
+   ```powershell
+   .\.venv\Scripts\python.exe benchmarks/pandas_validation_benchmark.py
+   ```
+6. Run Iceberg Reconciliation (MERGE INTO):
+   ```powershell
+   .\.venv\Scripts\python.exe benchmarks/reconciliation_benchmark.py
+   ```
+Detailed output is appended to `benchmarks/results.log`.
 
 ## Testing
 

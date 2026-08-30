@@ -9,3 +9,10 @@ Pushed 990000 messages...
 Pushed 1000000 messages...
 Flushing messages to broker...
 STRESS TEST COMPLETE: 1000000 messages in 39.06 seconds (25600.15 msgs/sec)
+
+ --- 1M Rows Final Test Run ---
+Pandas CSV Validation Benchmark: 0.77 seconds
+Webhook Producer (1M events): 8.77 seconds (113,967 msgs/sec)
+PySpark Ingestion to Iceberg (1M events): 11.43 seconds
+Iceberg Reconciliation (MERGE INTO 1M rows): 10.53 seconds
+------------------------------

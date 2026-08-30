@@ -79,6 +79,7 @@ def main():
         for i in range(args.stress):
             event = generate_webhook_event()
             producer.produce(topic=TOPIC_NAME, key=event["transaction_id"], value=event)
+            producer.poll(0)
             if i > 0 and i % 10000 == 0:
                 print(f"Pushed {i} messages...")
         producer.flush()
