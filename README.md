@@ -14,7 +14,7 @@ Implemented a dual-pipeline data lakehouse using PySpark. Real-time webhooks are
 
 | Metric                | Result |
 | --------------------- | -----: |
-| Local Stress Test     | ~20,000 msgs/sec |
+| Local Stress Test     | ~25,600 msgs/sec ([benchmarks/](benchmarks/)) |
 | Batch Processing Size | 500 records |
 | Test Coverage         | 2 test suites |
 
@@ -77,7 +77,30 @@ Utilized Iceberg's `MERGE INTO` via PySpark SQL to handle data mutation on the d
 
 ## Performance
 
-A local stress test processed 10,000 events in 0.50 seconds (~20,000 events/sec). This was measured by removing sleep delays from the `webhook_producer.py` generator and logging the elapsed time during message production to Redpanda.
+* A local stress test processed 1,000,000 events in 39.06 seconds (~25,600 events/sec). This was measured by running the dedicated load-test script in the [benchmarks/](benchmarks/) directory, pushing synthetic JSON events to Redpanda.
+
+```text
+Initializing KafkaProducer connected to localhost:19092...
+Starting STRESS TEST mode. Pushing 1000000 messages to gateway_webhooks...
+Pushed 10000 messages...
+Pushed 20000 messages...
+Pushed 30000 messages...
+...
+Pushed 980000 messages...
+Pushed 990000 messages...
+Pushed 1000000 messages...
+Flushing messages to broker...
+STRESS TEST COMPLETE: 1000000 messages in 39.06 seconds (25600.15 msgs/sec)
+```
+
+### Running the Benchmark
+
+To stress test the Kafka ingestion throughput on your own machine:
+1. Ensure the infrastructure is running (`docker-compose up -d redpanda`).
+2. Execute the benchmark script from the virtual environment:
+   ```powershell
+   .\.venv\Scripts\python.exe benchmarks\kafka_producer_benchmark.py --count 1000000
+   ```
 
 ## Testing
 
@@ -112,6 +135,7 @@ Terraform configuration (`infra/main.tf`) is provided to deploy the equivalent a
 * `infra/`: Terraform configurations for AWS.
 * `tests/`: Chispa unit tests.
 * `docker-compose.yml`: Local infrastructure setup.
+* `benchmarks/`: Kafka load testing scripts and throughput results.
 
 ## Setup & Usage
 
@@ -121,6 +145,8 @@ Terraform configuration (`infra/main.tf`) is provided to deploy the equivalent a
 4. Start the PySpark streaming job: `python src/ingest_webhooks.py`
 5. Access the Airflow UI at `http://localhost:8080` (admin/admin) to trigger the `daily_tx_reconciliation` DAG.
 6. Trigger the `dbt_reconciliation_modeling` DAG to build the dimensional data marts.
+
+
 
 ## Future Improvements
 
