@@ -1,44 +1,54 @@
 import glob
+import logging
 import os
 import sys
 
 import pandas as pd
-import pandera.pandas as pa
 from pandera.errors import SchemaErrors
 
-# Define the data contract (schema)
-settlement_schema = pa.DataFrameSchema(
-    {
-        "transaction_id": pa.Column(str, unique=True, nullable=False),
-        "settled_amount_paise": pa.Column(int, pa.Check.gt(0), nullable=False),
-        "bank_ref_id": pa.Column(str, nullable=False),
-    },
-    strict=False,  # allow other columns if any
-)
+from .settlement_schema import settlement_schema
+
+logger = logging.getLogger(__name__)
+
+
+def validate_and_quarantine(df, schema):
+    try:
+        schema.validate(df, lazy=True)
+        return df, pd.DataFrame(columns=df.columns)
+    except SchemaErrors as exc:
+        failure_idx = exc.failure_cases
+        if hasattr(failure_idx, "index") and "index" in failure_idx.columns:
+            invalid_mask = df.index.isin(failure_idx["index"].unique())
+        else:
+            # Fallback: quarantine all rows if failure_cases structure is unexpected
+            invalid_mask = pd.Series(True, index=df.index)
+        return df[~invalid_mask], df[invalid_mask]
 
 
 def validate_latest_settlement():
-    # Find latest csv in data/
     files = glob.glob("data/settlement_*.csv")
     if not files:
-        print("No settlement file found.")
+        logger.error("No settlement file found.")
         sys.exit(1)
         return
 
     latest_file = max(files, key=os.path.getctime)
-    print(f"Validating {latest_file} with Pandera...")
+    logger.info(f"Validating {latest_file} with Pandera...")
 
     df = pd.read_csv(latest_file)
 
-    try:
-        settlement_schema.validate(df, lazy=True)
-        print("SUCCESS: Data Contract Validated successfully!")
-        sys.exit(0)
-    except SchemaErrors as err:
-        print("ERROR: Data Contract Validation FAILED!")
-        for error in err.schema_errors:
-            print(f" - {error}")
+    _, invalid = validate_and_quarantine(df, settlement_schema)
+
+    quarantine_rate = len(invalid) / len(df) * 100 if len(df) > 0 else 0
+    logger.info(
+        f"Quarantine rate: {quarantine_rate:.1f}% ({len(invalid)}/{len(df)} rows)"
+    )
+
+    if not invalid.empty:
+        logger.error("Data Contract Validation FAILED!")
         sys.exit(1)
+    else:
+        logger.info("SUCCESS: Data Contract Validated successfully!")
 
 
 if __name__ == "__main__":
