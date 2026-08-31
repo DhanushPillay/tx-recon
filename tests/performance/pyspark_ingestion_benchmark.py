@@ -5,12 +5,12 @@ import sys
 # Add parent directory to path so we can import src modules
 import os
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from pyspark.sql.functions import col, current_timestamp, expr
 from pyspark.sql.avro.functions import from_avro
-from src.config import get_spark_session, redpanda_host
-from src.ingest_webhooks import avro_schema_str
+from src.common.config import get_spark_session, redpanda_host
+from src.ingestion.ingest_webhooks import avro_schema_str
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
