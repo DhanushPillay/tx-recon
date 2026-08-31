@@ -1,10 +1,32 @@
 {
-  "timestamp": "2026-08-31T13:32:44.442969+00:00",
+  "timestamp": "2026-08-31T13:43:54.642492+00:00",
   "hardware": {
     "platform": "Linux-5.15.153.1-microsoft-standard-WSL2-x86_64-with-glibc2.34",
     "cpu_count": 28,
     "ram_gb": 7.6,
     "python_version": "3.8.18"
+  },
+  "kafka": {
+    "error": "No module named 'confluent_kafka'"
+  },
+  "pyspark": {
+    "hardware": {
+      "platform": "Linux-5.15.153.1-microsoft-standard-WSL2-x86_64-with-glibc2.34",
+      "cpu_count": 28,
+      "python_version": "3.8.18"
+    },
+    "config": {
+      "partitions": 16,
+      "warmup_seconds": 30,
+      "measure_seconds": 120
+    },
+    "total_rows_written": 0,
+    "total_duration_sec": 152.3,
+    "sustained_throughput_rows_sec": 0.0,
+    "avg_processed_rows_per_sec": 0,
+    "avg_input_rows_per_sec": 0,
+    "avg_batch_duration_ms": 0,
+    "num_batches": 0
   },
   "iceberg": {
     "hardware": {
@@ -14,92 +36,72 @@
     },
     "benchmarks": {
       "100k_rows_10pct_update": {
-        "write_time_sec": 1.36,
-        "read_time_sec": 0.06,
+        "write_time_sec": 1.77,
+        "read_time_sec": 0.08,
         "files_before": 8,
         "files_after": 8,
-        "matched": 0,
-        "mismatched": 0
+        "matched": 43,
+        "mismatched": 9957
       },
       "100k_rows_50pct_update": {
-        "write_time_sec": 1.21,
-        "read_time_sec": 0.05,
+        "write_time_sec": 0.97,
+        "read_time_sec": 0.09,
         "files_before": 2,
         "files_after": 2,
-        "matched": 245,
-        "mismatched": 49755
+        "matched": 239,
+        "mismatched": 49761
       },
       "500k_rows_10pct_update": {
-        "write_time_sec": 0.96,
-        "read_time_sec": 0.05,
+        "write_time_sec": 1.06,
+        "read_time_sec": 0.06,
         "files_before": 40,
         "files_after": 37,
-        "matched": 0,
-        "mismatched": 0
+        "matched": 143,
+        "mismatched": 24857
       },
       "500k_rows_50pct_update": {
-        "write_time_sec": 2.32,
+        "write_time_sec": 2.26,
         "read_time_sec": 0.05,
         "files_before": 9,
-        "files_after": 19,
-        "matched": 1210,
-        "mismatched": 248790
+        "files_after": 18,
+        "matched": 1242,
+        "mismatched": 248758
       },
       "1000k_rows_10pct_update": {
-        "write_time_sec": 1.16,
+        "write_time_sec": 1.26,
         "read_time_sec": 0.05,
         "files_before": 80,
         "files_after": 74,
-        "matched": 241,
-        "mismatched": 49759
+        "matched": 234,
+        "mismatched": 49766
       },
       "1000k_rows_50pct_update": {
-        "write_time_sec": 3.01,
+        "write_time_sec": 3.04,
         "read_time_sec": 0.05,
-        "files_before": 19,
+        "files_before": 18,
         "files_after": 37,
-        "matched": 2482,
-        "mismatched": 497518
+        "matched": 2535,
+        "mismatched": 497465
       },
       "2000k_rows_10pct_update": {
-        "write_time_sec": 1.49,
-        "read_time_sec": 0.05,
+        "write_time_sec": 1.82,
+        "read_time_sec": 0.06,
         "files_before": 160,
         "files_after": 155,
-        "matched": 183,
-        "mismatched": 37317
+        "matched": 386,
+        "mismatched": 74614
       },
       "2000k_rows_50pct_update": {
-        "write_time_sec": 4.28,
+        "write_time_sec": 3.85,
         "read_time_sec": 0.05,
         "files_before": 32,
-        "files_after": 45,
-        "matched": 5142,
-        "mismatched": 994858
+        "files_after": 44,
+        "matched": 5100,
+        "mismatched": 994900
       }
     }
-  },
-  "kafka": {
-    "throughput_msgs_sec": 143842,
-    "ack_latency": {
-      "p50": 2.06,
-      "p95": 5.12,
-      "p99": 6.07
-    }
-  },
-  "pyspark": {
-    "sustained_throughput_rows_sec": 27388
   },
   "pandera": {
-    "benchmarks": [
-      {
-        "methods": {
-          "schema_validation": {
-            "rows_per_sec": 5369704,
-            "mean_ms": 186.23
-          }
-        }
-      }
-    ]
+    "error": "No module named 'pandera'"
   }
 }
