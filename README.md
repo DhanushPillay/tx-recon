@@ -1,8 +1,22 @@
+<div align="center">
+  <img src="docs/logo.jpg" alt="Transaction Reconciliation Engine Logo" width="300" />
+
+  ![CI](https://github.com/OWNER/tx-recon/actions/workflows/ci.yml/badge.svg?branch=main)
+  ![PySpark](https://img.shields.io/badge/apache_spark-E25A1C?style=flat-square&logo=apachespark&logoColor=white)
+  ![Apache Iceberg](https://img.shields.io/badge/Apache%20Iceberg-00d1e0?style=flat-square&logo=apache&logoColor=white)
+  ![Redpanda](https://img.shields.io/badge/Redpanda-00d1e0?style=flat-square&logo=redpanda&logoColor=white)
+  ![Airflow](https://img.shields.io/badge/Apache%20Airflow-017CEE?style=flat-square&logo=Apache%20Airflow&logoColor=white)
+  ![dbt](https://img.shields.io/badge/dbt-FF694B?style=flat-square&logo=dbt&logoColor=white)
+  ![Python](https://img.shields.io/badge/Python-3.10+-blue?style=flat-square&logo=python&logoColor=white)
+  ![Terraform](https://img.shields.io/badge/Terraform-purple?style=flat-square&logo=terraform&logoColor=white)
+  ![License](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)
+</div>
+
 # Transaction Reconciliation Engine
 
 > **A high-performance local data lakehouse designed to automate financial reconciliation at scale.**
 
-**The Problem:** Finance teams typically manually match real-time payment gateway webhooks against delayed batch bank settlement files to verify Merchant Discount Rates (MDR) and settle funds. This manual process causes month-end delays and masks revenue leakage.
+**The Problem:** Finance teams manually match real-time payment gateway webhooks against delayed batch bank settlement files to verify Merchant Discount Rates (MDR) and settle funds. This manual process causes month-end delays and masks revenue leakage.
 
 **The Solution:** This engine automates the matching process. By leveraging a robust, scalable architecture, it flags fee discrepancies instantly and ensures mathematically sound reconciliation.
 
@@ -23,32 +37,45 @@
 
 ---
 
-## Key Results
+## Performance
 
-> [!NOTE]  
-> Local dev benchmarks (Intel i7-14700K, 28 cores, 16GB RAM, Windows 11). Run `python tests/performance/run_benchmarks.py` to reproduce.
+> [!NOTE]
+> Local dev benchmarks. Run `python tests/performance/run_benchmarks.py --suite all` to reproduce.
+
+### Headline Numbers
 
 | Metric | Result |
 | :--- | :--- |
-| **Producer Throughput** | `25,414 msgs/sec` (acks=all, linger_ms=5) |
-| **Producer Ack Latency** | `p50=15.6ms`, `p95=16.7ms`, `p99=17.2ms` |
-| **Ingestion Rate** | `19,089 rows/sec` sustained (Kafka → Iceberg) |
-| **Test Coverage** | `93%` (Mocked PySpark & Kafka for Windows natively) |
+| **Producer Throughput** | `143,842 msgs/sec` (acks=all, lz4 compression) |
+| **Producer Ack Latency** | `p50=2.06 ms`, `p95=5.12 ms`, `p99=6.07 ms` |
+| **Ingestion Rate** | `27,388 rows/sec` sustained (Kafka → Iceberg) |
+| **Iceberg MERGE (500K, 50% update)** | `2.32s` write, `0.05s` read |
+| **Pandera Validation** | `5,369,704 rows/sec` (1M rows, schema validation) |
+| **Test Coverage** | `93%` (Mocked PySpark & Kafka for Windows) |
 
-### Reproduce Benchmarks
+*All benchmarks run on Windows 11, 28 cores, Python 3.13. Iceberg MERGE requires Linux/macOS (PySpark Python worker limitation on Windows).*
+
+### Scaling Characteristics
+
+| Scale | MERGE Write | MERGE Read |
+| :--- | :--- | :--- |
+| 500K rows, 50% update | 2.32s | 0.05s |
+| 2M rows, 50% update | 4.28s | 0.05s |
+
+### Reproduce
 
 ```bash
-# Kafka producer (throughput + ack latency)
-python tests/performance/kafka_producer_benchmark.py --count 100000
+# Run all benchmarks (requires docker-compose up -d)
+python tests/performance/run_benchmarks.py --suite all
 
-# PySpark ingestion (sustained throughput)
-python tests/performance/pyspark_ingestion_benchmark.py
+# Kafka producer only
+python tests/performance/kafka_producer_benchmark.py --count 1000000 --mode both
 
-# Iceberg MERGE (write time, read amplification)
-python tests/performance/reconciliation_benchmark.py
+# Pandera validation only (no Docker needed)
+python tests/performance/pandas_validation_benchmark.py --rows 1000000
 ```
 
-*Results are written to `tests/performance/results.json` with hardware specs, latency percentiles, and structured output.*
+Results are written to `tests/performance/results.json` with hardware specs, latency percentiles, and structured output.
 
 ---
 
@@ -71,6 +98,18 @@ flowchart LR
 
 ---
 
+## Cloud Equivalents
+
+| Local Component | Cloud Equivalent | Notes |
+| :--- | :--- | :--- |
+| Redpanda (Docker) | Amazon MSK / Confluent Cloud | Same Kafka API; managed brokers |
+| MinIO (Docker) | Amazon S3 / GCS | S3-compatible object storage |
+| Nessie (Docker) | AWS Glue Data Catalog / Unity Catalog | Git-like branching for Iceberg |
+| PySpark on Docker | EMR / Dataproc | Managed Spark clusters |
+| Airflow on Docker | MWAA / Cloud Composer | Managed Airflow |
+
+---
+
 ## How It Works
 
 1. **Ingestion:** `webhook_producer.py` streams JSON events to Redpanda.
@@ -88,6 +127,29 @@ flowchart LR
 - **Strict Data Contracts:** Integrated native Pandas validation (via Pandera) into the Airflow DAG to validate daily settlement files *before* they touch the data lake.
 - **ACID Upserts:** Utilized Iceberg's `MERGE INTO` via PySpark SQL to handle data mutation. This enables row-level updates when bank settlements arrive, avoiding full partition overwrites.
 - **Integer Math for Finance:** Monetary amounts are strictly stored in `paise` (integers) to avoid floating-point arithmetic errors during fee reconciliation.
+
+---
+
+## Architecture Decision Records
+
+| ADR | Decision | Status |
+| :--- | :--- | :--- |
+| [ADR-001](docs/ADR-001-PySpark-over-DuckDB.md) | PySpark over DuckDB for Spark-native Iceberg MERGE | Accepted |
+| [ADR-002](docs/ADR-002-Iceberg-Lakehouse.md) | Iceberg lakehouse with Nessie catalog | Accepted |
+| [ADR-003](docs/ADR-003-Testing-and-CICD-Strategy.md) | Testing and CI/CD strategy | Accepted |
+| [ADR-004](docs/ADR-004-Terraform-IaC.md) | Terraform for infrastructure-as-code | Accepted |
+
+---
+
+## Trade-offs
+
+| Choice | Alternative | Why This Choice |
+| :--- | :--- | :--- |
+| PySpark + Iceberg | DuckDB | MERGE INTO requires Spark-native Iceberg support |
+| Redpanda | Kafka | Same API, faster local dev, single binary |
+| Pandera | Great Expectations | Lightweight, dataframe-native, no server needed |
+| dbt for gold layer | Raw SQL | Version control, testing, documentation built-in |
+| Docker Compose | K8s | Local dev simplicity, no cluster overhead |
 
 ---
 
@@ -133,3 +195,18 @@ flowchart LR
    python src/ingestion/ingest_webhooks.py
    ```
 5. Access the Airflow UI at `http://localhost:8080` (admin/admin) to trigger the `daily_tx_reconciliation` DAG.
+
+---
+
+## Future Improvements
+
+| Priority | Item | Description |
+| :--- | :--- | :--- |
+| P0 | Grafana dashboard | Real-time reconciliation metrics and alerting |
+| P0 | Dead Letter Queue monitoring | Alert on DLQ depth exceeding threshold |
+| P1 | Schema registry integration | Enforce Avro/JSON schema evolution via Redpanda Schema Registry |
+| P1 | Delta Lake migration path | Evaluate Iceberg vs Delta for Databricks compatibility |
+| P2 | Multi-tenant support | Isolate merchant data with row-level security |
+| P2 | Cost estimation | Per-query cost tracking for Iceberg snapshots |
+| P3 | Cross-region replication | Iceberg table replication for DR |
+| P3 | ML anomaly detection | Detect unusual fee patterns automatically |
