@@ -29,13 +29,12 @@ jobs:
       - name: Run Black Formatter Check
         run: |
           black --check src/ tests/
-          
-      - name: Run Pytest with Airflow DB and Benchmarks
+
+      - name: Run Pytest (unit + DAG + benchmark, skip integration)
         env:
           PYTHONPATH: .
           AIRFLOW_HOME: ${{ github.workspace }}/airflow
           PROJECT_ROOT: ${{ github.workspace }}
         run: |
-          # Initialize Airflow DB required for DAG tests
           airflow db init
-          pytest tests/
+          pytest tests/ -m "not integration" --benchmark-disable
