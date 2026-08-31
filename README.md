@@ -1,20 +1,13 @@
 <div align="center">
 
-  ![CI](https://github.com/DhanushPillay/tx-recon/actions/workflows/ci.yml/badge.svg?branch=main)
-  ![PySpark](https://img.shields.io/badge/apache_spark-E25A1C?style=flat-square&logo=apachespark&logoColor=white)
-  ![Apache Iceberg](https://img.shields.io/badge/Apache%20Iceberg-00d1e0?style=flat-square&logo=apache&logoColor=white)
-  ![Redpanda](https://img.shields.io/badge/Redpanda-00d1e0?style=flat-square&logo=redpanda&logoColor=white)
-  ![Airflow](https://img.shields.io/badge/Apache%20Airflow-017CEE?style=flat-square&logo=Apache%20Airflow&logoColor=white)
-  ![dbt](https://img.shields.io/badge/dbt-FF694B?style=flat-square&logo=dbt&logoColor=white)
-  ![Python](https://img.shields.io/badge/Python-3.10+-blue?style=flat-square&logo=python&logoColor=white)
-  ![Terraform](https://img.shields.io/badge/Terraform-purple?style=flat-square&logo=terraform&logoColor=white)
-  ![License](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)
-
-</div>
-
 # Transaction Reconciliation Engine
 
 > **A high-performance local data lakehouse designed to automate financial reconciliation at scale.**
+
+  ![CI](https://github.com/DhanushPillay/tx-recon/actions/workflows/ci.yml/badge.svg?branch=main)
+  ![License](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)
+
+</div>
 
 **The Problem:** Finance teams manually match real-time payment gateway webhooks against delayed batch bank settlement files to verify Merchant Discount Rates (MDR) and settle funds. This manual process causes month-end delays and masks revenue leakage.
 
