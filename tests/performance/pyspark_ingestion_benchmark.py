@@ -1,3 +1,4 @@
+import argparse
 import logging
 import os
 import platform
@@ -7,6 +8,7 @@ import time
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from pyspark.sql.functions import col, current_timestamp, from_json
+from pyspark.sql.streaming import StreamingQueryListener
 from pyspark.sql.types import (
     DoubleType,
     IntegerType,
@@ -28,22 +30,49 @@ MEASURE_SECONDS = 120
 
 def get_hardware_info():
     return {
-        "os": f"{platform.system()} {platform.release()}",
-        "cpu": platform.processor() or "unknown",
-        "python": platform.python_version(),
-        "cores": os.cpu_count(),
+        "platform": platform.platform(),
+        "cpu_count": os.cpu_count(),
+        "python_version": platform.python_version(),
     }
 
 
-def run_benchmark():
+class BenchListener(StreamingQueryListener):
+    def __init__(self):
+        self.batches = []
+
+    def onQueryStarted(self, event):
+        pass
+
+    def onQueryProgress(self, event):
+        p = event.progress
+        self.batches.append(
+            {
+                "batchId": p.batchId,
+                "inputRowsPerSecond": p.inputRowsPerSecond,
+                "processedRowsPerSecond": p.processedRowsPerSecond,
+                "durationMs": dict(p.durationMs) if p.durationMs else {},
+            }
+        )
+
+    def onQueryTerminated(self, event):
+        pass
+
+
+def run_benchmark(partitions=16):
     hw = get_hardware_info()
-    logger.info(f"Hardware: {hw['os']}, {hw['cores']} cores, Python {hw['python']}")
     logger.info(
-        f"Config: warmup={WARMUP_SECONDS}s, measure={MEASURE_SECONDS}s, "
-        f"redpanda={redpanda_host}:19092"
+        f"Hardware: {hw['platform']}, {hw['cpu_count']} cores, Python {hw['python_version']}"
+    )
+    logger.info(
+        f"Config: warmup={WARMUP_SECONDS}s, measure={MEASURE_SECONDS}s, partitions={partitions}"
     )
 
     spark = get_spark_session("PySparkIngestionBenchmark")
+    spark.conf.set("spark.sql.shuffle.partitions", str(partitions))
+    spark.conf.set("spark.sql.streaming.pollingDelay", "1000")
+
+    listener = BenchListener()
+    spark.streams.addListener(listener)
 
     spark.sql("CREATE NAMESPACE IF NOT EXISTS nessie.db")
     spark.sql(
@@ -105,11 +134,9 @@ def run_benchmark():
         )
     )
 
-    checkpoint_path = "s3a://lakehouse/checkpoints/benchmark_ingestion_v4"
+    checkpoint_path = f"s3a://lakehouse/checkpoints/benchmark_ingestion_p{partitions}"
 
     logger.info(f"Starting streaming ingestion for {WARMUP_SECONDS + MEASURE_SECONDS}s")
-
-    start_time = time.time()
 
     query = (
         enriched_df.writeStream.format("iceberg")
@@ -119,11 +146,18 @@ def run_benchmark():
         .toTable("nessie.db.webhooks_bench")
     )
 
-    time.sleep(WARMUP_SECONDS + MEASURE_SECONDS)
-    query.stop()
+    # Warmup
+    logger.info(f"Warmup: {WARMUP_SECONDS}s...")
+    time.sleep(WARMUP_SECONDS)
 
-    end_time = time.time()
-    total_duration = end_time - start_time
+    # Measure
+    logger.info(f"Measuring: {MEASURE_SECONDS}s...")
+    measure_start = time.time()
+    time.sleep(MEASURE_SECONDS)
+    query.stop()
+    total_duration = time.time() - measure_start
+
+    spark.streams.removeListener(listener)
 
     count_result = spark.sql(
         "SELECT COUNT(*) as cnt FROM nessie.db.webhooks_bench"
@@ -131,15 +165,59 @@ def run_benchmark():
 
     sustained_rate = count_result / total_duration if total_duration > 0 else 0
 
+    # Aggregate listener data
+    listener_batches = listener.batches
+    avg_processed_rps = 0
+    avg_input_rps = 0
+    avg_batch_duration_ms = 0
+    if listener_batches:
+        avg_processed_rps = statistics.mean(
+            b["processedRowsPerSecond"] for b in listener_batches
+        )
+        avg_input_rps = statistics.mean(
+            b["inputRowsPerSecond"] for b in listener_batches
+        )
+        avg_batch_duration_ms = statistics.mean(
+            sum(b["durationMs"].values()) for b in listener_batches
+        )
+
+    result = {
+        "hardware": hw,
+        "config": {
+            "partitions": partitions,
+            "warmup_seconds": WARMUP_SECONDS,
+            "measure_seconds": MEASURE_SECONDS,
+        },
+        "total_rows_written": count_result,
+        "total_duration_sec": round(total_duration, 1),
+        "sustained_throughput_rows_sec": round(sustained_rate, 0),
+        "avg_processed_rows_per_sec": round(avg_processed_rps, 0),
+        "avg_input_rows_per_sec": round(avg_input_rps, 0),
+        "avg_batch_duration_ms": round(avg_batch_duration_ms, 0),
+        "num_batches": len(listener_batches),
+    }
+
     logger.info("=== BENCHMARK RESULTS ===")
     logger.info(f"Total rows written:     {count_result:,}")
     logger.info(f"Total time:             {total_duration:.1f}s")
     logger.info(f"Sustained throughput:   {sustained_rate:,.0f} rows/sec")
-    logger.info(f"Hardware: {hw}")
+    logger.info(f"Avg batch duration:     {avg_batch_duration_ms:.0f}ms")
 
     spark.sql("DROP TABLE IF EXISTS nessie.db.webhooks_bench")
     spark.stop()
 
+    return result
+
+
+import statistics
+
+
+def main():
+    parser = argparse.ArgumentParser(description="PySpark Ingestion Benchmark")
+    parser.add_argument("--partitions", type=int, default=16)
+    args = parser.parse_args()
+    run_benchmark(args.partitions)
+
 
 if __name__ == "__main__":
-    run_benchmark()
+    main()
