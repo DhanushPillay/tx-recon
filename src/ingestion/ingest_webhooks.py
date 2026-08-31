@@ -66,6 +66,8 @@ def run_ingestion():
     query_valid = (
         enriched_df.writeStream.format("iceberg")
         .outputMode("append")
+        .trigger(processingTime="2 seconds")
+        .option("maxOffsetsPerTrigger", 50000)
         .option("checkpointLocation", "s3a://lakehouse/checkpoints/webhooks_valid")
         .toTable("nessie.db.webhooks")
     )
@@ -74,6 +76,8 @@ def run_ingestion():
     query_invalid = (
         invalid_df.writeStream.format("iceberg")
         .outputMode("append")
+        .trigger(processingTime="2 seconds")
+        .option("maxOffsetsPerTrigger", 50000)
         .option("checkpointLocation", "s3a://lakehouse/checkpoints/webhooks_dlq")
         .toTable("nessie.db.webhooks_dlq")
     )

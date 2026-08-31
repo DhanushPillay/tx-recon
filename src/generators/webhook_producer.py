@@ -67,6 +67,10 @@ def main():
         "bootstrap.servers": KAFKA_BROKER,
         "key.serializer": StringSerializer("utf_8"),
         "value.serializer": avro_serializer,
+        "linger.ms": 50,
+        "batch.size": 131072,
+        "compression.type": "lz4",
+        "acks": "1",
     }
 
     producer = SerializingProducer(producer_conf)

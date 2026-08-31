@@ -44,6 +44,7 @@ def get_spark_session(app_name="TxRecon"):
         .config("spark.hadoop.fs.s3a.secret.key", "password")
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        .config("spark.sql.shuffle.partitions", "8")
         .getOrCreate()
     )
 
