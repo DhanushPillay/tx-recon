@@ -1,6 +1,6 @@
 <div align="center">
 
-# Transaction Reconciliation Engine
+<img src="assets/logo.svg" width="600" alt="tx-recon logo" />
 
 > **A high-performance local data lakehouse designed to automate financial reconciliation at scale.**
 
