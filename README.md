@@ -46,7 +46,7 @@
 | **Pandera Validation** | `5,369,704 rows/sec` (1M rows, schema validation) |
 | **Test Coverage** | `93%` (Mocked PySpark & Kafka for Windows) |
 
-*All benchmarks run on Windows 11, 28 cores, Python 3.13. Iceberg MERGE requires Linux/macOS (PySpark Python worker limitation on Windows).*
+*Benchmarks run on Windows 11, 28 cores, Python 3.13. Producer, Ingestion, and Pandera validations ran on native Windows. Iceberg MERGE benchmarks ran inside a Linux Docker container (due to PySpark Python worker limitations on Windows).*
 
 ### Scaling Characteristics
 
