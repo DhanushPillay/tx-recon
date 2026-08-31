@@ -14,3 +14,4 @@ pandera
 testcontainers
 pytest-benchmark
 pytest-cov
+pandas

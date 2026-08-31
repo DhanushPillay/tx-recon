@@ -1,5 +1,5 @@
 import pytest
-from testcontainers.kafka import KafkaContainer
+from testcontainers.community.kafka import KafkaContainer
 from confluent_kafka import Producer, Consumer
 import json
 import uuid
