@@ -1,0 +1,105 @@
+{
+  "timestamp": "2026-08-31T13:32:44.442969+00:00",
+  "hardware": {
+    "platform": "Linux-5.15.153.1-microsoft-standard-WSL2-x86_64-with-glibc2.34",
+    "cpu_count": 28,
+    "ram_gb": 7.6,
+    "python_version": "3.8.18"
+  },
+  "iceberg": {
+    "hardware": {
+      "platform": "Linux-5.15.153.1-microsoft-standard-WSL2-x86_64-with-glibc2.34",
+      "cpu_count": 28,
+      "python_version": "3.8.18"
+    },
+    "benchmarks": {
+      "100k_rows_10pct_update": {
+        "write_time_sec": 1.36,
+        "read_time_sec": 0.06,
+        "files_before": 8,
+        "files_after": 8,
+        "matched": 0,
+        "mismatched": 0
+      },
+      "100k_rows_50pct_update": {
+        "write_time_sec": 1.21,
+        "read_time_sec": 0.05,
+        "files_before": 2,
+        "files_after": 2,
+        "matched": 245,
+        "mismatched": 49755
+      },
+      "500k_rows_10pct_update": {
+        "write_time_sec": 0.96,
+        "read_time_sec": 0.05,
+        "files_before": 40,
+        "files_after": 37,
+        "matched": 0,
+        "mismatched": 0
+      },
+      "500k_rows_50pct_update": {
+        "write_time_sec": 2.32,
+        "read_time_sec": 0.05,
+        "files_before": 9,
+        "files_after": 19,
+        "matched": 1210,
+        "mismatched": 248790
+      },
+      "1000k_rows_10pct_update": {
+        "write_time_sec": 1.16,
+        "read_time_sec": 0.05,
+        "files_before": 80,
+        "files_after": 74,
+        "matched": 241,
+        "mismatched": 49759
+      },
+      "1000k_rows_50pct_update": {
+        "write_time_sec": 3.01,
+        "read_time_sec": 0.05,
+        "files_before": 19,
+        "files_after": 37,
+        "matched": 2482,
+        "mismatched": 497518
+      },
+      "2000k_rows_10pct_update": {
+        "write_time_sec": 1.49,
+        "read_time_sec": 0.05,
+        "files_before": 160,
+        "files_after": 155,
+        "matched": 183,
+        "mismatched": 37317
+      },
+      "2000k_rows_50pct_update": {
+        "write_time_sec": 4.28,
+        "read_time_sec": 0.05,
+        "files_before": 32,
+        "files_after": 45,
+        "matched": 5142,
+        "mismatched": 994858
+      }
+    }
+  },
+  "kafka": {
+    "throughput_msgs_sec": 143842,
+    "ack_latency": {
+      "p50": 2.06,
+      "p95": 5.12,
+      "p99": 6.07
+    }
+  },
+  "pyspark": {
+    "sustained_throughput_rows_sec": 27388
+  },
+  "pandera": {
+    "benchmarks": [
+      {
+        "methods": {
+          "schema_validation": {
+            "rows_per_sec": 5369704,
+            "mean_ms": 186.23
+          }
+        }
+      }
+    ]
+  }
+}
