@@ -34,6 +34,7 @@ jobs:
         env:
           PYTHONPATH: .
           AIRFLOW_HOME: ${{ github.workspace }}/airflow
+          PROJECT_ROOT: ${{ github.workspace }}
         run: |
           # Initialize Airflow DB required for DAG tests
           airflow db init

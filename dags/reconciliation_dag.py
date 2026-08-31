@@ -5,6 +5,8 @@ from airflow.operators.bash import BashOperator
 from cosmos import DbtTaskGroup, ProjectConfig, ProfileConfig, ExecutionConfig
 from cosmos.profiles import SparkThriftProfileMapping
 
+PROJECT_ROOT = os.getenv("PROJECT_ROOT", "/opt/airflow")
+
 default_args = {
     "owner": "data_engineering",
     "depends_on_past": False,
@@ -27,29 +29,29 @@ with DAG(
     # Step 1: Generate Mock Settlement Data (Simulating a file landing in S3/SFTP)
     generate_settlement = BashOperator(
         task_id="generate_bank_settlement",
-        bash_command="pip install pyspark==3.5.1 pandas && python /opt/airflow/src/generators/settlement_generator.py",
+        bash_command=f"pip install pyspark==3.5.1 pandas && python {PROJECT_ROOT}/src/generators/settlement_generator.py",
     )
 
     # Step 1.5: Validate the Data Contract using Pandas
     validate_settlement_task = BashOperator(
         task_id="validate_settlement",
-        bash_command="python /opt/airflow/src/validation/validate_settlement.py",
+        bash_command=f"python {PROJECT_ROOT}/src/validation/validate_settlement.py",
     )
 
     # Step 2: Run the PySpark Batch Reconciliation Job
     run_reconciliation_job = BashOperator(
         task_id="run_pyspark_reconciliation",
-        bash_command="python /opt/airflow/src/processing/reconcile.py",
+        bash_command=f"python {PROJECT_ROOT}/src/processing/reconcile.py",
     )
 
     # Step 3: Run the dbt Gold Layer Transformations
     dbt_gold_layer = DbtTaskGroup(
         group_id="dbt_gold_layer",
-        project_config=ProjectConfig("/opt/airflow/dbt_recon"),
+        project_config=ProjectConfig(f"{PROJECT_ROOT}/dbt_recon"),
         profile_config=ProfileConfig(
             profile_name="dbt_recon",
             target_name="dev",
-            profiles_yml_filepath="/opt/airflow/dbt_recon/profiles.yml",
+            profiles_yml_filepath=f"{PROJECT_ROOT}/dbt_recon/profiles.yml",
         ),
         execution_config=ExecutionConfig(dbt_executable_path="/usr/local/bin/dbt"),
     )

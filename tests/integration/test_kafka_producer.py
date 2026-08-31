@@ -10,7 +10,7 @@ import uuid
 
 @pytest.fixture(scope="module")
 def kafka_container():
-    with KafkaContainer("confluentinc/cp-kafka:latest") as kafka:
+    with KafkaContainer("confluentinc/confluent-local:7.4.2") as kafka:
         yield kafka
 
 

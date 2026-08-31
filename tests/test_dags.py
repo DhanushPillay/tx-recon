@@ -6,7 +6,13 @@ import os
 @pytest.fixture(scope="session")
 def dagbag():
     # Use the local dags/ folder
-    dag_folder = os.path.join(os.path.dirname(__file__), "..", "dags")
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    dag_folder = os.path.join(project_root, "dags")
+
+    # Ensure PROJECT_ROOT is set so that Cosmos can resolve paths during DAG parsing
+    if "PROJECT_ROOT" not in os.environ:
+        os.environ["PROJECT_ROOT"] = project_root
+
     return DagBag(dag_folder=dag_folder, include_examples=False)
 
 
