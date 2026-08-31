@@ -1,39 +1,25 @@
 import argparse
 import json
+import os
 import platform
 import statistics
 import time
 import uuid
 from datetime import datetime, timezone
 
-from kafka import KafkaProducer
-
-KAFKA_BROKER = "localhost:19092"
-TOPIC_NAME = "gateway_webhooks"
+from confluent_kafka import Producer
 
 WARMUP_MESSAGES = 5000
 LATENCY_SAMPLE = 1000
+TOPIC_NAME = "gateway_webhooks"
 
 
 def get_hardware_info():
-    import os
-
     return {
-        "os": f"{platform.system()} {platform.release()}",
-        "cpu": platform.processor() or "unknown",
-        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "cpu_count": os.cpu_count(),
+        "python_version": platform.python_version(),
         "hostname": platform.node(),
-        "cores": os.cpu_count(),
-    }
-
-
-def generate_webhook_event():
-    return {
-        "transaction_id": f"tx_{uuid.uuid4().hex[:12]}",
-        "amount_paise": 1000,
-        "gateway_status": "SUCCESS",
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "merchant_id": "merch_12345",
     }
 
 
@@ -46,119 +32,204 @@ def percentile(data, p):
     return data[f] + (k - f) * (data[c] - data[f])
 
 
-def create_producer(acks, linger_ms, batch_size):
-    return KafkaProducer(
-        bootstrap_servers=[KAFKA_BROKER],
-        value_serializer=lambda m: json.dumps(m).encode("utf-8"),
-        key_serializer=lambda k: k.encode("utf-8"),
-        linger_ms=linger_ms,
-        batch_size=batch_size,
-        acks=acks,
-        max_in_flight_requests_per_connection=5,
-        buffer_memory=33554432,
-        compression_type=None,
-    )
-
-
-def measure_throughput(count, acks, linger_ms, batch_size):
-    """Async sends + flush at end. Measures max throughput."""
-    producer = create_producer(acks, linger_ms, batch_size)
-
-    # Warmup
-    for _ in range(WARMUP_MESSAGES):
-        event = generate_webhook_event()
-        producer.send(TOPIC_NAME, key=event["transaction_id"], value=event)
-    producer.flush()
-
-    # Measure
-    start = time.time()
-    for _ in range(count):
-        event = generate_webhook_event()
-        producer.send(TOPIC_NAME, key=event["transaction_id"], value=event)
-    producer.flush()
-    elapsed = time.time() - start
-
-    producer.close()
-    return count / elapsed if elapsed > 0 else 0
-
-
-def measure_latency(count, acks, linger_ms, batch_size):
-    """Serial sends with .get(). Measures per-message ack latency."""
-    producer = create_producer(acks, linger_ms, batch_size)
-
-    # Warmup
-    for _ in range(min(WARMUP_MESSAGES, count)):
-        event = generate_webhook_event()
-        future = producer.send(TOPIC_NAME, key=event["transaction_id"], value=event)
-        future.get(timeout=30)
-
-    # Measure
-    latencies_ms = []
-    for _ in range(count):
-        event = generate_webhook_event()
-        start = time.time()
-        future = producer.send(TOPIC_NAME, key=event["transaction_id"], value=event)
-        future.get(timeout=30)
-        latencies_ms.append((time.time() - start) * 1000)
-
-    producer.close()
-    latencies_ms.sort()
+def generate_webhook_event(record_size=1024):
+    payload = "x" * max(0, record_size - 120)
     return {
-        "p50": percentile(latencies_ms, 50),
-        "p95": percentile(latencies_ms, 95),
-        "p99": percentile(latencies_ms, 99),
-        "max": max(latencies_ms),
-        "mean": statistics.mean(latencies_ms),
-        "stdev": statistics.stdev(latencies_ms) if len(latencies_ms) > 1 else 0,
+        "transaction_id": f"tx_{uuid.uuid4().hex[:12]}",
+        "amount_paise": 1000,
+        "gateway_status": "SUCCESS",
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "merchant_id": "merch_12345",
+        "payload": payload,
     }
 
 
-def run(count, acks, linger_ms, batch_size):
+def create_producer(broker, acks, compression):
+    conf = {
+        "bootstrap.servers": broker,
+        "acks": acks,
+        "linger.ms": 20,
+        "batch.num.messages": 131072,
+        "queue.buffering.max.messages": 2000000,
+        "queue.buffering.max.kbytes": 524288,
+        "compression.type": compression if compression != "none" else "none",
+        "message.max.bytes": 1048576,
+        "delivery.report.only.error": True,
+    }
+    return Producer(conf)
+
+
+def delivery_callback(err, msg):
+    pass
+
+
+def measure_throughput(broker, count, acks, compression, record_size):
+    producer = create_producer(broker, acks, compression)
+
+    for _ in range(WARMUP_MESSAGES):
+        event = generate_webhook_event(record_size)
+        producer.produce(
+            TOPIC_NAME,
+            key=event["transaction_id"].encode(),
+            value=json.dumps(event).encode(),
+            callback=delivery_callback,
+        )
+        producer.poll(0)
+    producer.flush(timeout=30)
+
+    start = time.perf_counter()
+    for i in range(count):
+        event = generate_webhook_event(record_size)
+        producer.produce(
+            TOPIC_NAME,
+            key=event["transaction_id"].encode(),
+            value=json.dumps(event).encode(),
+            callback=delivery_callback,
+        )
+        if i % 10000 == 0:
+            producer.poll(0)
+    producer.flush(timeout=60)
+    elapsed = time.perf_counter() - start
+
+    return count / elapsed if elapsed > 0 else 0
+
+
+def measure_latency(broker, count, acks, compression, record_size):
+    producer = create_producer(broker, acks, compression)
+
+    for _ in range(min(WARMUP_MESSAGES, count)):
+        event = generate_webhook_event(record_size)
+        producer.produce(
+            TOPIC_NAME,
+            key=event["transaction_id"].encode(),
+            value=json.dumps(event).encode(),
+        )
+        producer.flush(timeout=10)
+
+    latencies_ms = []
+    for _ in range(count):
+        event = generate_webhook_event(record_size)
+        start = time.perf_counter()
+        producer.produce(
+            TOPIC_NAME,
+            key=event["transaction_id"].encode(),
+            value=json.dumps(event).encode(),
+        )
+        producer.flush(timeout=10)
+        latencies_ms.append((time.perf_counter() - start) * 1000)
+
+    latencies_ms.sort()
+    return {
+        "p50": round(percentile(latencies_ms, 50), 2),
+        "p95": round(percentile(latencies_ms, 95), 2),
+        "p99": round(percentile(latencies_ms, 99), 2),
+        "max": round(max(latencies_ms), 2),
+        "mean": round(statistics.mean(latencies_ms), 2),
+        "stdev": (
+            round(statistics.stdev(latencies_ms), 2) if len(latencies_ms) > 1 else 0
+        ),
+    }
+
+
+def run(broker, count, acks, compression, record_size, mode):
     hw = get_hardware_info()
-    print(f"Hardware: {hw['os']}, {hw['cores']} cores, Python {hw['python']}")
-    print(f"Config: acks={acks}, linger_ms={linger_ms}, batch_size={batch_size}")
-
-    # Throughput test (async)
-    print(f"\n[1/2] Throughput test ({count:,} messages, async)...")
-    throughput = measure_throughput(count, acks, linger_ms, batch_size)
-    print(f"  Throughput: {throughput:,.0f} msgs/sec")
-
-    # Latency test (serial, smaller sample)
-    latency_count = min(LATENCY_SAMPLE, count)
-    print(f"\n[2/2] Latency test ({latency_count:,} messages, serial)...")
-    latency = measure_latency(latency_count, acks, linger_ms, batch_size)
     print(
-        f"  Ack latency: p50={latency['p50']:.2f}ms, "
-        f"p95={latency['p95']:.2f}ms, "
-        f"p99={latency['p99']:.2f}ms, "
-        f"max={latency['max']:.2f}ms"
+        f"Hardware: {hw['platform']}, {hw['cpu_count']} cores, Python {hw['python_version']}"
     )
-    print(f"  Mean={latency['mean']:.2f}ms, stdev={latency['stdev']:.2f}ms")
-
-    print(f"\n{'='*50}")
-    print(f"Throughput:  {throughput:,.0f} msgs/sec (acks={acks})")
     print(
-        f"Ack latency: p50={latency['p50']:.2f}ms, p95={latency['p95']:.2f}ms, "
-        f"p99={latency['p99']:.2f}ms"
+        f"Broker: {broker}, acks={acks}, compression={compression}, record_size={record_size}"
     )
+
+    throughput = None
+    latency = None
+
+    if mode in ("throughput", "both"):
+        print(f"\n[Throughput] {count:,} messages (async)...")
+        rate = measure_throughput(broker, count, acks, compression, record_size)
+        throughput = round(rate, 2)
+        print(f"  {throughput:,.0f} msgs/sec")
+
+    if mode in ("latency", "both"):
+        latency_count = min(LATENCY_SAMPLE, count)
+        print(f"\n[Latency] {latency_count:,} messages (serial)...")
+        latency = measure_latency(broker, latency_count, acks, compression, record_size)
+        print(f"  p50={latency['p50']}ms p95={latency['p95']}ms p99={latency['p99']}ms")
 
     return {
-        "throughput_msgs_sec": round(throughput, 2),
-        "ack_latency": {k: round(v, 2) for k, v in latency.items()},
-        "hardware": hw,
-        "config": {"acks": acks, "linger_ms": linger_ms, "batch_size": batch_size},
+        "broker": broker,
+        "throughput_msgs_sec": throughput,
+        "ack_latency": latency,
+        "config": {
+            "acks": acks,
+            "compression": compression,
+            "record_size": record_size,
+            "count": count,
+        },
     }
 
 
 def main():
     parser = argparse.ArgumentParser(description="Kafka Producer Benchmark")
-    parser.add_argument("--count", type=int, default=100000)
-    parser.add_argument("--acks", choices=["0", "1", "all"], default="all")
-    parser.add_argument("--linger-ms", type=int, default=5)
-    parser.add_argument("--batch-size", type=int, default=65536)
+    parser.add_argument("--count", type=int, default=1000000)
+    parser.add_argument(
+        "--mode", choices=["throughput", "latency", "both"], default="both"
+    )
+    parser.add_argument("--acks", choices=["0", "1", "all"], default="1")
+    parser.add_argument(
+        "--compression", choices=["lz4", "gzip", "snappy", "none"], default="lz4"
+    )
+    parser.add_argument("--record-size", type=int, default=1024)
+    parser.add_argument(
+        "--compare",
+        action="store_true",
+        help="Run against both Kafka:9092 and Redpanda:19092",
+    )
     args = parser.parse_args()
 
-    run(args.count, args.acks, args.linger_ms, args.batch_size)
+    brokers = (
+        ["localhost:9092", "localhost:19092"] if args.compare else ["localhost:19092"]
+    )
+
+    results = {}
+    for broker in brokers:
+        label = "kafka" if "9092" in broker and "19" not in broker else "redpanda"
+        print(f"\n{'='*50}")
+        print(f"  {label.upper()} ({broker})")
+        print(f"{'='*50}")
+        try:
+            results[label] = run(
+                broker,
+                args.count,
+                args.acks,
+                args.compression,
+                args.record_size,
+                args.mode,
+            )
+        except Exception as e:  # noqa: BLE001
+            results[label] = {"error": str(e)}
+            print(f"  FAILED: {e}")
+
+    if args.compare and len(results) == 2:
+        print(f"\n{'='*60}")
+        print("  COMPARISON")
+        print(f"{'='*60}")
+        print(f"{'Metric':<30} {'Kafka:9092':<15} {'Redpanda:19092':<15}")
+        print(f"{'-'*30} {'-'*15} {'-'*15}")
+        kafka_r = results.get("kafka", {})
+        rp_r = results.get("redpanda", {})
+        t_k = kafka_r.get("throughput_msgs_sec") or "error"
+        t_r = rp_r.get("throughput_msgs_sec") or "error"
+        print(f"{'Throughput (msgs/sec)':<30} {t_k!s:<15} {t_r!s:<15}")
+        lat_k = kafka_r.get("ack_latency", {})
+        lat_r = rp_r.get("ack_latency", {})
+        print(
+            f"{'p50 (ms)':<30} {lat_k.get('p50','error'):<15} {lat_r.get('p50','error'):<15}"
+        )
+        print(
+            f"{'p99 (ms)':<30} {lat_k.get('p99','error'):<15} {lat_r.get('p99','error'):<15}"
+        )
+
+    return results
 
 
 if __name__ == "__main__":
