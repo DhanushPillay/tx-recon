@@ -1,4 +1,5 @@
 <div align="center">
+
   ![CI](https://github.com/DhanushPillay/tx-recon/actions/workflows/ci.yml/badge.svg?branch=main)
   ![PySpark](https://img.shields.io/badge/apache_spark-E25A1C?style=flat-square&logo=apachespark&logoColor=white)
   ![Apache Iceberg](https://img.shields.io/badge/Apache%20Iceberg-00d1e0?style=flat-square&logo=apache&logoColor=white)
@@ -8,6 +9,7 @@
   ![Python](https://img.shields.io/badge/Python-3.10+-blue?style=flat-square&logo=python&logoColor=white)
   ![Terraform](https://img.shields.io/badge/Terraform-purple?style=flat-square&logo=terraform&logoColor=white)
   ![License](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)
+
 </div>
 
 # Transaction Reconciliation Engine
