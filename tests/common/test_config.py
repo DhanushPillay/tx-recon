@@ -2,7 +2,7 @@ import importlib
 import os
 from unittest.mock import MagicMock, patch
 
-import src.common.config as config
+import src.common.config as config  # noqa: PLR0402
 
 
 def test_hosts_default_to_localhost(monkeypatch):
