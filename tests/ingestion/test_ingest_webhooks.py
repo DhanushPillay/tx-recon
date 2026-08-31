@@ -1,6 +1,6 @@
 import pytest
 import json
-from src.ingest_webhooks import avro_schema_str
+from src.ingestion.ingest_webhooks import avro_schema_str
 
 
 def test_avro_schema_valid_json():

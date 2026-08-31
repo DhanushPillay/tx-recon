@@ -33,13 +33,13 @@ with DAG(
     # Step 1.5: Validate the Data Contract using Pandas
     validate_settlement_task = BashOperator(
         task_id="validate_settlement",
-        bash_command="python /opt/airflow/src/validate_settlement.py",
+        bash_command="python /opt/airflow/src/validation/validate_settlement.py",
     )
 
     # Step 2: Run the PySpark Batch Reconciliation Job
     run_reconciliation_job = BashOperator(
         task_id="run_pyspark_reconciliation",
-        bash_command="python /opt/airflow/src/reconcile.py",
+        bash_command="python /opt/airflow/src/processing/reconcile.py",
     )
 
     # Step 3: Run the dbt Gold Layer Transformations

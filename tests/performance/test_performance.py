@@ -8,7 +8,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.generators.settlement_generator import generate_settlement_file
-from src.validate_settlement import settlement_schema
+from src.validation.validate_settlement import settlement_schema
 
 
 @pytest.fixture(scope="module")

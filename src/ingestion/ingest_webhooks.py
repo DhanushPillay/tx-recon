@@ -1,7 +1,7 @@
 import logging
 from pyspark.sql.functions import col, current_timestamp, expr
 from pyspark.sql.avro.functions import from_avro
-from src.config import get_spark_session, redpanda_host
+from src.common.config import get_spark_session, redpanda_host
 
 # Configure logging
 logging.basicConfig(
