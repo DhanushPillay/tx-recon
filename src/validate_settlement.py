@@ -1,7 +1,19 @@
 import pandas as pd
+import pandera as pa
+from pandera.errors import SchemaErrors
 import os
 import glob
 import sys
+
+# Define the data contract (schema)
+settlement_schema = pa.DataFrameSchema(
+    {
+        "transaction_id": pa.Column(str, unique=True, nullable=False),
+        "settled_amount_paise": pa.Column(int, pa.Check.gt(0), nullable=False),
+        "bank_ref_id": pa.Column(str, nullable=False),
+    },
+    strict=False,  # allow other columns if any
+)
 
 
 def validate_latest_settlement():
@@ -12,34 +24,18 @@ def validate_latest_settlement():
         sys.exit(1)
 
     latest_file = max(files, key=os.path.getctime)
-    print(f"Validating {latest_file} with Pandas...")
+    print(f"Validating {latest_file} with Pandera...")
 
     df = pd.read_csv(latest_file)
-    errors = []
 
-    # 1. Transaction ID must be unique
-    if not df["transaction_id"].is_unique:
-        errors.append("transaction_id is not unique (contains duplicates).")
-
-    # 2. Settled amount must be strictly positive
-    invalid_amounts = df[~df["settled_amount_paise"].between(1, 9999999999)]
-    if not invalid_amounts.empty:
-        errors.append(
-            f"settled_amount_paise contains {len(invalid_amounts)} invalid values."
-        )
-
-    # 3. Bank Ref ID must not be null
-    null_refs = df[df["bank_ref_id"].isnull()]
-    if not null_refs.empty:
-        errors.append(f"bank_ref_id contains {len(null_refs)} null values.")
-
-    if not errors:
+    try:
+        settlement_schema.validate(df, lazy=True)
         print("SUCCESS: Data Contract Validated successfully!")
         sys.exit(0)
-    else:
+    except SchemaErrors as err:
         print("ERROR: Data Contract Validation FAILED!")
-        for err in errors:
-            print(f" - {err}")
+        for error in err.schema_errors:
+            print(f" - {error['error']}")
         sys.exit(1)
 
 

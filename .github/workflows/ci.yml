@@ -30,8 +30,11 @@ jobs:
         run: |
           black --check src/ tests/
           
-      - name: Run Pytest
+      - name: Run Pytest with Airflow DB and Benchmarks
         env:
           PYTHONPATH: .
+          AIRFLOW_HOME: ${{ github.workspace }}/airflow
         run: |
+          # Initialize Airflow DB required for DAG tests
+          airflow db init
           pytest tests/
