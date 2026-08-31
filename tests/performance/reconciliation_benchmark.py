@@ -1,4 +1,5 @@
-import glob
+import argparse
+import json
 import logging
 import os
 import platform
@@ -28,23 +29,24 @@ MERGE_SQL = """
 MERGE INTO {table} t
 USING bank_settlements s
 ON t.transaction_id = s.transaction_id
-WHEN MATCHED AND (t.amount_paise - (t.amount_paise * 15 / 1000)) = s.settled_amount_paise THEN
-    UPDATE SET 
+WHEN MATCHED AND (t.amount_paise - ((t.amount_paise * 15) DIV 1000)) = s.settled_amount_paise THEN
+    UPDATE SET
         t.reconciliation_status = 'MATCHED',
         t.bank_ref_id = s.bank_ref_id
-WHEN MATCHED AND (t.amount_paise - (t.amount_paise * 15 / 1000)) != s.settled_amount_paise THEN
-    UPDATE SET 
+WHEN MATCHED AND (t.amount_paise - ((t.amount_paise * 15) DIV 1000)) != s.settled_amount_paise THEN
+    UPDATE SET
         t.reconciliation_status = 'EXCEPTION_FEE_MISMATCH',
         t.bank_ref_id = s.bank_ref_id
 """
 
+SCALE_OPTIONS = [100_000, 500_000, 1_000_000, 2_000_000]
+
 
 def get_hardware_info():
     return {
-        "os": f"{platform.system()} {platform.release()}",
-        "cpu": platform.processor() or "unknown",
-        "python": platform.python_version(),
-        "cores": os.cpu_count(),
+        "platform": platform.platform(),
+        "cpu_count": os.cpu_count(),
+        "python_version": platform.python_version(),
     }
 
 
@@ -64,10 +66,14 @@ def create_table(spark, table_name, num_rows):
             bank_ref_id string,
             ingested_at timestamp
         ) USING iceberg
+        TBLPROPERTIES (
+            'write.target-file-size-bytes' = '268435456',
+            'write.parquet.compression-codec' = 'zstd',
+            'write.distribution-mode' = 'hash'
+        )
     """
     )
 
-    # Generate data in batches to avoid OOM and Python worker crashes
     batch_size = 50000
     schema = StructType(
         [
@@ -97,7 +103,6 @@ def create_table(spark, table_name, num_rows):
             for _ in range(current_batch)
         ]
         df = spark.createDataFrame(data, schema)
-        # Limit partitions to avoid Python worker crashes on Windows with many cores
         df.repartition(4).writeTo(table_name).append()
 
     count = spark.sql(f"SELECT COUNT(*) FROM {table_name}").collect()[0][0]
@@ -112,18 +117,16 @@ def create_settlement_data(spark, table_name, update_fraction):
         f"Creating settlement data: {settlement_count:,} rows ({update_fraction*100:.0f}% of {count:,})"
     )
 
-    # Get transaction IDs to update
     ids_df = spark.sql(
         f"SELECT transaction_id, amount_paise FROM {table_name} LIMIT {settlement_count}"
     )
 
-    # Apply MDR fee (int(gateway_amount * 0.015))
     from pyspark.sql.functions import col, lit
 
     settlement_df = (
         ids_df.withColumn(
             "settled_amount_paise",
-            (col("amount_paise") - (col("amount_paise") * lit(15) / lit(1000))).cast(
+            (col("amount_paise") - ((col("amount_paise") * lit(15)) / lit(1000))).cast(
                 "int"
             ),
         )
@@ -141,14 +144,12 @@ def create_settlement_data(spark, table_name, update_fraction):
 def measure_merge(spark, table_name, update_fraction):
     create_settlement_data(spark, table_name, update_fraction)
 
-    # Check file count before
     files_before = spark.sql(f"SELECT COUNT(*) FROM {table_name}.files").collect()[0][0]
 
     start = time.time()
     spark.sql(MERGE_SQL.format(table=table_name))
     write_time = time.time() - start
 
-    # Check file count after
     files_after = spark.sql(f"SELECT COUNT(*) FROM {table_name}.files").collect()[0][0]
 
     matched = spark.sql(
@@ -158,7 +159,6 @@ def measure_merge(spark, table_name, update_fraction):
         f"SELECT COUNT(*) FROM {table_name} WHERE reconciliation_status = 'EXCEPTION_FEE_MISMATCH'"
     ).collect()[0][0]
 
-    # Measure read time (full scan)
     start = time.time()
     spark.sql(f"SELECT COUNT(*) FROM {table_name}").collect()
     read_time = time.time() - start
@@ -173,21 +173,28 @@ def measure_merge(spark, table_name, update_fraction):
     }
 
 
-def run_benchmark():
+def run_benchmark(scale=None):
     hw = get_hardware_info()
-    logger.info(f"Hardware: {hw['os']}, {hw['cores']} cores, Python {hw['python']}")
+    logger.info(
+        f"Hardware: {hw['platform']}, {hw['cpu_count']} cores, Python {hw['python_version']}"
+    )
 
     spark = get_spark_session("ReconciliationBenchmark")
+
+    # Adaptive query execution
+    spark.conf.set("spark.sql.adaptive.enabled", "true")
+    spark.conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
+    spark.conf.set("spark.sql.shuffle.partitions", "400")
+
     spark.sql("CREATE NAMESPACE IF NOT EXISTS nessie.db")
 
+    row_counts = [scale] if scale else SCALE_OPTIONS
     results = {}
 
-    # Test different table sizes (reduced for Windows Python worker stability)
-    for num_rows in [500_000, 2_000_000]:
+    for num_rows in row_counts:
         table_name = f"nessie.db.webhooks_bench_{num_rows // 1000}k"
         create_table(spark, table_name, num_rows)
 
-        # Test different update fractions
         for update_pct in [10, 50]:
             update_frac = update_pct / 100
             label = f"{num_rows // 1000}k_rows_{update_pct}pct_update"
@@ -204,26 +211,34 @@ def run_benchmark():
             )
             logger.info(f"  Files: {result['files_before']} -> {result['files_after']}")
 
-            # Reset statuses for next test
             spark.sql(
                 f"""UPDATE {table_name}
                     SET reconciliation_status = 'PENDING_SETTLEMENT',
                         bank_ref_id = NULL"""
             )
 
-    # Cleanup
-    for num_rows in [500_000, 2_000_000]:
+    for num_rows in row_counts:
         table_name = f"nessie.db.webhooks_bench_{num_rows // 1000}k"
         spark.sql(f"DROP TABLE IF EXISTS {table_name}")
 
     spark.stop()
 
-    logger.info("\n=== SUMMARY ===")
-    for label, r in results.items():
-        logger.info(
-            f"{label}: MERGE {r['write_time_sec']}s, read {r['read_time_sec']}s"
-        )
+    output = {"hardware": hw, "benchmarks": results}
+
+    out_path = os.path.join(os.path.dirname(__file__), "results_iceberg.json")
+    with open(out_path, "w") as f:
+        json.dump(output, f, indent=2)
+    logger.info(f"\nResults written to {out_path}")
+
+    return output
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Reconciliation Benchmark")
+    parser.add_argument("--scale", type=int, default=None, choices=SCALE_OPTIONS)
+    args = parser.parse_args()
+    run_benchmark(args.scale)
 
 
 if __name__ == "__main__":
-    run_benchmark()
+    main()
