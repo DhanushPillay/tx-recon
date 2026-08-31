@@ -87,12 +87,12 @@ def test_reconciliation_logic(spark):
     result_df = joined_df.withColumn(
         "reconciliation_status",
         when(
-            (col("amount_paise") - (col("amount_paise") * 15 / 1000))
+            (col("amount_paise") - ((col("amount_paise") * 15) / 1000).cast("int"))
             == col("settled_amount_paise"),
             "MATCHED",
         )
         .when(
-            (col("amount_paise") - (col("amount_paise") * 15 / 1000))
+            (col("amount_paise") - ((col("amount_paise") * 15) / 1000).cast("int"))
             != col("settled_amount_paise"),
             "EXCEPTION_FEE_MISMATCH",
         )
