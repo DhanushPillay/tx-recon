@@ -48,6 +48,8 @@
 
 *Benchmarks run on Windows 11, 28 cores, Python 3.13. Producer, Ingestion, and Pandera validations ran on native Windows. Iceberg MERGE benchmarks ran inside a Linux Docker container (due to PySpark Python worker limitations on Windows).*
 
+*Curious about the producer numbers? See [How We Got to 130K+ msgs/sec](docs/kafka_benchmark_explained.md) for a breakdown of what changed.*
+
 ### Scaling Characteristics
 
 | Scale | MERGE Write | MERGE Read |

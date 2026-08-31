@@ -45,6 +45,8 @@ This tests how fast we can push simulated webhook events into Redpanda. You need
 python tests/performance/kafka_producer_benchmark.py --count 1000000 --mode both
 ```
 
+> Want to know how we got from 20K to 130K+ msgs/sec? See [Kafka Benchmark Explained](kafka_benchmark_explained.md).
+
 ### Iceberg / PySpark
 *(Windows Users: You must run this via WSL2 or Docker due to PySpark limitations. See "The Easy Way" above).*
 This tests how quickly we can ingest rows into PySpark and `MERGE` records into the Iceberg table. 
