@@ -29,11 +29,11 @@ def run_reconciliation():
     MERGE INTO nessie.db.webhooks t
     USING bank_settlements s
     ON t.transaction_id = s.transaction_id
-    WHEN MATCHED AND (t.amount_paise - (t.amount_paise * 15 / 1000)) = s.settled_amount_paise THEN
+    WHEN MATCHED AND (t.amount_paise - ((t.amount_paise * 15) DIV 1000)) = s.settled_amount_paise THEN
         UPDATE SET 
             t.reconciliation_status = 'MATCHED',
             t.bank_ref_id = s.bank_ref_id
-    WHEN MATCHED AND (t.amount_paise - (t.amount_paise * 15 / 1000)) != s.settled_amount_paise THEN
+    WHEN MATCHED AND (t.amount_paise - ((t.amount_paise * 15) DIV 1000)) != s.settled_amount_paise THEN
         UPDATE SET 
             t.reconciliation_status = 'EXCEPTION_FEE_MISMATCH',
             t.bank_ref_id = s.bank_ref_id
