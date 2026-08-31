@@ -20,7 +20,7 @@ The test suite is structured into distinct domains located under `tests/`:
 
 ### 2. CI/CD Pipeline Design
 We use **GitHub Actions** (`.github/workflows/ci.yml`) as our CI provider, triggering on all pushes and PRs to `main`.
-* **Test Isolation**: The CI pipeline explicitly skips integration tests (`-m "not integration"`) and performance benchmarks during routine runs to maintain fast build times (< 1 minute) while ensuring core logic is flawless. Integration tests are designed to be run on demand or in pre-production deployment phases.
+* **Test Isolation**: The CI pipeline was originally designed to skip integration tests, but it now utilizes Docker Compose natively in GitHub Actions to run the full integration suite (`-m "integration"`) and performance benchmarks (`tests/performance/run_benchmarks.py --suite all`). This continuously profiles the application's correctness and performance on every PR, while still completing in a reasonable time.
 * **Cross-Platform Consistency**: CI runs on `ubuntu-latest`, acting as the source of truth for library compatibility (resolving local Windows compilation issues for Kafka drivers).
 
 ## Consequences
