@@ -1,7 +1,5 @@
 <div align="center">
-  <img src="docs/logo.jpg" alt="Transaction Reconciliation Engine Logo" width="300" />
-
-  ![CI](https://github.com/OWNER/tx-recon/actions/workflows/ci.yml/badge.svg?branch=main)
+  ![CI](https://github.com/DhanushPillay/tx-recon/actions/workflows/ci.yml/badge.svg?branch=main)
   ![PySpark](https://img.shields.io/badge/apache_spark-E25A1C?style=flat-square&logo=apachespark&logoColor=white)
   ![Apache Iceberg](https://img.shields.io/badge/Apache%20Iceberg-00d1e0?style=flat-square&logo=apache&logoColor=white)
   ![Redpanda](https://img.shields.io/badge/Redpanda-00d1e0?style=flat-square&logo=redpanda&logoColor=white)
