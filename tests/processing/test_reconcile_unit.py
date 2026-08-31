@@ -148,7 +148,7 @@ def test_fee_calculation_mixed_results(spark):
     bank_data = [
         ("tx_1", 98500),
         ("tx_2", 196000),
-        ("tx_3", 49000),
+        ("tx_3", 49250),
     ]
     bank_df = spark.createDataFrame(
         bank_data, ["transaction_id", "settled_amount_paise"]
