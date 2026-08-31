@@ -1,4 +1,4 @@
-.PHONY: up down install clean format
+.PHONY: up down install clean format bench-kafka bench-pandera bench-all
 
 # Setup virtual environment and install dependencies
 install:
@@ -20,4 +20,16 @@ clean:
 
 # Format code
 format:
-	.venv\Scripts\black src/
+	.venv\Scripts\black src/ tests/ dags/
+
+# Run Kafka producer benchmark (default: 1M messages, acks=1, lz4)
+bench-kafka:
+	python tests/performance/kafka_producer_benchmark.py --count 1000000
+
+# Run Pandera validation benchmark (default: 1M rows)
+bench-pandera:
+	python tests/performance/pandas_validation_benchmark.py --rows 1000000
+
+# Run all benchmarks (requires docker-compose up -d for kafka/pyspark/iceberg)
+bench-all:
+	python tests/performance/run_benchmarks.py --suite all
