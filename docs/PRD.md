@@ -31,7 +31,7 @@ Our goal is to build an engine that handles this matching automatically.
 - Ingesting raw data (streaming and batch).
 - Two-way reconciliation.
 - Lakehouse storage with ACID upserts.
-- Data Quality enforcement (Native Pandas).
+- Data Quality enforcement (Pandera).
 - Dimensional data modeling (dbt).
 - Infrastructure as Code (IaC) definitions.
 

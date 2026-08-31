@@ -9,9 +9,10 @@
 
 | Metric                | Result |
 | --------------------- | -----: |
-| Local Stress Test     | ~25,600 msgs/sec ([benchmarks/](benchmarks/)) |
+| Local Stress Test     | ~25,600 msgs/sec |
 | Batch Processing Size | 500 records |
-| Test Coverage         | 2 test suites |
+| Test Coverage         | Comprehensive (Unit, Integration, DAG, Performance) |
+| CI/CD                 | Fully Automated via GitHub Actions |
 
 ## Architecture
 
@@ -37,10 +38,10 @@ flowchart LR
 **Streaming:** Redpanda (Kafka-compatible)
 **Storage:** Apache Iceberg, MinIO, Project Nessie
 **Orchestration:** Apache Airflow
-**Data Quality:** Native Pandas (Ponytail principles)
+**Data Quality:** Native Pandas (Pandera)
 **Data Modeling:** dbt (Data Build Tool)
 **Infrastructure:** Docker Compose, Terraform (AWS configuration)
-**Testing:** Pytest, Chispa
+**Testing:** Pytest, Chispa, Pytest-Benchmark
 **CI/CD:** GitHub Actions
 
 ## How It Works
@@ -48,7 +49,7 @@ flowchart LR
 1. **Ingestion:** `webhook_producer.py` streams JSON events to Redpanda.
 2. **Validation:** `ingest_webhooks.py` consumes the stream, filtering malformed events to a Dead Letter Queue (DLQ).
 3. **Storage:** Valid events are appended to the `gateway_webhooks` Iceberg table stored in MinIO.
-4. **Data Contract:** Airflow triggers `validate_settlement.py`, where Pandas verifies the daily `settlement.csv` against validation rules.
+4. **Data Contract:** Airflow triggers `validate_settlement.py`, where Pandas/Pandera verifies the daily `settlement.csv` against validation rules.
 5. **Processing:** Airflow triggers `reconcile.py`, merging the validated settlement data into the Iceberg table.
 6. **Reconciliation:** The merge logic matches `transaction_id`, verifies the bank's settled amount against the expected amount, and updates the status to `MATCHED` or `EXCEPTION_FEE_MISMATCH`.
 
@@ -58,7 +59,7 @@ flowchart LR
 Implemented PySpark Structured Streaming to read JSON events from Redpanda. Malformed records are filtered out using DataFrame API constraints to prevent pipeline failure.
 
 ### Strict Data Contracts
-Integrated native Pandas validation into the Airflow DAG to validate daily settlement files before they touch the data lake. Validations ensure unique transaction IDs, strictly positive amounts, and non-null bank reference IDs, adhering to minimalist engineering principles by avoiding heavy external dependencies.
+Integrated native Pandas validation (via Pandera) into the Airflow DAG to validate daily settlement files before they touch the data lake. Validations ensure unique transaction IDs, strictly positive amounts, and non-null bank reference IDs, adhering to minimalist engineering principles by avoiding heavy external dependencies.
 
 ### ACID Upserts & Reconciliation
 Utilized Iceberg's `MERGE INTO` via PySpark SQL to handle data mutation on the data lake. This allows for updating specific rows when bank settlements arrive, rather than overwriting entire partitions.
@@ -70,84 +71,48 @@ Utilized Iceberg's `MERGE INTO` via PySpark SQL to handle data mutation on the d
 * **Schema:** `transaction_id` (String), `amount_paise` (Integer), `gateway_status` (String), `timestamp_utc` (Timestamp), `merchant_id` (String), `reconciliation_status` (String), `settled_amount_paise` (Integer).
 * **Design Decision:** Monetary amounts are stored in `paise` (integers) to avoid floating-point arithmetic errors during fee calculations.
 
-## Performance & Benchmarks
-
-We run a full 1,000,000 row stress test across the entire pipeline. The results demonstrate the system's ability to handle high-throughput financial data on a single machine:
-
-* **Pandas CSV Validation:** 0.77 seconds
-* **Webhook Producer (1M events):** 8.77 seconds (113,967 msgs/sec)
-* **PySpark Ingestion to Iceberg (1M events):** 11.43 seconds
-* **Iceberg Reconciliation (MERGE INTO 1M rows):** 10.53 seconds
-
-### How to Run the Benchmarks
-
-To reproduce these results on your own machine:
-
-1. Ensure the infrastructure is running (`docker-compose up -d`).
-2. Ensure dependencies are fully installed (`pip install -r requirements.txt`).
-3. Generate the 1M Webhooks (Kafka Producer):
-   ```powershell
-   .\.venv\Scripts\python.exe src/generators/webhook_producer.py --stress 1000000
-   ```
-4. Run PySpark Ingestion (Kafka -> Iceberg):
-   ```powershell
-   .\.venv\Scripts\python.exe benchmarks/pyspark_ingestion_benchmark.py
-   ```
-5. Run Pandas Validation (CSV reading rules):
-   ```powershell
-   .\.venv\Scripts\python.exe benchmarks/pandas_validation_benchmark.py
-   ```
-6. Run Iceberg Reconciliation (MERGE INTO):
-   ```powershell
-   .\.venv\Scripts\python.exe benchmarks/reconciliation_benchmark.py
-   ```
-Detailed output is appended to `benchmarks/results.log`.
-
-## Testing
-
-* **Test Framework:** Pytest with Chispa (for PySpark DataFrame equality).
-* **Test Suites:** Two core integration suites covering data quality filtering and reconciliation logic.
-* **Edge Cases Tested:** Negative amounts, missing transaction IDs, exact fee matches, and fee mismatches.
-
-## Deployment / Infrastructure
-
-### Local Environment
-The system runs locally via Docker Compose, provisioning Airflow, Redpanda, MinIO, Project Nessie, and PostgreSQL.
-
-### Cloud Infrastructure (AWS)
-Terraform configuration (`infra/main.tf`) is provided to deploy the equivalent architecture to AWS. The code provisions an Amazon MSK cluster, S3 Bucket, AWS Glue Database, and Amazon MWAA environment. Note: This infrastructure is defined in code but not actively deployed in the current setup.
-
-## Engineering Decisions
-
-* **Problem:** Traditional data lakes lack native ACID upserts, requiring full partition overwrites.
-  * **Decision:** Integrated Apache Iceberg and Project Nessie.
-  * **Reason:** Enables row-level `MERGE INTO` operations directly on object storage.
-
-## Challenges
-
-* **Challenge:** Ensuring the ingestion pipeline does not fail when malformed JSON or negative amounts arrive.
-  * **Solution:** Implemented a Dead Letter Queue (DLQ) pattern in PySpark by applying strict filtering constraints and writing invalid records to a separate location.
-
 ## Project Structure
 
+Our project structure follows industry-standard data engineering patterns to decouple responsibilities (Ingestion, Processing, Validation, and Common utilities).
+
 * `dags/`: Airflow DAG definitions.
-* `src/`: PySpark ingestion, reconciliation, and validation logic.
+* `src/`: Core Python source code.
+  * `common/`: Shared utilities (Spark session management, etc.).
+  * `generators/`: Data generation scripts (mock webhooks, mock settlements).
+  * `ingestion/`: PySpark streaming pipelines (e.g., Kafka to Iceberg).
+  * `processing/`: Batch processing and reconciliation logic (Iceberg `MERGE INTO`).
+  * `validation/`: Data quality checks (Pandera validation).
+* `tests/`: Comprehensive test suite reflecting the `src` directory structure.
+  * `integration/`: Tests requiring external services (e.g., Kafka via Testcontainers).
+  * `performance/`: Performance benchmarks (pytest-benchmark).
 * `dbt_recon/`: dbt project for star schema modeling and downstream marts.
 * `infra/`: Terraform configurations for AWS.
-* `tests/`: Chispa unit tests.
 * `docker-compose.yml`: Local infrastructure setup.
-* `benchmarks/`: Kafka load testing scripts and throughput results.
+
+## CI/CD & Testing
+
+The project uses a test-driven approach with a robust CI pipeline powered by **GitHub Actions** (`.github/workflows/ci.yml`).
+
+### Test Suites
+* **Unit & Integration:** Run via `pytest`, utilizing `chispa` for PySpark DataFrame equality and `testcontainers` for isolated Kafka integration testing.
+* **DAG Integrity Tests:** Airflow DAGs are tested for cyclomatic complexity and import errors, mocking heavy dependencies (like `dbt`) during testing.
+* **Performance Benchmarks:** Execution times for PySpark ingestion, Pandas validation, and Iceberg reconciliation are tracked to prevent regressions, utilizing `pytest-benchmark`.
+
+### CI Workflow
+The CI pipeline automatically triggers on all pushes and Pull Requests to the `main` branch.
+* Runs Python 3.10.
+* Caches pip dependencies.
+* Executes unit tests and DAG tests.
+* _Note: Heavy integration tests (requiring Docker) and benchmarks are selectively skipped during routine CI to optimize build times._
 
 ## Setup & Usage
 
 1. Run `.\setup.ps1` to configure the Python virtual environment and `.env`.
 2. Start the local infrastructure: `docker-compose up -d --build`
 3. Start the webhook generator: `python src/generators/webhook_producer.py`
-4. Start the PySpark streaming job: `python src/ingest_webhooks.py`
+4. Start the PySpark streaming job: `python src/ingestion/ingest_webhooks.py`
 5. Access the Airflow UI at `http://localhost:8080` (admin/admin) to trigger the `daily_tx_reconciliation` DAG.
 6. Trigger the `dbt_reconciliation_modeling` DAG to build the dimensional data marts.
-
-
 
 ## Future Improvements
 
