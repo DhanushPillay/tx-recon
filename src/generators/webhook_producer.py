@@ -1,13 +1,13 @@
-import json
-import time
-import random
-import uuid
 import argparse
+import random
+import time
+import uuid
 from datetime import datetime, timezone
+
 from confluent_kafka import SerializingProducer
-from confluent_kafka.serialization import StringSerializer
 from confluent_kafka.schema_registry import SchemaRegistryClient
 from confluent_kafka.schema_registry.avro import AvroSerializer
+from confluent_kafka.serialization import StringSerializer
 
 KAFKA_BROKER = "localhost:19092"
 SCHEMA_REGISTRY_URL = "http://localhost:8081"

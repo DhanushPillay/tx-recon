@@ -1,7 +1,8 @@
-import pytest
-from confluent_kafka import Producer, Consumer
 import json
 import uuid
+
+import pytest
+from confluent_kafka import Consumer, Producer
 
 # Integration tests require Docker. Skip in CI where containers are unreliable.
 # Run locally with: pytest tests/integration/ -m integration
@@ -18,7 +19,7 @@ def kafka_container():
     try:
         with KafkaContainer("confluentinc/confluent-local:7.4.2") as kafka:
             yield kafka
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         pytest.skip(f"Kafka container failed to start: {e}")
 
 

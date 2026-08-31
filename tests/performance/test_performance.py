@@ -1,8 +1,8 @@
-import pytest
-import pandas as pd
-import pandera.pandas as pa
 import os
 import sys
+
+import pandas as pd
+import pytest
 
 # Add parent directory to path so we can import src modules
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))

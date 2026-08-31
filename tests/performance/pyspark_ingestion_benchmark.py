@@ -1,34 +1,54 @@
-import time
 import logging
-import sys
-
-# Add parent directory to path so we can import src modules
 import os
+import platform
+import sys
+import time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-from pyspark.sql.functions import col, current_timestamp, expr
-from pyspark.sql.avro.functions import from_avro
+from pyspark.sql.functions import col, current_timestamp, from_json
+from pyspark.sql.types import (
+    DoubleType,
+    IntegerType,
+    StringType,
+    StructField,
+    StructType,
+)
+
 from src.common.config import get_spark_session, redpanda_host
-from src.ingestion.ingest_webhooks import avro_schema_str
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )
 logger = logging.getLogger(__name__)
 
+WARMUP_SECONDS = 30
+MEASURE_SECONDS = 120
+
+
+def get_hardware_info():
+    return {
+        "os": f"{platform.system()} {platform.release()}",
+        "cpu": platform.processor() or "unknown",
+        "python": platform.python_version(),
+        "cores": os.cpu_count(),
+    }
+
 
 def run_benchmark():
-    logger.info("Initializing Spark Session for PySpark Ingestion Benchmark")
+    hw = get_hardware_info()
+    logger.info(f"Hardware: {hw['os']}, {hw['cores']} cores, Python {hw['python']}")
+    logger.info(
+        f"Config: warmup={WARMUP_SECONDS}s, measure={MEASURE_SECONDS}s, "
+        f"redpanda={redpanda_host}:19092"
+    )
+
     spark = get_spark_session("PySparkIngestionBenchmark")
 
-    # Initialize namespaces and tables
-    logger.info("Initializing Iceberg tables via Nessie")
     spark.sql("CREATE NAMESPACE IF NOT EXISTS nessie.db")
-
     spark.sql(
         """
-        CREATE TABLE IF NOT EXISTS nessie.db.webhooks (
+        CREATE TABLE IF NOT EXISTS nessie.db.webhooks_bench (
             transaction_id string,
             amount_paise int,
             gateway_status string,
@@ -41,85 +61,84 @@ def run_benchmark():
     """
     )
 
-    spark.sql(
-        """
-        CREATE TABLE IF NOT EXISTS nessie.db.webhooks_dlq (
-            transaction_id string,
-            amount_paise int,
-            gateway_status string,
-            timestamp_utc string,
-            merchant_id string
-        ) USING iceberg
-    """
+    schema = StructType(
+        [
+            StructField("transaction_id", StringType(), True),
+            StructField("amount_paise", IntegerType(), True),
+            StructField("gateway_status", StringType(), True),
+            StructField("timestamp_utc", StringType(), True),
+            StructField("merchant_id", StringType(), True),
+            StructField("source_ts", DoubleType(), True),
+        ]
     )
 
-    logger.info(f"Connecting to Redpanda at {redpanda_host}:19092")
     df = (
         spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", f"{redpanda_host}:19092")
         .option("subscribe", "gateway_webhooks")
         .option("startingOffsets", "earliest")
+        .option("maxOffsetsPerTrigger", 500000)
         .load()
     )
 
-    df = df.withColumn("fixed_value", expr("substring(value, 6, length(value)-5)"))
     parsed_df = df.select(
-        from_avro(col("fixed_value"), avro_schema_str, {"mode": "PERMISSIVE"}).alias(
-            "data"
-        )
+        from_json(col("value").cast("string"), schema).alias("data")
     ).select("data.*")
 
     valid_df = parsed_df.filter(
         (col("amount_paise") > 0) & (col("transaction_id").isNotNull())
     )
 
-    invalid_df = parsed_df.filter(
-        (col("amount_paise") <= 0) | (col("transaction_id").isNull())
-    )
-
     enriched_df = (
         valid_df.withColumn("reconciliation_status", col("gateway_status"))
         .withColumn("bank_ref_id", col("transaction_id"))
         .withColumn("ingested_at", current_timestamp())
+        .select(
+            "transaction_id",
+            "amount_paise",
+            "gateway_status",
+            "timestamp_utc",
+            "merchant_id",
+            "reconciliation_status",
+            "bank_ref_id",
+            "ingested_at",
+        )
     )
 
-    # Use unique checkpoint locations so it doesn't conflict with normal streaming
-    checkpoint_valid = "s3a://lakehouse/checkpoints/benchmark_webhooks_valid"
-    checkpoint_invalid = "s3a://lakehouse/checkpoints/benchmark_webhooks_dlq"
+    checkpoint_path = "s3a://lakehouse/checkpoints/benchmark_ingestion_v4"
 
-    logger.info("Starting batch consumption (Trigger.AvailableNow)")
+    logger.info(f"Starting streaming ingestion for {WARMUP_SECONDS + MEASURE_SECONDS}s")
 
     start_time = time.time()
 
-    query_valid = (
+    query = (
         enriched_df.writeStream.format("iceberg")
         .outputMode("append")
-        .option("checkpointLocation", checkpoint_valid)
-        .trigger(availableNow=True)
-        .toTable("nessie.db.webhooks")
+        .option("checkpointLocation", checkpoint_path)
+        .trigger(processingTime="5 seconds")
+        .toTable("nessie.db.webhooks_bench")
     )
 
-    query_invalid = (
-        invalid_df.writeStream.format("iceberg")
-        .outputMode("append")
-        .option("checkpointLocation", checkpoint_invalid)
-        .trigger(availableNow=True)
-        .toTable("nessie.db.webhooks_dlq")
-    )
-
-    query_valid.awaitTermination()
-    query_invalid.awaitTermination()
+    time.sleep(WARMUP_SECONDS + MEASURE_SECONDS)
+    query.stop()
 
     end_time = time.time()
-    duration = end_time - start_time
+    total_duration = end_time - start_time
 
-    # Get row count from iceberg
-    count_df = spark.sql("SELECT COUNT(*) as cnt FROM nessie.db.webhooks")
-    total_rows = count_df.collect()[0]["cnt"]
+    count_result = spark.sql(
+        "SELECT COUNT(*) as cnt FROM nessie.db.webhooks_bench"
+    ).collect()[0]["cnt"]
 
-    logger.info(f"BENCHMARK COMPLETE")
-    logger.info(f"Time taken to consume and write to Iceberg: {duration:.2f} seconds")
-    logger.info(f"Total rows currently in Iceberg valid table: {total_rows}")
+    sustained_rate = count_result / total_duration if total_duration > 0 else 0
+
+    logger.info("=== BENCHMARK RESULTS ===")
+    logger.info(f"Total rows written:     {count_result:,}")
+    logger.info(f"Total time:             {total_duration:.1f}s")
+    logger.info(f"Sustained throughput:   {sustained_rate:,.0f} rows/sec")
+    logger.info(f"Hardware: {hw}")
+
+    spark.sql("DROP TABLE IF EXISTS nessie.db.webhooks_bench")
+    spark.stop()
 
 
 if __name__ == "__main__":

@@ -1,6 +1,8 @@
 import logging
-from pyspark.sql.functions import col, current_timestamp, expr
+
 from pyspark.sql.avro.functions import from_avro
+from pyspark.sql.functions import col, current_timestamp, expr
+
 from src.common.config import get_spark_session, redpanda_host
 
 # Configure logging
@@ -63,7 +65,7 @@ def run_ingestion():
 
     # Write valid records to Iceberg
     logger.info("Starting stream to Iceberg nessie.db.webhooks")
-    query_valid = (
+    (
         enriched_df.writeStream.format("iceberg")
         .outputMode("append")
         .trigger(processingTime="2 seconds")
@@ -73,7 +75,7 @@ def run_ingestion():
     )
 
     # Write invalid records to DLQ (Iceberg table)
-    query_invalid = (
+    (
         invalid_df.writeStream.format("iceberg")
         .outputMode("append")
         .trigger(processingTime="2 seconds")

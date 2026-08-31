@@ -1,4 +1,5 @@
 import os
+
 from pyspark.sql import SparkSession
 
 is_airflow = os.environ.get("AIRFLOW_HOME") is not None

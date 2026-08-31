@@ -1,8 +1,9 @@
+import os
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 from airflow.models import DagBag
 from airflow.utils.dag_cycle_tester import check_cycle
-import os
 
 
 @pytest.fixture(scope="session")

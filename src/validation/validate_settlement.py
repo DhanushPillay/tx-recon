@@ -1,9 +1,10 @@
+import glob
+import os
+import sys
+
 import pandas as pd
 import pandera.pandas as pa
 from pandera.errors import SchemaErrors
-import os
-import glob
-import sys
 
 # Define the data contract (schema)
 settlement_schema = pa.DataFrameSchema(
@@ -22,6 +23,7 @@ def validate_latest_settlement():
     if not files:
         print("No settlement file found.")
         sys.exit(1)
+        return
 
     latest_file = max(files, key=os.path.getctime)
     print(f"Validating {latest_file} with Pandera...")
@@ -35,7 +37,7 @@ def validate_latest_settlement():
     except SchemaErrors as err:
         print("ERROR: Data Contract Validation FAILED!")
         for error in err.schema_errors:
-            print(f" - {error['error']}")
+            print(f" - {error}")
         sys.exit(1)
 
 
