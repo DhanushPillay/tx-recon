@@ -57,6 +57,8 @@
 
 ### Reproduce
 
+For a detailed step-by-step guide, see [How to Run Benchmarks](docs/how_to_benchmark.md).
+
 ```bash
 # Run all benchmarks (requires docker-compose up -d)
 python tests/performance/run_benchmarks.py --suite all
