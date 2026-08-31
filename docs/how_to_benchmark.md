@@ -33,12 +33,6 @@ docker run --rm -v ".:/app" -w /app --network tx-recon_default -e PYTHONPATH=/ap
 
 If you only want to test specific parts of the system, you can run the individual scripts directly from your terminal.
 
-### Pandera Validation (No Docker Needed)
-Pandera is pure Python, so you can run it directly on your machine without starting Docker. It tests how fast we can validate CSV files.
-```bash
-python tests/performance/pandas_validation_benchmark.py --rows 1000000
-```
-
 ### Kafka Producer
 This tests how fast we can push simulated webhook events into Redpanda. You need Docker running for this to work (`docker-compose up -d`).
 ```bash
@@ -47,13 +41,27 @@ python tests/performance/kafka_producer_benchmark.py --count 1000000 --mode both
 
 > Want to know how we got from 20K to 130K+ msgs/sec? See [Kafka Benchmark Explained](kafka_benchmark_explained.md).
 
-### Iceberg / PySpark
+### PySpark Ingestion
 *(Windows Users: You must run this via WSL2 or Docker due to PySpark limitations. See "The Easy Way" above).*
-This tests how quickly we can ingest rows into PySpark and `MERGE` records into the Iceberg table. 
+This tests how quickly we can stream rows from Kafka into an Iceberg table.
 ```bash
-python tests/performance/pyspark_ingestion_benchmark.py --rows 500000
+python tests/performance/pyspark_ingestion_benchmark.py --partitions 16
+```
+> [How the ingestion pipeline works](pyspark_ingestion_benchmark_explained.md)
+
+### Iceberg MERGE
+Tests how the reconciliation MERGE operation scales from 100K to 2M rows at 10% and 50% update rates.
+```bash
 python tests/performance/reconciliation_benchmark.py
 ```
+> [How Iceberg MERGE scales](iceberg_merge_benchmark_explained.md)
+
+### Pandera Validation
+Compares Pandera, manual pandas, and Pydantic for validating settlement CSVs. No Docker needed.
+```bash
+python tests/performance/pandas_validation_benchmark.py --rows 1000000
+```
+> [Pandera vs Manual vs Pydantic](pandera_validation_benchmark_explained.md)
 
 ---
 

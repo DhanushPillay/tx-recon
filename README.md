@@ -48,7 +48,11 @@
 
 *Benchmarks run on Windows 11, 28 cores, Python 3.13. Producer, Ingestion, and Pandera validations ran on native Windows. Iceberg MERGE benchmarks ran inside a Linux Docker container (due to PySpark Python worker limitations on Windows).*
 
-*Curious about the producer numbers? See [How We Got to 130K+ msgs/sec](docs/kafka_benchmark_explained.md) for a breakdown of what changed.*
+**Deep dives on each benchmark:**
+- [Kafka Producer (20K → 130K+ msgs/sec)](docs/kafka_benchmark_explained.md)
+- [PySpark Streaming Ingestion](docs/pyspark_ingestion_benchmark_explained.md)
+- [Iceberg MERGE Reconciliation](docs/iceberg_merge_benchmark_explained.md)
+- [Pandera vs Manual vs Pydantic Validation](docs/pandera_validation_benchmark_explained.md)
 
 ### Scaling Characteristics
 
