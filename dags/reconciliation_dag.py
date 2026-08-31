@@ -32,7 +32,6 @@ with DAG(
     default_args=default_args,
     description="Daily reconciliation of payment gateway webhooks against bank settlements",
     schedule_interval="@daily",
-    schedule=timedelta(days=1),
     start_date=datetime(2023, 1, 1, tzinfo=timezone.utc),
     catchup=False,
     tags=["finance", "reconciliation"],
