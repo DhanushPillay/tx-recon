@@ -1,14 +1,11 @@
-import os
-import sys
 from unittest.mock import patch
 
 import pandas as pd
 import pytest
+from pandera.errors import SchemaErrors
 
-from src.validation.validate_settlement import (
-    settlement_schema,
-    validate_latest_settlement,
-)
+from src.validation.settlement_schema import settlement_schema
+from src.validation.validate_settlement import validate_latest_settlement
 
 
 @pytest.fixture
@@ -88,19 +85,19 @@ def test_schema_validates_correct_data():
 
 def test_schema_rejects_duplicate_ids(invalid_csv_duplicate_ids):
     df = pd.read_csv(invalid_csv_duplicate_ids)
-    with pytest.raises(Exception):
+    with pytest.raises(SchemaErrors):
         settlement_schema.validate(df, lazy=True)
 
 
 def test_schema_rejects_negative_amount(invalid_csv_negative_amount):
     df = pd.read_csv(invalid_csv_negative_amount)
-    with pytest.raises(Exception):
+    with pytest.raises(SchemaErrors):
         settlement_schema.validate(df, lazy=True)
 
 
 def test_schema_rejects_null_ref(invalid_csv_null_ref):
     df = pd.read_csv(invalid_csv_null_ref)
-    with pytest.raises(Exception):
+    with pytest.raises(SchemaErrors):
         settlement_schema.validate(df, lazy=True)
 
 
@@ -108,7 +105,7 @@ def test_validate_latest_settlement_success(valid_csv, monkeypatch):
     monkeypatch.chdir(valid_csv.parent.parent)
     with patch("src.validation.validate_settlement.sys.exit") as mock_exit:
         validate_latest_settlement()
-        mock_exit.assert_called_once_with(0)
+        mock_exit.assert_not_called()
 
 
 def test_validate_latest_settlement_failure(invalid_csv_duplicate_ids, monkeypatch):
@@ -123,3 +120,16 @@ def test_validate_latest_settlement_no_file(tmp_path, monkeypatch):
     with patch("src.validation.validate_settlement.sys.exit") as mock_exit:
         validate_latest_settlement()
         mock_exit.assert_called_once_with(1)
+
+
+def test_schema_yaml_roundtrip(tmp_path):
+    yaml_path = tmp_path / "settlement_schema.yaml"
+    settlement_schema.to_yaml(str(yaml_path))
+    assert yaml_path.exists()
+
+    import pandera.pandas as pa
+
+    loaded = pa.DataFrameSchema.from_yaml(str(yaml_path))
+    assert "transaction_id" in loaded.columns
+    assert "settled_amount_paise" in loaded.columns
+    assert "bank_ref_id" in loaded.columns
