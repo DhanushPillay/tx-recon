@@ -114,6 +114,25 @@ The CI pipeline automatically triggers on all pushes and Pull Requests to the `m
 5. Access the Airflow UI at `http://localhost:8080` (admin/admin) to trigger the `daily_tx_reconciliation` DAG.
 6. Trigger the `dbt_reconciliation_modeling` DAG to build the dimensional data marts.
 
+### Running Benchmarks
+To reproduce performance metrics locally:
+1. Generate the 1M Webhooks (Kafka Producer):
+   ```powershell
+   .\.venv\Scripts\python.exe src/generators/webhook_producer.py --stress 1000000
+   ```
+2. Run PySpark Ingestion (Kafka -> Iceberg):
+   ```powershell
+   .\.venv\Scripts\python.exe tests/performance/pyspark_ingestion_benchmark.py
+   ```
+3. Run Pandas Validation (CSV reading rules):
+   ```powershell
+   .\.venv\Scripts\python.exe tests/performance/pandas_validation_benchmark.py
+   ```
+4. Run Iceberg Reconciliation (MERGE INTO):
+   ```powershell
+   .\.venv\Scripts\python.exe tests/performance/reconciliation_benchmark.py
+   ```
+Detailed output is appended to `tests/performance/results.log`.
 ## Future Improvements
 
 * Real-time alerting for reconciliation exceptions via Slack/Teams.
