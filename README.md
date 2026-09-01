@@ -2,7 +2,7 @@
 
 <img src="assets/logo.svg" alt="tx-recon logo" width="500"/>
 
-# tx-recon
+# Transaction Reconciliation
 
 > **A local data lakehouse for payment gateway reconciliation — correct by construction.**
 
