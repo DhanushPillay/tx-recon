@@ -4,7 +4,7 @@ dbt_recon:
     dev:
       type: spark
       method: thrift
-      host: localhost
+      host: "{{ env_var('DBT_HOST', 'spark-thrift-server') }}"
       port: 10000
       schema: nessie.db
       threads: 4
