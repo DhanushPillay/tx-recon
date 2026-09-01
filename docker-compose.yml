@@ -13,13 +13,17 @@ services:
       - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
     ports:
       - "19092:19092"
-      - "9092:9092"
       - "8081:8081"
     volumes:
       - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2024-01-18T22-51-28Z
     container_name: minio
     environment:
       - MINIO_ROOT_USER=admin
@@ -30,11 +34,17 @@ services:
       - "9001:9001"
     volumes:
       - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   minio-createbucket:
-    image: minio/mc
+    image: minio/mc:RELEASE.2024-01-18T07-03-36Z
     depends_on:
-      - minio
+      minio:
+        condition: service_healthy
     entrypoint: >
       /bin/sh -c "
       until (/usr/bin/mc alias set myminio http://minio:9000 admin password) do echo '...waiting...' && sleep 1; done;
@@ -44,15 +54,20 @@ services:
       "
 
   nessie:
-    image: projectnessie/nessie:latest
+    image: projectnessie/nessie:0.77.1
     container_name: nessie
     ports:
       - "19120:19120"
     environment:
       - QUARKUS_HTTP_PORT=19120
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:19120/api/v1/config"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   postgres:
-    image: postgres:13
+    image: postgres:16
     container_name: postgres
     environment:
       - POSTGRES_USER=airflow
@@ -60,6 +75,11 @@ services:
       - POSTGRES_DB=airflow
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   airflow-init:
     build:
@@ -67,7 +87,8 @@ services:
       dockerfile: Dockerfile.airflow
     container_name: airflow-init
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     environment:
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
@@ -83,18 +104,23 @@ services:
       dockerfile: Dockerfile.airflow
     container_name: airflow-webserver
     depends_on:
-      - postgres
-      - airflow-init
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
     ports:
       - "8080:8080"
     environment:
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - PROJECT_ROOT=/opt/airflow
     volumes:
       - ./dags:/opt/airflow/dags
       - ./src:/opt/airflow/src
       - ./data:/opt/airflow/data
+      - ./dbt_recon:/opt/airflow/dbt_recon
+      - ./config:/opt/airflow/config
     command: webserver
 
   airflow-scheduler:
@@ -103,16 +129,21 @@ services:
       dockerfile: Dockerfile.airflow
     container_name: airflow-scheduler
     depends_on:
-      - postgres
-      - airflow-init
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
     environment:
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - PROJECT_ROOT=/opt/airflow
     volumes:
       - ./dags:/opt/airflow/dags
       - ./src:/opt/airflow/src
       - ./data:/opt/airflow/data
+      - ./dbt_recon:/opt/airflow/dbt_recon
+      - ./config:/opt/airflow/config
     command: scheduler
 
   spark-thrift-server:
@@ -141,6 +172,27 @@ services:
           --conf spark.hadoop.fs.s3a.path.style.access=true \
           --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem
         tail -f /dev/null
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:10000 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  alloy:
+    image: grafana/alloy:v1.0.0
+    container_name: alloy
+    env_file:
+      - .env
+    volumes:
+      - ./infra/alloy/config.alloy:/etc/alloy/config.alloy
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - /etc/alloy/config.alloy
+    ports:
+      - "12345:12345"
+    depends_on:
+      - redpanda
 
 volumes:
   redpanda_data:
