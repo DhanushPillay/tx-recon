@@ -1,14 +1,17 @@
 import glob
 import logging
 import os
-import sys
 
 import pandas as pd
 from pandera.errors import SchemaErrors
 
-from .settlement_schema import settlement_schema
+from src.validation.settlement_schema import settlement_schema
 
 logger = logging.getLogger(__name__)
+
+
+class SettlementValidation_error(Exception):
+    """Raised when settlement validation fails."""
 
 
 def validate_and_quarantine(df, schema):
@@ -25,14 +28,14 @@ def validate_and_quarantine(df, schema):
         return df[~invalid_mask], df[invalid_mask]
 
 
-def validate_latest_settlement():
-    files = glob.glob("data/settlement_*.csv")
+def validate_latest_settlement(project_root=None):
+    root = project_root or os.environ.get("PROJECT_ROOT", os.getcwd())
+    data_dir = os.path.join(root, "data")
+    files = glob.glob(os.path.join(data_dir, "settlement_*.csv"))
     if not files:
-        logger.error("No settlement file found.")
-        sys.exit(1)
-        return
+        raise FileNotFoundError(f"No settlement file found in {data_dir}")
 
-    latest_file = max(files, key=os.path.getctime)
+    latest_file = max(files, key=os.path.getmtime)
     logger.info(f"Validating {latest_file} with Pandera...")
 
     df = pd.read_csv(latest_file)
@@ -40,15 +43,14 @@ def validate_latest_settlement():
     _, invalid = validate_and_quarantine(df, settlement_schema)
 
     quarantine_rate = len(invalid) / len(df) * 100 if len(df) > 0 else 0
-    logger.info(
-        f"Quarantine rate: {quarantine_rate:.1f}% ({len(invalid)}/{len(df)} rows)"
-    )
+    logger.info(f"Quarantine rate: {quarantine_rate:.1f}% ({len(invalid)}/{len(df)} rows)")
 
     if not invalid.empty:
-        logger.error("Data Contract Validation FAILED!")
-        sys.exit(1)
-    else:
-        logger.info("SUCCESS: Data Contract Validated successfully!")
+        raise SettlementValidation_error(
+            f"Data contract validation failed: {len(invalid)} rows quarantined"
+        )
+
+    logger.info("SUCCESS: Data Contract Validated successfully!")
 
 
 if __name__ == "__main__":
