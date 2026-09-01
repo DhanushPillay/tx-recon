@@ -1,30 +1,34 @@
-import importlib
 import os
 from unittest.mock import MagicMock, patch
 
-import src.common.config as config  # noqa: PLR0402
+from src.common import settings as settings_mod
+from src.common.settings import Settings
 
 
-def test_hosts_default_to_localhost(monkeypatch):
+def test_settings_loads_defaults(monkeypatch):
     monkeypatch.delenv("AIRFLOW_HOME", raising=False)
-    importlib.reload(config)
-    assert config.nessie_host == "localhost"
-    assert config.minio_host == "localhost"
-    assert config.redpanda_host == "localhost"
-    assert config.is_airflow is False
+    settings_mod._settings = None
+    s = Settings()
+    assert s.nessie_host == "localhost"
+    assert "localhost" in s.minio_endpoint
+    assert s.redpanda_host == "localhost"
+    assert s.is_airflow is False
 
 
-def test_hosts_switch_when_airflow_present(monkeypatch):
+def test_settings_switch_when_airflow_present(monkeypatch):
     monkeypatch.setenv("AIRFLOW_HOME", "/opt/airflow")
-    importlib.reload(config)
-    assert config.nessie_host == "nessie"
-    assert config.minio_host == "minio"
-    assert config.redpanda_host == "redpanda"
-    assert config.is_airflow is True
+    settings_mod._settings = None
+    s = Settings.for_airflow()
+    assert s.nessie_host == "nessie"
+    assert "minio" in s.minio_endpoint
+    assert s.redpanda_host == "redpanda"
+    assert s.is_airflow is True
 
 
 @patch("src.common.config.SparkSession")
 def test_get_spark_session_clears_spark_home(mock_spark_cls, monkeypatch):
+    from src.common import config
+
     monkeypatch.setenv("SPARK_HOME", "/bad/path")
     mock_builder = MagicMock()
     mock_spark_cls.builder.appName.return_value = mock_builder
@@ -38,7 +42,8 @@ def test_get_spark_session_clears_spark_home(mock_spark_cls, monkeypatch):
 
 def test_get_spark_session_config_values(monkeypatch):
     monkeypatch.delenv("AIRFLOW_HOME", raising=False)
-    importlib.reload(config)
+    settings_mod._settings = None
+    from src.common import config
 
     with patch("src.common.config.SparkSession") as mock_spark_cls:
         mock_builder = MagicMock()
@@ -58,16 +63,10 @@ def test_get_spark_session_config_values(monkeypatch):
         assert "spark.hadoop.fs.s3a.access.key" in config_keys
         assert "spark.hadoop.fs.s3a.secret.key" in config_keys
 
-        uri_calls = [
-            args
-            for args in all_config_args
-            if args[0] == "spark.sql.catalog.nessie.uri"
-        ]
+        uri_calls = [args for args in all_config_args if args[0] == "spark.sql.catalog.nessie.uri"]
         assert "http://localhost:19120/api/v1" == uri_calls[0][1]
 
         key_calls = [
-            args
-            for args in all_config_args
-            if args[0] == "spark.hadoop.fs.s3a.access.key"
+            args for args in all_config_args if args[0] == "spark.hadoop.fs.s3a.access.key"
         ]
         assert "admin" == key_calls[0][1]
