@@ -1,5 +1,7 @@
 # Pandera Validation Benchmark Explained
 
+> **Environment**: Native Windows Python (28 cores). Results represent single-machine performance only.
+
 How we compare three approaches to validating settlement CSV data and why Pandera won.
 
 ## What This Benchmark Does

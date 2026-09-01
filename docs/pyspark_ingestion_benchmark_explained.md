@@ -1,5 +1,7 @@
 # PySpark Ingestion Benchmark Explained
 
+> **Environment**: Single-node PySpark on Docker. Results do not represent multi-node Spark clusters. The ~27K rows/sec bottleneck is the 5-second micro-batch trigger, not Spark compute.
+
 How we measure sustained Kafka-to-Iceberg streaming throughput and what the numbers mean.
 
 ## What This Benchmark Does

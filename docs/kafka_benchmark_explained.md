@@ -1,6 +1,8 @@
-# How We Got from 20K to 130K+ msgs/sec
+# Kafka Producer Benchmark Explained
 
-The Kafka producer benchmark jumped from ~20,000 msgs/sec to 130,000+ msgs/sec. Here's what changed and why.
+> **Environment**: Single-node Docker, localhost only. Results do not represent multi-node Kafka/Redpanda clusters. Run on your own hardware to validate.
+
+The Kafka producer benchmark measures local throughput from a single producer to a single Redpanda broker.
 
 ## The Short Answer
 

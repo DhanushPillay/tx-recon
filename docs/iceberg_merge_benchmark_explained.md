@@ -1,5 +1,7 @@
 # Iceberg MERGE Benchmark Explained
 
+> **Environment**: Single-node PySpark inside Docker (28 cores, 32GB). Results do not represent distributed Spark clusters. The MERGE times reflect local I/O and compute only.
+
 How we measure the reconciliation MERGE operation at different scales and update percentages.
 
 ## What This Benchmark Does
