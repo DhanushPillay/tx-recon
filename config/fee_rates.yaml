@@ -1,0 +1,40 @@
+# Fee rate configuration for tx-recon
+# Rates are in basis points (bps) where 1 bps = 0.01%
+# GST on MDR is applied separately where applicable (India context)
+
+default:
+  mdr_rate_bps: 150  # 1.5%
+  gst_on_mdr: 18.0   # 18% GST on the MDR fee
+  tolerance_paise: 1  # rounding tolerance
+
+instruments:
+  UPI:
+    mdr_rate_bps: 0   # UPI is typically zero-fee for merchants
+    gst_on_mdr: 0
+    notes: "NPC mandates zero MDR on UPI"
+
+  CREDIT_CARD:
+    mdr_rate_bps: 200  # 2.0%
+    gst_on_mdr: 18.0
+
+  DEBIT_CARD:
+    mdr_rate_bps: 100  # 1.0%
+    gst_on_mdr: 18.0
+
+  NETBANKING:
+    mdr_rate_bps: 150  # 1.5%
+    gst_on_mdr: 18.0
+
+  WALLET:
+    mdr_rate_bps: 150  # 1.5%
+    gst_on_mdr: 18.0
+
+  INTERNATIONAL:
+    mdr_rate_bps: 300  # 3.0%
+    gst_on_mdr: 18.0
+
+# Per-merchant overrides (optional)
+# merchants:
+#   merch_001:
+#     CREDIT_CARD:
+#       mdr_rate_bps: 180  # negotiated rate
