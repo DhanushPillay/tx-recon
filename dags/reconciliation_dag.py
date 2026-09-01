@@ -1,14 +1,16 @@
 import logging
 import os
+import sys
 from datetime import datetime, timedelta, timezone
 
 from airflow import DAG
-from airflow.operators.bash import BashOperator
+from airflow.operators.python import PythonOperator
 from cosmos import DbtTaskGroup, ExecutionConfig, ProfileConfig, ProjectConfig
 
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = os.getenv("PROJECT_ROOT", "/opt/airflow")
+sys.path.insert(0, PROJECT_ROOT)
 
 
 def failure_callback(context):
@@ -27,6 +29,25 @@ default_args = {
     "on_failure_callback": failure_callback,
 }
 
+
+def generate_settlement_task():
+    from src.generators.settlement_generator import generate_settlement_file
+
+    generate_settlement_file(500)
+
+
+def validate_settlement_task():
+    from src.validation.validate_settlement import validate_latest_settlement
+
+    validate_latest_settlement()
+
+
+def run_reconciliation_task():
+    from src.processing.reconcile import run_reconciliation
+
+    run_reconciliation()
+
+
 with DAG(
     "daily_tx_reconciliation",
     default_args=default_args,
@@ -38,19 +59,19 @@ with DAG(
     sla_miss_callback=failure_callback,
 ) as dag:
 
-    generate_settlement = BashOperator(
+    generate_settlement = PythonOperator(
         task_id="generate_bank_settlement",
-        bash_command=f"pip install pyspark==3.5.1 pandas && python {PROJECT_ROOT}/src/generators/settlement_generator.py",
+        python_callable=generate_settlement_task,
     )
 
-    validate_settlement_task = BashOperator(
+    validate_settlement_op = PythonOperator(
         task_id="validate_settlement",
-        bash_command=f"python {PROJECT_ROOT}/src/validation/validate_settlement.py",
+        python_callable=validate_settlement_task,
     )
 
-    run_reconciliation_job = BashOperator(
+    run_reconciliation_op = PythonOperator(
         task_id="run_pyspark_reconciliation",
-        bash_command=f"python {PROJECT_ROOT}/src/processing/reconcile.py",
+        python_callable=run_reconciliation_task,
     )
 
     dbt_gold_layer = DbtTaskGroup(
@@ -64,9 +85,4 @@ with DAG(
         execution_config=ExecutionConfig(dbt_executable_path="/usr/local/bin/dbt"),
     )
 
-    (
-        generate_settlement
-        >> validate_settlement_task
-        >> run_reconciliation_job
-        >> dbt_gold_layer
-    )
+    (generate_settlement >> validate_settlement_op >> run_reconciliation_op >> dbt_gold_layer)
