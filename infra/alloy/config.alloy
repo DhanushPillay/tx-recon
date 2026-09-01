@@ -1,0 +1,19 @@
+// Scrape Redpanda Metrics
+prometheus.scrape "redpanda" {
+  targets = [
+    {"__address__" = "redpanda:9644"},
+  ]
+  forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+}
+
+// Push to Grafana Cloud
+prometheus.remote_write "grafana_cloud" {
+  endpoint {
+    url = sys.env("GRAFANA_REMOTE_WRITE_URL")
+    
+    basic_auth {
+      username = sys.env("GRAFANA_USERNAME")
+      password = sys.env("GRAFANA_API_KEY")
+    }
+  }
+}
