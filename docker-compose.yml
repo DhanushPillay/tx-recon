@@ -41,7 +41,7 @@ services:
       retries: 5
 
   minio-createbucket:
-    image: minio/mc:RELEASE.2024-01-18T07-03-36Z
+    image: minio/mc:latest
     depends_on:
       minio:
         condition: service_healthy
@@ -54,7 +54,7 @@ services:
       "
 
   nessie:
-    image: projectnessie/nessie:0.77.1
+    image: ghcr.io/projectnessie/nessie:0.107.1-java
     container_name: nessie
     ports:
       - "19120:19120"
@@ -157,7 +157,7 @@ services:
     command:
       - |
         /opt/spark/sbin/start-thriftserver.sh \
-          --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.4.3,org.projectnessie.nessie-integrations:nessie-spark-extensions-3.5_2.12:0.77.1,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262 \
+          --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0,org.projectnessie.nessie-integrations:nessie-spark-extensions-3.5_2.12:0.107.1,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262 \
           --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions,org.projectnessie.spark.extensions.NessieSparkSessionExtensions \
           --conf spark.sql.catalog.nessie=org.apache.iceberg.spark.SparkCatalog \
           --conf spark.sql.catalog.nessie.uri=http://nessie:19120/api/v1 \

@@ -29,10 +29,10 @@ class Settings(BaseSettings):
     # Spark
     spark_shuffle_partitions: int = 8
     spark_jar_packages: str = (
-        "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.4.3,"
+        "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0,"
         "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,"
         "org.apache.spark:spark-avro_2.12:3.5.1,"
-        "org.projectnessie.nessie-integrations:nessie-spark-extensions-3.5_2.12:0.77.1,"
+        "org.projectnessie.nessie-integrations:nessie-spark-extensions-3.5_2.12:0.107.1,"
         "org.apache.hadoop:hadoop-aws:3.3.4,"
         "com.amazonaws:aws-java-sdk-bundle:1.12.262"
     )
