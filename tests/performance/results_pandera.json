@@ -9,19 +9,19 @@
       "rows": 10000,
       "methods": {
         "pandera": {
-          "mean_ms": 8.1,
-          "std_ms": 9.2,
-          "rows_per_sec": 1234568
+          "mean_ms": 25.23,
+          "std_ms": 31.12,
+          "rows_per_sec": 396354
         },
         "manual_pandas": {
-          "mean_ms": 1.12,
-          "std_ms": 0.09,
-          "rows_per_sec": 8928571
+          "mean_ms": 2.98,
+          "std_ms": 3.36,
+          "rows_per_sec": 3355705
         },
         "pydantic": {
-          "mean_ms": 25.83,
-          "std_ms": 0.48,
-          "rows_per_sec": 387147
+          "mean_ms": 32.19,
+          "std_ms": 15.01,
+          "rows_per_sec": 310655
         }
       }
     },
@@ -29,19 +29,19 @@
       "rows": 100000,
       "methods": {
         "pandera": {
-          "mean_ms": 16.48,
-          "std_ms": 0.67,
-          "rows_per_sec": 6067961
+          "mean_ms": 40.18,
+          "std_ms": 2.14,
+          "rows_per_sec": 2488800
         },
         "manual_pandas": {
-          "mean_ms": 9.22,
-          "std_ms": 0.24,
-          "rows_per_sec": 10845987
+          "mean_ms": 9.54,
+          "std_ms": 0.46,
+          "rows_per_sec": 10482180
         },
         "pydantic": {
-          "mean_ms": 252.2,
-          "std_ms": 13.25,
-          "rows_per_sec": 396511
+          "mean_ms": 218.15,
+          "std_ms": 4.94,
+          "rows_per_sec": 458400
         }
       }
     },
@@ -49,19 +49,19 @@
       "rows": 1000000,
       "methods": {
         "pandera": {
-          "mean_ms": 186.23,
-          "std_ms": 14.12,
-          "rows_per_sec": 5369704
+          "mean_ms": 490.84,
+          "std_ms": 19.07,
+          "rows_per_sec": 2037324
         },
         "manual_pandas": {
-          "mean_ms": 129.4,
-          "std_ms": 3.92,
-          "rows_per_sec": 7727975
+          "mean_ms": 151.26,
+          "std_ms": 7.88,
+          "rows_per_sec": 6611133
         },
         "pydantic": {
-          "mean_ms": 2602.78,
-          "std_ms": 4.41,
-          "rows_per_sec": 384205
+          "mean_ms": 2322.51,
+          "std_ms": 142.23,
+          "rows_per_sec": 430569
         }
       }
     },
@@ -69,19 +69,19 @@
       "rows": 10000000,
       "methods": {
         "pandera": {
-          "mean_ms": 3963.99,
-          "std_ms": 67.54,
-          "rows_per_sec": 2522711
+          "mean_ms": 6446.04,
+          "std_ms": 112.42,
+          "rows_per_sec": 1551340
         },
         "manual_pandas": {
-          "mean_ms": 3146.87,
-          "std_ms": 47.33,
-          "rows_per_sec": 3177761
+          "mean_ms": 3698.34,
+          "std_ms": 413.08,
+          "rows_per_sec": 2703916
         },
         "pydantic": {
-          "mean_ms": 24519.54,
-          "std_ms": 408.23,
-          "rows_per_sec": 407838
+          "mean_ms": 33987.5,
+          "std_ms": 13040.92,
+          "rows_per_sec": 294226
         }
       }
     }

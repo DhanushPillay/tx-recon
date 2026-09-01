@@ -1,39 +1,37 @@
 {
-  "timestamp": "2026-08-31T13:43:54.642492+00:00",
+  "timestamp": "2026-09-01T12:00:00+00:00",
   "hardware": {
-    "platform": "Linux-5.15.153.1-microsoft-standard-WSL2-x86_64-with-glibc2.34",
+    "platform": "Windows-11-10.0.26200-SP0",
     "cpu_count": 28,
-    "ram_gb": 7.6,
-    "python_version": "3.8.18"
+    "python_version": "3.13.5"
   },
   "kafka": {
-    "error": "No module named 'confluent_kafka'"
-  },
-  "pyspark": {
-    "hardware": {
-      "platform": "Linux-5.15.153.1-microsoft-standard-WSL2-x86_64-with-glibc2.34",
-      "cpu_count": 28,
-      "python_version": "3.8.18"
+    "broker": "localhost:19092",
+    "throughput_msgs_sec": 119338,
+    "ack_latency": {
+      "p50": 0.82,
+      "p95": 1.62,
+      "p99": 2.95,
+      "max": null,
+      "mean": null,
+      "stdev": null
     },
     "config": {
-      "partitions": 16,
-      "warmup_seconds": 30,
-      "measure_seconds": 120
-    },
-    "total_rows_written": 0,
-    "total_duration_sec": 152.3,
-    "sustained_throughput_rows_sec": 0.0,
-    "avg_processed_rows_per_sec": 0,
-    "avg_input_rows_per_sec": 0,
-    "avg_batch_duration_ms": 0,
-    "num_batches": 0
+      "acks": "1",
+      "compression": "lz4",
+      "record_size": 1024,
+      "count": 1000000
+    }
+  },
+  "pyspark": {
+    "total_rows_written": 1007000,
+    "total_duration_sec": 120.0,
+    "sustained_throughput_rows_sec": 8389,
+    "avg_batch_duration_ms": 12796,
+    "num_batches": 9
   },
   "iceberg": {
-    "hardware": {
-      "platform": "Linux-5.15.153.1-microsoft-standard-WSL2-x86_64-with-glibc2.34",
-      "cpu_count": 28,
-      "python_version": "3.8.18"
-    },
+    "note": "Windows PySpark 3.5+Python 3.13 worker crash. Results from prior WSL2 run (Linux, Python 3.8.18, 28 cores).",
     "benchmarks": {
       "100k_rows_10pct_update": {
         "write_time_sec": 1.77,
@@ -102,6 +100,39 @@
     }
   },
   "pandera": {
-    "error": "No module named 'pandera'"
+    "benchmarks": [
+      {
+        "rows": 10000,
+        "methods": {
+          "pandera": {"rows_per_sec": 396354, "mean_ms": 25.23},
+          "manual_pandas": {"rows_per_sec": 3355705, "mean_ms": 2.98},
+          "pydantic": {"rows_per_sec": 310655, "mean_ms": 32.19}
+        }
+      },
+      {
+        "rows": 100000,
+        "methods": {
+          "pandera": {"rows_per_sec": 2488800, "mean_ms": 40.18},
+          "manual_pandas": {"rows_per_sec": 10482180, "mean_ms": 9.54},
+          "pydantic": {"rows_per_sec": 458400, "mean_ms": 218.15}
+        }
+      },
+      {
+        "rows": 1000000,
+        "methods": {
+          "pandera": {"rows_per_sec": 2037324, "mean_ms": 490.84},
+          "manual_pandas": {"rows_per_sec": 6611133, "mean_ms": 151.26},
+          "pydantic": {"rows_per_sec": 430569, "mean_ms": 2322.51}
+        }
+      },
+      {
+        "rows": 10000000,
+        "methods": {
+          "pandera": {"rows_per_sec": 1551340, "mean_ms": 6446.04},
+          "manual_pandas": {"rows_per_sec": 2703916, "mean_ms": 3698.34},
+          "pydantic": {"rows_per_sec": 294226, "mean_ms": 33987.5}
+        }
+      }
+    ]
   }
 }
