@@ -1,26 +1,16 @@
 import argparse
 import json
-import os
-import platform
 import statistics
 import time
 import uuid
 from datetime import datetime, timezone
 
 from confluent_kafka import Producer
+from hardware import get_hardware_info
 
 WARMUP_MESSAGES = 5000
 LATENCY_SAMPLE = 1000
 TOPIC_NAME = "gateway_webhooks"
-
-
-def get_hardware_info():
-    return {
-        "platform": platform.platform(),
-        "cpu_count": os.cpu_count(),
-        "python_version": platform.python_version(),
-        "hostname": platform.node(),
-    }
 
 
 def percentile(data, p):

@@ -2,7 +2,6 @@ import argparse
 import json
 import logging
 import os
-import platform
 import random
 import sys
 import time
@@ -13,7 +12,8 @@ os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-from pyspark.sql.types import (
+from hardware import get_hardware_info  # noqa: E402
+from pyspark.sql.types import (  # noqa: E402
     IntegerType,
     StringType,
     StructField,
@@ -21,7 +21,7 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
-from src.common.config import get_spark_session
+from src.common.config import get_spark_session  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -41,14 +41,6 @@ WHEN MATCHED AND (t.amount_paise - ((t.amount_paise * 15) DIV 1000)) != s.settle
 """
 
 SCALE_OPTIONS = [100_000, 500_000, 1_000_000, 2_000_000]
-
-
-def get_hardware_info():
-    return {
-        "platform": platform.platform(),
-        "cpu_count": os.cpu_count(),
-        "python_version": platform.python_version(),
-    }
 
 
 def create_table(spark, table_name, num_rows):

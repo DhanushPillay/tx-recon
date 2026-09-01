@@ -22,8 +22,3 @@ settlement_schema = pa.DataFrameSchema(
     },
     strict=False,
 )
-
-
-if __name__ == "__main__":
-    settlement_schema.to_yaml("src/validation/settlement_schema.yaml")
-    print("Schema exported to src/validation/settlement_schema.yaml")

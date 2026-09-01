@@ -4,24 +4,11 @@ from pyspark.sql.avro.functions import from_avro
 from pyspark.sql.functions import col, current_timestamp, expr, lit
 
 from src.common.config import get_spark_session
+from src.common.schemas import WEBHOOK_AVRO_SCHEMA
 from src.common.settings import get_settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
-
-avro_schema_str = """
-{
-  "type": "record",
-  "name": "WebhookEvent",
-  "fields": [
-    {"name": "transaction_id", "type": "string"},
-    {"name": "amount_paise", "type": "int"},
-    {"name": "gateway_status", "type": "string"},
-    {"name": "timestamp_utc", "type": "string"},
-    {"name": "merchant_id", "type": "string"}
-  ]
-}
-"""
 
 
 def run_ingestion():
@@ -42,7 +29,7 @@ def run_ingestion():
     # Confluent Avro wire format: Magic Byte (1 byte) + Schema ID (4 bytes)
     df = df.withColumn("fixed_value", expr("substring(value, 6, length(value)-5)"))
 
-    parsed_df = df.select(from_avro(col("fixed_value"), avro_schema_str).alias("data")).select(
+    parsed_df = df.select(from_avro(col("fixed_value"), WEBHOOK_AVRO_SCHEMA).alias("data")).select(
         "data.*"
     )
 
@@ -56,7 +43,7 @@ def run_ingestion():
         .withColumn("ingested_at", current_timestamp())
     )
 
-    warehouse = settings.iceberg_warehouse.replace("s3a://", "s3a://")
+    warehouse = settings.iceberg_warehouse
 
     logger.info(f"Starting stream to Iceberg {settings.webhook_table}")
     (

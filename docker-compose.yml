@@ -178,22 +178,6 @@ services:
       timeout: 5s
       retries: 10
 
-  alloy:
-    image: grafana/alloy:v1.0.0
-    container_name: alloy
-    env_file:
-      - .env
-    volumes:
-      - ./infra/alloy/config.alloy:/etc/alloy/config.alloy
-    command:
-      - run
-      - --server.http.listen-addr=0.0.0.0:12345
-      - /etc/alloy/config.alloy
-    ports:
-      - "12345:12345"
-    depends_on:
-      - redpanda
-
 volumes:
   redpanda_data:
   minio_data:

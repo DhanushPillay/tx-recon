@@ -4,7 +4,7 @@
 
 # Transaction Reconciliation
 
-> **A local data lakehouse for payment gateway reconciliation — correct by construction.**
+> **A local data lakehouse for payment gateway reconciliation, correct by construction.**
 
 ![CI](https://github.com/DhanushPillay/tx-recon/actions/workflows/ci.yml/badge.svg?branch=main)
 ![License](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)

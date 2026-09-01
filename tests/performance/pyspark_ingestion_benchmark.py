@@ -1,7 +1,6 @@
 import argparse
 import logging
 import os
-import platform
 import statistics
 import sys
 import time
@@ -11,9 +10,10 @@ os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-from pyspark.sql.functions import col, current_timestamp, from_json
-from pyspark.sql.streaming import StreamingQueryListener
-from pyspark.sql.types import (
+from hardware import get_hardware_info  # noqa: E402
+from pyspark.sql.functions import col, current_timestamp, from_json  # noqa: E402
+from pyspark.sql.streaming import StreamingQueryListener  # noqa: E402
+from pyspark.sql.types import (  # noqa: E402
     DoubleType,
     IntegerType,
     StringType,
@@ -21,22 +21,14 @@ from pyspark.sql.types import (
     StructType,
 )
 
-from src.common.config import get_spark_session
-from src.common.settings import get_settings
+from src.common.config import get_spark_session  # noqa: E402
+from src.common.settings import get_settings  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 WARMUP_SECONDS = 30
 MEASURE_SECONDS = 120
-
-
-def get_hardware_info():
-    return {
-        "platform": platform.platform(),
-        "cpu_count": os.cpu_count(),
-        "python_version": platform.python_version(),
-    }
 
 
 class BenchListener(StreamingQueryListener):

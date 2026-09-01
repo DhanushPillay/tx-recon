@@ -1,7 +1,3 @@
-with webhooks as (
-    select * from {{ ref('stg_webhooks') }}
-),
-
 daily_agg as (
     select
         transaction_date,
@@ -13,7 +9,7 @@ daily_agg as (
         sum(case when reconciliation_status = 'MATCHED' then amount_paise else 0 end) as reconciled_amount_paise,
         sum(case when reconciliation_status = 'EXCEPTION_FEE_MISMATCH' then amount_paise else 0 end) as fee_mismatch_amount_paise,
         sum(case when reconciliation_status = 'PENDING_SETTLEMENT' then amount_paise else 0 end) as pending_amount_paise
-    from webhooks
+    from {{ ref('stg_webhooks') }}
     group by transaction_date, merchant_id
 )
 

@@ -9,21 +9,8 @@ from confluent_kafka.schema_registry import SchemaRegistryClient
 from confluent_kafka.schema_registry.avro import AvroSerializer
 from confluent_kafka.serialization import StringSerializer
 
+from src.common.schemas import WEBHOOK_AVRO_SCHEMA
 from src.common.settings import get_settings
-
-avro_schema_str = """
-{
-  "type": "record",
-  "name": "WebhookEvent",
-  "fields": [
-    {"name": "transaction_id", "type": "string"},
-    {"name": "amount_paise", "type": "int"},
-    {"name": "gateway_status", "type": "string"},
-    {"name": "timestamp_utc", "type": "string"},
-    {"name": "merchant_id", "type": "string"}
-  ]
-}
-"""
 
 
 def generate_webhook_event():
@@ -55,7 +42,7 @@ def main():
     schema_registry_client = SchemaRegistryClient({"url": settings.schema_registry_url})
 
     avro_serializer = AvroSerializer(
-        schema_registry_client, avro_schema_str, lambda event, ctx: event
+        schema_registry_client, WEBHOOK_AVRO_SCHEMA, lambda event, ctx: event
     )
 
     producer_conf = {

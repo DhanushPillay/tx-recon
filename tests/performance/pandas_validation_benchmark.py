@@ -1,7 +1,6 @@
 import argparse
 import json
 import os
-import platform
 import statistics
 import sys
 import time
@@ -11,17 +10,11 @@ import pandera.pandas as pa
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
+from hardware import get_hardware_info
+
 from src.generators.settlement_generator import generate_settlement_file
 
 ROW_COUNTS = [10_000, 100_000, 1_000_000, 10_000_000]
-
-
-def get_hardware_info():
-    return {
-        "platform": platform.platform(),
-        "cpu_count": os.cpu_count(),
-        "python_version": platform.python_version(),
-    }
 
 
 def bench_pandera(df, schema):

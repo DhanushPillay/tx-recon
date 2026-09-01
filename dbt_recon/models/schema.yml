@@ -30,6 +30,7 @@ models:
           - accepted_values:
               values:
                 - SUCCESS
+                - FAILED
                 - MATCHED
                 - EXCEPTION_FEE_MISMATCH
                 - EXCEPTION_NO_WEBHOOK

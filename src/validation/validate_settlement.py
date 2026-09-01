@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 class SettlementValidation_error(Exception):
-    """Raised when settlement validation fails."""
+    pass
 
 
 def validate_and_quarantine(df, schema):

@@ -1,29 +1,11 @@
 import argparse
 import json
 import os
-import platform
 import subprocess
 import sys
 from datetime import datetime, timezone
 
-
-def get_hardware_info():
-    try:
-        import psutil
-
-        mem = psutil.virtual_memory()
-        ram_gb = round(mem.total / (1024**3), 1)
-    except ImportError:
-        # ponytail: psutil missing, degrade gracefully
-        ram_gb = None
-
-    return {
-        "platform": platform.platform(),
-        "cpu_count": os.cpu_count(),
-        "ram_gb": ram_gb,
-        "python_version": platform.python_version(),
-    }
-
+from hardware import get_hardware_info
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 

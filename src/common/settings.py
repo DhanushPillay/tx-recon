@@ -4,8 +4,6 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    """Central configuration for tx-recon. Loads from .env + environment overrides."""
-
     # Project
     project_root: str = os.environ.get("PROJECT_ROOT", os.getcwd())
 

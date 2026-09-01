@@ -1,7 +1,7 @@
 import json
 from unittest.mock import MagicMock, patch
 
-from src.ingestion.ingest_webhooks import avro_schema_str
+from src.common.schemas import WEBHOOK_AVRO_SCHEMA as avro_schema_str
 
 
 def test_avro_schema_valid_json():

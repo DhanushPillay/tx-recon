@@ -20,10 +20,10 @@ While the primary development and testing environment runs entirely locally via 
 We chose **Terraform** to define the equivalent AWS infrastructure (Amazon MSK, Amazon S3, AWS Glue, Amazon MWAA). The code is kept in the `infra/` directory but is not applied by default.
 
 ## Rationale
-In modern Data Engineering, defining infrastructure as code is a baseline requirement. By writing Terraform configurations, we explicitly map our local Docker containers to their enterprise AWS equivalents:
+By writing Terraform configurations, we map our local Docker containers to their enterprise AWS equivalents:
 * Local Redpanda -> Amazon MSK
 * Local MinIO -> Amazon S3
 * Local Project Nessie -> AWS Glue Data Catalog
 * Local Airflow -> Amazon MWAA
 
-This demonstrates that the architecture is fully cloud-ready and production-grade, separating the *design* of the system from the *runtime* environment.
+This shows the architecture maps directly to AWS managed services.
