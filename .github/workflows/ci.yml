@@ -8,18 +8,23 @@ on:
     branches:
       - main
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test-and-lint:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          cache: 'pip'
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -32,14 +37,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install "apache-airflow==2.11.2" --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.11.2/constraints-3.10.txt"
           pip install -r requirements.txt
-          
+
       - name: Run Black Formatter Check
-        run: |
-          black --check src/ tests/ dags/
+        run: black --check src/ tests/ dags/
 
       - name: Run Ruff Linter
-        run: |
-          ruff check src/ tests/ dags/
+        run: ruff check src/ tests/ dags/
 
       - name: Run Pytest with Coverage
         env:
