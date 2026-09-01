@@ -100,10 +100,7 @@ def test_reconciliation_logic(spark):
     )
 
     # Extract results
-    results = {
-        row["transaction_id"]: row["reconciliation_status"]
-        for row in result_df.collect()
-    }
+    results = {row["transaction_id"]: row["reconciliation_status"] for row in result_df.collect()}
 
     assert results["tx_1"] == "MATCHED"
     assert results["tx_2"] == "EXCEPTION_FEE_MISMATCH"

@@ -38,9 +38,7 @@ def test_kafka_producer_integration(kafka_container):
         "gateway_status": "SUCCESS",
     }
 
-    producer.produce(
-        topic, key=test_event["transaction_id"], value=json.dumps(test_event)
-    )
+    producer.produce(topic, key=test_event["transaction_id"], value=json.dumps(test_event))
     producer.flush()
 
     consumer_conf = {

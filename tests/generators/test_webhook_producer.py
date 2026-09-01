@@ -45,9 +45,7 @@ def test_delivery_report_failure(capsys):
 @patch("src.generators.webhook_producer.SerializingProducer")
 @patch("src.generators.webhook_producer.SchemaRegistryClient")
 @patch("src.generators.webhook_producer.argparse.ArgumentParser")
-def test_main_continuous_loop(
-    mock_parser_cls, mock_registry_cls, mock_producer_cls, mock_sleep
-):
+def test_main_continuous_loop(mock_parser_cls, mock_registry_cls, mock_producer_cls, mock_sleep):
     mock_parser = MagicMock()
     mock_parser.parse_args.return_value = MagicMock(stress=0)
     mock_parser_cls.return_value = mock_parser
@@ -62,9 +60,7 @@ def test_main_continuous_loop(
 @patch("src.generators.webhook_producer.SerializingProducer")
 @patch("src.generators.webhook_producer.SchemaRegistryClient")
 @patch("src.generators.webhook_producer.argparse.ArgumentParser")
-def test_main_stress_mode(
-    mock_parser_cls, mock_registry_cls, mock_producer_cls, mock_time
-):
+def test_main_stress_mode(mock_parser_cls, mock_registry_cls, mock_producer_cls, mock_time):
     mock_parser = MagicMock()
     mock_parser.parse_args.return_value = MagicMock(stress=10)
     mock_parser_cls.return_value = mock_parser
