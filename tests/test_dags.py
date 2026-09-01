@@ -1,15 +1,8 @@
 import os
-import sys
-from unittest.mock import MagicMock, patch
 
-# Pre-mock cosmos so DagBag can load the DAG
-cosmos_mock = MagicMock()
-sys.modules["cosmos"] = cosmos_mock
-sys.modules["astronomer_cosmos"] = cosmos_mock
-
-import pytest  # noqa: E402
-from airflow.models import DagBag  # noqa: E402
-from airflow.utils.dag_cycle_tester import check_cycle  # noqa: E402
+import pytest
+from airflow.models import DagBag
+from airflow.utils.dag_cycle_tester import check_cycle
 
 
 @pytest.fixture(scope="session")
@@ -20,10 +13,7 @@ def dagbag():
     if "PROJECT_ROOT" not in os.environ:
         os.environ["PROJECT_ROOT"] = project_root
 
-    with patch("cosmos.DbtTaskGroup") as mock_dtg:
-        mock_task_group = MagicMock()
-        mock_dtg.return_value = mock_task_group
-        return DagBag(dag_folder=dag_folder, include_examples=False)
+    return DagBag(dag_folder=dag_folder, include_examples=False)
 
 
 def test_dagbag_no_import_errors(dagbag):

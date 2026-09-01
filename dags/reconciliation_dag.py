@@ -5,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from cosmos import DbtTaskGroup, ExecutionConfig, ProfileConfig, ProjectConfig
 
 logger = logging.getLogger(__name__)
 
@@ -74,15 +73,4 @@ with DAG(
         python_callable=run_reconciliation_task,
     )
 
-    dbt_gold_layer = DbtTaskGroup(
-        group_id="dbt_gold_layer",
-        project_config=ProjectConfig(f"{PROJECT_ROOT}/dbt_recon"),
-        profile_config=ProfileConfig(
-            profile_name="dbt_recon",
-            target_name="dev",
-            profiles_yml_filepath=f"{PROJECT_ROOT}/dbt_recon/profiles.yml",
-        ),
-        execution_config=ExecutionConfig(dbt_executable_path="/usr/local/bin/dbt"),
-    )
-
-    (generate_settlement >> validate_settlement_op >> run_reconciliation_op >> dbt_gold_layer)
+    (generate_settlement >> validate_settlement_op >> run_reconciliation_op)

@@ -11,7 +11,6 @@ class Settings(BaseSettings):
     minio_endpoint: str = "http://localhost:9000"
     minio_access_key: str = "admin"
     minio_secret_key: str = "password"
-    minio_bucket: str = "lakehouse"
 
     # Nessie
     nessie_host: str = "localhost"
@@ -41,29 +40,19 @@ class Settings(BaseSettings):
     dlq_table: str = "nessie.db.webhooks_dlq"
 
     # Fee engine
-    default_mdr_rate: float = 0.015
     fee_rate_config: str = "config/fee_rates.yaml"
-
-    # dbt
-    dbt_host: str = "localhost"
-    dbt_port: int = 10000
-
-    # Airflow
-    is_airflow: bool = False
+    default_mdr_rate: float = 0.015
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     @classmethod
     def for_airflow(cls) -> "Settings":
-        """Create settings with Airflow-aware defaults (container hostnames)."""
         return cls(
-            is_airflow=True,
             nessie_host="nessie",
             minio_endpoint="http://minio:9000",
             redpanda_host="redpanda",
             kafka_broker="redpanda:9092",
             schema_registry_url="http://redpanda:8081",
-            dbt_host="spark-thrift-server",
         )
 
 

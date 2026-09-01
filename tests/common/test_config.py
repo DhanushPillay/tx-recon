@@ -12,7 +12,6 @@ def test_settings_loads_defaults(monkeypatch):
     assert s.nessie_host == "localhost"
     assert "localhost" in s.minio_endpoint
     assert s.redpanda_host == "localhost"
-    assert s.is_airflow is False
 
 
 def test_settings_switch_when_airflow_present(monkeypatch):
@@ -22,7 +21,6 @@ def test_settings_switch_when_airflow_present(monkeypatch):
     assert s.nessie_host == "nessie"
     assert "minio" in s.minio_endpoint
     assert s.redpanda_host == "redpanda"
-    assert s.is_airflow is True
 
 
 @patch("src.common.config.SparkSession")
