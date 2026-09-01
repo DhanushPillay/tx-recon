@@ -1,113 +1,36 @@
 <div align="center">
 
-<img src="assets/logo.svg" width="600" alt="tx-recon logo" />
+# tx-recon
 
-> **A high-performance local data lakehouse designed to automate financial reconciliation at scale.**
+> **A local data lakehouse for payment gateway reconciliation — correct by construction.**
 
-  ![CI](https://github.com/DhanushPillay/tx-recon/actions/workflows/ci.yml/badge.svg?branch=main)
-  ![License](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)
+![CI](https://github.com/DhanushPillay/tx-recon/actions/workflows/ci.yml/badge.svg?branch=main)
+![License](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)
 
 </div>
 
-`tx-recon` is a streaming reconciliation engine. It matches real-time payment gateway webhooks against delayed batch bank settlement files to verify Merchant Discount Rates (MDR), flag fee discrepancies instantly, and ensure mathematically sound financial settlement.
+**The Problem:** Finance teams manually match payment gateway webhooks against delayed bank settlement files to verify Merchant Discount Rates (MDR). This manual process causes month-end delays and masks revenue leakage.
 
-<table width="100%">
-  <tr>
-    <td width="50%">
-      <h3>Sub-10ms Streaming</h3>
-      <p>High-throughput ingestion via Redpanda and PySpark. Handles spikes effortlessly.</p>
-    </td>
-    <td width="50%">
-      <h3>Strict Data Contracts</h3>
-      <p>Pandera schemas prevent malformed settlements from touching the data lake.</p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <h3>ACID Lakehouse</h3>
-      <p>Row-level upserts handled via Apache Iceberg <code>MERGE</code>. No partition overwrites.</p>
-    </td>
-    <td width="50%">
-      <h3>Integer Finance Math</h3>
-      <p>Guaranteed precision by storing all monetary amounts as strictly typed integer paise.</p>
-    </td>
-  </tr>
-</table>
+**The Solution:** An automated pipeline that reconciles real-time webhooks against batch settlements using Iceberg MERGE, with instrument-aware fee calculation and configurable rate cards.
 
 ---
 
-## Performance Velocity
+## What This Is (and Isn't)
 
-> [!NOTE]
-> Local dev benchmarks. Run <kbd>python tests/performance/run_benchmarks.py --suite all</kbd> to reproduce.
-> *Hardware: 28 cores. Producer, Ingestion, and Pandera ran on native Windows 11. Iceberg MERGE ran inside a Linux Docker container (due to PySpark Python worker limitations).*
+**This is:**
+- A working local proof-of-concept for streaming + batch reconciliation
+- A demonstration of Iceberg MERGE for incremental updates
+- A reference architecture for payment reconciliation
+- A portfolio project with honest benchmarks
 
-```mermaid
-flowchart TD
-    %% Style Definitions
-    classDef stream fill:#0B192C,stroke:#D0342C,stroke-width:2px,color:#fff
-    classDef engine fill:#111827,stroke:#4B5563,stroke-width:2px,color:#fff
-    classDef storage fill:#1e1e1e,stroke:#333,stroke-width:2px,color:#fff
-    classDef highlight font-weight:bold
-
-    subgraph "Event Pipeline"
-        A[Gateway Webhooks] -->|143,842 msgs/sec<br>p99 = 6.07ms| B[(Redpanda Kafka)]:::stream
-        B -->|Sustained Ingestion<br>27,388 rows/sec| C[PySpark Streaming]:::engine
-    end
-
-    subgraph "Reconciliation Core"
-        D[Bank Settlements] -->|Data Contract<br>5,369,704 rows/sec| V{Pandera Validation}:::engine
-        C --> E[(Apache Iceberg)]:::storage
-        V -.->|Schema Enforced| E
-        E -->|ACID MERGE INTO<br>500K Updates = 2.32s| E
-    end
-```
-
-<details>
-<summary><b>View Benchmark Deep Dives</b></summary>
-<br>
-
-- [Kafka Producer (20K → 130K+ msgs/sec)](docs/kafka_benchmark_explained.md)
-- [PySpark Streaming Ingestion](docs/pyspark_ingestion_benchmark_explained.md)
-- [Iceberg MERGE Reconciliation](docs/iceberg_merge_benchmark_explained.md)
-- [Pandera vs Manual vs Pydantic Validation](docs/pandera_validation_benchmark_explained.md)
-</details>
+**This is NOT:**
+- Production-ready — it runs on Docker Compose, not a Spark cluster
+- A payments system — it processes synthetic data, not real money
+- Scalable to billions of transactions — benchmarks are single-node only
 
 ---
 
-## How It Works
-
-`tx-recon` replaces fragile end-of-month manual diffing with a robust, automated pipeline. 
-
-```diff
-- Manual Excel VLOOKUP matching at month-end
-- Floating point precision loss in fee calculation
-- O(N) full table overwrites on updates
-+ Real-time stream-to-batch JOIN via Iceberg
-+ Strict integer (paise) math validation
-+ O(1) row-level mutation with MERGE INTO
-```
-
-### The Data Flow
-1. **Gateway Webhook**: `{"transaction_id": "tx_8f92j", "gateway_fee_paise": 2000}` (Streamed via Redpanda)
-2. **Bank Settlement**: `tx_8f92j,98000,2000` (Batch CSV validated via Pandera)
-3. **The Engine**: PySpark executes a programmatic `MERGE INTO` Iceberg query to reconcile the two.
-
-```sql
-MERGE INTO lakehouse.reconciliation AS target
-USING validated_settlements AS source
-ON target.transaction_id = source.transaction_id
-WHEN MATCHED AND target.gateway_fee_paise = source.bank_fee_paise 
-  THEN UPDATE SET status = 'MATCHED'
-WHEN MATCHED 
-  THEN UPDATE SET status = 'EXCEPTION_FEE_MISMATCH'
-```
-
----
-
-<details>
-<summary><b>View Architecture & Cloud Equivalents</b></summary>
-<br>
+## Architecture
 
 ```mermaid
 flowchart LR
@@ -118,62 +41,126 @@ flowchart LR
     V -->|Validated| F[PySpark MERGE]
     F --> C
     
-    G[Airflow] -->|Triggers| V
+    G[Airflow] -->|Orchestrates| F
     C <--> H(Nessie Catalog)
     C -->|dbt| I[Gold Models]
 ```
 
-| Local Component | Cloud Equivalent | Notes |
-| :--- | :--- | :--- |
-| Redpanda (Docker) | Amazon MSK / Confluent Cloud | Same Kafka API; managed brokers |
-| MinIO (Docker) | Amazon S3 / GCS | S3-compatible object storage |
-| Nessie (Docker) | AWS Glue Data Catalog / Unity Catalog | Git-like branching for Iceberg |
-| PySpark on Docker | EMR / Dataproc | Managed Spark clusters |
-| Airflow on Docker | MWAA / Cloud Composer | Managed Airflow |
+| Local Component | Cloud Equivalent |
+| :--- | :--- |
+| Redpanda (Docker) | Amazon MSK / Confluent Cloud |
+| MinIO (Docker) | Amazon S3 / GCS |
+| Nessie (Docker) | AWS Glue Data Catalog |
+| PySpark on Docker | EMR / Dataproc |
+| Airflow on Docker | MWAA / Cloud Composer |
 
-</details>
+---
 
-<details>
-<summary><b>View Project Structure & ADRs</b></summary>
-<br>
+## Key Features
 
-| ADR | Decision | Status |
-| :--- | :--- | :--- |
-| [ADR-001](docs/ADR-001-PySpark-over-DuckDB.md) | PySpark over DuckDB for Spark-native Iceberg MERGE | Accepted |
-| [ADR-002](docs/ADR-002-Iceberg-Lakehouse.md) | Iceberg lakehouse with Nessie catalog | Accepted |
-| [ADR-003](docs/ADR-003-Testing-and-CICD-Strategy.md) | Testing and CI/CD strategy | Accepted |
-| [ADR-004](docs/ADR-004-Terraform-IaC.md) | Terraform for infrastructure-as-code | Accepted |
-
-```text
-├── dags/                  # Airflow DAG definitions
-├── src/                   
-│   ├── common/            # Shared utilities (Spark session management)
-│   ├── generators/        # Mock data generation (webhooks, settlements)
-│   ├── ingestion/         # PySpark streaming pipelines
-│   ├── processing/        # Batch processing (MERGE INTO logic)
-│   └── validation/        # Data quality checks (Pandera validation)
-├── tests/                 
-│   ├── integration/       # External services testing (Kafka Testcontainers)
-│   └── performance/       # pytest-benchmark performance suite
-├── dbt_recon/             # dbt project for star schema modeling
-├── infra/                 # Terraform configurations for AWS
-└── docker-compose.yml     # Local infrastructure setup
-```
-</details>
+| Feature | Implementation |
+| :--- | :--- |
+| **Instrument-aware fees** | YAML-driven rate cards per instrument type (UPI, CC, DC, etc.) |
+| **GST on MDR** | Automatic GST calculation on the MDR fee |
+| **Rounding tolerance** | Configurable tolerance for minor rounding differences |
+| **ACID MERGE** | Iceberg MERGE INTO with WHEN NOT MATCHED handling |
+| **Data contracts** | Pandera schemas with strict type + uniqueness checks |
+| **Quarantine** | Invalid records isolated, not dropped |
+| **Dead Letter Queue** | Failed webhook records captured in separate Iceberg table |
+| **dbt star schema** | fact_reconciliations + dim_merchant + dim_date + dim_instrument |
 
 ---
 
 ## Quick Start
 
-> [!TIP]
-> Ensure Docker Desktop is running before executing the setup script.
+```bash
+# 1. Start infrastructure
+docker compose up -d
 
-1. Configure the virtual environment: 
-   <kbd>.\setup.ps1</kbd>
-2. Start the local infrastructure: 
-   <kbd>docker-compose up -d --build</kbd>
-3. Start the mock webhook generator: 
-   <kbd>python src/generators/webhook_producer.py</kbd>
-4. Start the PySpark streaming ingestion: 
-   <kbd>python src/ingestion/ingest_webhooks.py</kbd>
-5. Access Airflow UI at `http://localhost:8080` (admin/admin) to trigger the DAG.
+# 2. Run the full pipeline via Airflow
+# Airflow UI: http://localhost:8080 (admin/admin)
+# DAG: daily_tx_reconciliation
+
+# 3. Or run individual steps manually
+python src/generators/settlement_generator.py
+python src/validation/validate_settlement.py
+python src/ingestion/ingest_webhooks.py
+```
+
+---
+
+## Benchmarks
+
+> [!WARNING]
+> These are local Docker benchmarks on a single machine. They do NOT represent production multi-node performance. See [Benchmark Methodology](docs/how_to_benchmark.md) for details.
+
+| Benchmark | Result | Environment |
+| :--- | :--- | :--- |
+| Kafka Producer Throughput | ~130K msgs/sec (acks=1, lz4) | Local Docker |
+| Pandera Validation | ~5M rows/sec (1M rows) | Native Windows |
+| Iceberg MERGE (500K, 50% update) | ~2.3s write | Docker container |
+| PySpark Streaming Ingestion | ~27K rows/sec | Docker container |
+
+**Caveats:**
+- Single-node, not distributed
+- No network latency (all localhost)
+- No real message ordering guarantees
+- Benchmarks run on developer hardware (28 cores)
+
+For detailed explanations: [Kafka](docs/kafka_benchmark_explained.md) | [PySpark](docs/pyspark_ingestion_benchmark_explained.md) | [Iceberg](docs/iceberg_merge_benchmark_explained.md) | [Pandera](docs/pandera_validation_benchmark_explained.md)
+
+---
+
+## Configuration
+
+All configuration is centralized in `src/common/settings.py` using `pydantic-settings`. Values load from `.env` + environment overrides.
+
+Fee rates are configured in `config/fee_rates.yaml`:
+```yaml
+instruments:
+  UPI:
+    mdr_rate_bps: 0
+    gst_on_mdr: 0
+  CREDIT_CARD:
+    mdr_rate_bps: 200  # 2.0%
+    gst_on_mdr: 18.0
+```
+
+See [`.env.example`](.env.example) for available environment variables.
+
+---
+
+## Project Structure
+
+```text
+├── config/                  # Fee rate configuration
+├── dags/                    # Airflow DAG definitions
+├── src/
+│   ├── common/              # Settings and Spark session management
+│   ├── generators/          # Mock data generation (webhooks, settlements)
+│   ├── ingestion/           # PySpark streaming pipelines
+│   ├── processing/          # Fee engine + MERGE reconciliation
+│   └── validation/          # Pandera data contracts
+├── tests/
+│   ├── processing/          # Fee engine + reconciliation unit tests
+│   ├── validation/          # Schema validation tests
+│   ├── integration/         # Kafka Testcontainers tests
+│   └── performance/         # Benchmarks
+├── dbt_recon/               # dbt star schema models
+├── infra/                   # Terraform (placeholder for AWS)
+├── docs/                    # ADRs + benchmark explainers
+└── docker-compose.yml       # Local infrastructure
+```
+
+---
+
+## ADRs
+
+| ADR | Decision | Status |
+| :--- | :--- | :--- |
+| [ADR-001](docs/ADR-001-PySpark-over-DuckDB.md) | PySpark over DuckDB | Accepted |
+| [ADR-002](docs/ADR-002-Iceberg-Lakehouse.md) | Iceberg lakehouse with Nessie | Accepted |
+| [ADR-003](docs/ADR-003-Testing-and-CICD-Strategy.md) | Testing and CI/CD strategy | Accepted |
+| [ADR-004](docs/ADR-004-Terraform-IaC.md) | Terraform for AWS deployment | Accepted |
+| [ADR-005](docs/ADR-005-Fee-Engine.md) | Configurable fee engine with rate cards | Accepted |
+| [ADR-006](docs/ADR-006-Matching-Strategy.md) | Multi-status reconciliation strategy | Accepted |
