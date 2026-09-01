@@ -5,19 +5,32 @@ variable "aws_region" {
 }
 
 variable "environment" {
-  description = "Deployment environment (e.g., dev, prod)"
+  description = "Deployment environment (e.g., dev, staging, prod)"
   type        = string
   default     = "dev"
+
+  validation {
+    condition     = contains(["dev", "staging", "prod"], var.environment)
+    error_message = "Environment must be dev, staging, or prod."
+  }
 }
 
 variable "vpc_id" {
-  description = "The ID of the VPC where resources will be deployed"
+  description = "The ID of the VPC where resources will be deployed. Get from your AWS account."
   type        = string
-  default     = "vpc-0abcdef1234567890" # Example placeholder
+
+  validation {
+    condition     = can(regex("^vpc-[a-f0-9]{17}$", var.vpc_id))
+    error_message = "VPC ID must be in the format vpc-xxxxxxxxxxxxxxxxx."
+  }
 }
 
 variable "subnet_ids" {
-  description = "List of subnet IDs for MSK and MWAA"
+  description = "List of at least 2 subnet IDs for MSK and MWAA (must be in different AZs)"
   type        = list(string)
-  default     = ["subnet-0a1b2c3d", "subnet-0e4f5g6h"] # Example placeholders
+
+  validation {
+    condition     = length(var.subnet_ids) >= 2
+    error_message = "At least 2 subnet IDs required for MSK broker nodes."
+  }
 }
