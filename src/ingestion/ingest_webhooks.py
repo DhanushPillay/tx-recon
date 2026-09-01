@@ -1,14 +1,12 @@
 import logging
 
 from pyspark.sql.avro.functions import from_avro
-from pyspark.sql.functions import col, current_timestamp, expr
+from pyspark.sql.functions import col, current_timestamp, expr, lit
 
-from src.common.config import get_spark_session, redpanda_host
+from src.common.config import get_spark_session
+from src.common.settings import get_settings
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 avro_schema_str = """
@@ -27,14 +25,16 @@ avro_schema_str = """
 
 
 def run_ingestion():
+    settings = get_settings()
+
     logger.info("Initializing Spark Session for Webhook Ingestion")
     spark = get_spark_session("WebhookIngestion")
 
-    logger.info(f"Connecting to Redpanda at {redpanda_host}:9092")
+    logger.info(f"Connecting to Redpanda at {settings.kafka_broker}")
     df = (
         spark.readStream.format("kafka")
-        .option("kafka.bootstrap.servers", f"{redpanda_host}:9092")
-        .option("subscribe", "gateway_webhooks")
+        .option("kafka.bootstrap.servers", settings.kafka_broker)
+        .option("subscribe", settings.topic_name)
         .option("startingOffsets", "earliest")
         .load()
     )
@@ -42,60 +42,54 @@ def run_ingestion():
     # Confluent Avro wire format: Magic Byte (1 byte) + Schema ID (4 bytes)
     df = df.withColumn("fixed_value", expr("substring(value, 6, length(value)-5)"))
 
-    parsed_df = df.select(
-        from_avro(col("fixed_value"), avro_schema_str).alias("data")
-    ).select("data.*")
-
-    # DATA QUALITY CHECKS (Filter good vs bad records)
-    # Valid: Amount > 0 and transaction_id is not null
-    valid_df = parsed_df.filter(
-        (col("amount_paise") > 0) & (col("transaction_id").isNotNull())
+    parsed_df = df.select(from_avro(col("fixed_value"), avro_schema_str).alias("data")).select(
+        "data.*"
     )
 
-    # Invalid: Dead Letter Queue (DLQ)
-    invalid_df = parsed_df.filter(
-        (col("amount_paise") <= 0) | (col("transaction_id").isNull())
-    )
+    valid_df = parsed_df.filter((col("amount_paise") > 0) & (col("transaction_id").isNotNull()))
+
+    invalid_df = parsed_df.filter((col("amount_paise") <= 0) | (col("transaction_id").isNull()))
 
     enriched_df = (
         valid_df.withColumn("reconciliation_status", col("gateway_status"))
-        .withColumn("bank_ref_id", col("transaction_id"))
+        .withColumn("bank_ref_id", lit(None).cast("string"))
         .withColumn("ingested_at", current_timestamp())
     )
 
-    # Write valid records to Iceberg
-    logger.info("Starting stream to Iceberg nessie.db.webhooks")
+    warehouse = settings.iceberg_warehouse.replace("s3a://", "s3a://")
+
+    logger.info(f"Starting stream to Iceberg {settings.webhook_table}")
     (
         enriched_df.writeStream.format("iceberg")
         .outputMode("append")
         .trigger(processingTime="2 seconds")
         .option("maxOffsetsPerTrigger", 50000)
-        .option("checkpointLocation", "s3a://lakehouse/checkpoints/webhooks_valid")
-        .toTable("nessie.db.webhooks")
+        .option("checkpointLocation", f"{warehouse}/checkpoints/webhooks_valid")
+        .toTable(settings.webhook_table)
     )
 
-    # Write invalid records to DLQ (Iceberg table)
     (
         invalid_df.writeStream.format("iceberg")
         .outputMode("append")
         .trigger(processingTime="2 seconds")
         .option("maxOffsetsPerTrigger", 50000)
-        .option("checkpointLocation", "s3a://lakehouse/checkpoints/webhooks_dlq")
-        .toTable("nessie.db.webhooks_dlq")
+        .option("checkpointLocation", f"{warehouse}/checkpoints/webhooks_dlq")
+        .toTable(settings.dlq_table)
     )
 
     spark.streams.awaitAnyTermination()
 
 
 if __name__ == "__main__":
+    settings = get_settings()
+
     logger.info("Initializing Iceberg tables via Nessie")
     spark = get_spark_session("Init")
     spark.sql("CREATE NAMESPACE IF NOT EXISTS nessie.db")
 
-    # Initialize valid table
     spark.sql(
-        """
-        CREATE TABLE IF NOT EXISTS nessie.db.webhooks (
+        f"""
+        CREATE TABLE IF NOT EXISTS {settings.webhook_table} (
             transaction_id string,
             amount_paise int,
             gateway_status string,
@@ -108,10 +102,9 @@ if __name__ == "__main__":
     """
     )
 
-    # Initialize DLQ table
     spark.sql(
-        """
-        CREATE TABLE IF NOT EXISTS nessie.db.webhooks_dlq (
+        f"""
+        CREATE TABLE IF NOT EXISTS {settings.dlq_table} (
             transaction_id string,
             amount_paise int,
             gateway_status string,
