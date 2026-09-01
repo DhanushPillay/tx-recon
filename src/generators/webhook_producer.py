@@ -9,9 +9,7 @@ from confluent_kafka.schema_registry import SchemaRegistryClient
 from confluent_kafka.schema_registry.avro import AvroSerializer
 from confluent_kafka.serialization import StringSerializer
 
-KAFKA_BROKER = "localhost:19092"
-SCHEMA_REGISTRY_URL = "http://localhost:8081"
-TOPIC_NAME = "gateway_webhooks"
+from src.common.settings import get_settings
 
 avro_schema_str = """
 {
@@ -45,26 +43,23 @@ def delivery_report(err, msg):
     if err is not None:
         print(f"Delivery failed: {err}")
     else:
-        print(
-            f"Produced record to {msg.topic()} [{msg.partition()}] @ offset {msg.offset()}"
-        )
+        print(f"Produced record to {msg.topic()} [{msg.partition()}] @ offset {msg.offset()}")
 
 
 def main():
+    settings = get_settings()
     parser = argparse.ArgumentParser(description="Webhook Producer for Redpanda")
-    parser.add_argument(
-        "--stress", type=int, help="Run a high-throughput stress test", default=0
-    )
+    parser.add_argument("--stress", type=int, help="Run a high-throughput stress test", default=0)
     args = parser.parse_args()
 
-    schema_registry_client = SchemaRegistryClient({"url": SCHEMA_REGISTRY_URL})
+    schema_registry_client = SchemaRegistryClient({"url": settings.schema_registry_url})
 
     avro_serializer = AvroSerializer(
         schema_registry_client, avro_schema_str, lambda event, ctx: event
     )
 
     producer_conf = {
-        "bootstrap.servers": KAFKA_BROKER,
+        "bootstrap.servers": settings.kafka_broker,
         "key.serializer": StringSerializer("utf_8"),
         "value.serializer": avro_serializer,
         "linger.ms": 50,
@@ -77,12 +72,12 @@ def main():
 
     if args.stress > 0:
         print(
-            f"Starting STRESS TEST mode. Pushing {args.stress} messages to {TOPIC_NAME}..."
+            f"Starting STRESS TEST mode. Pushing {args.stress} messages to {settings.topic_name}..."
         )
         start_time = time.time()
         for i in range(args.stress):
             event = generate_webhook_event()
-            producer.produce(topic=TOPIC_NAME, key=event["transaction_id"], value=event)
+            producer.produce(topic=settings.topic_name, key=event["transaction_id"], value=event)
             producer.poll(0)
             if i > 0 and i % 10000 == 0:
                 print(f"Pushed {i} messages...")
@@ -93,12 +88,12 @@ def main():
         )
         return
 
-    print(f"Starting webhook stream to {TOPIC_NAME}...")
+    print(f"Starting webhook stream to {settings.topic_name}...")
     try:
         while True:
             event = generate_webhook_event()
             producer.produce(
-                topic=TOPIC_NAME,
+                topic=settings.topic_name,
                 key=event["transaction_id"],
                 value=event,
                 on_delivery=delivery_report,
