@@ -64,9 +64,9 @@ def test_get_spark_session_config_values(monkeypatch):
         assert "spark.hadoop.fs.s3a.secret.key" in config_keys
 
         uri_calls = [args for args in all_config_args if args[0] == "spark.sql.catalog.nessie.uri"]
-        assert "http://localhost:19120/api/v1" == uri_calls[0][1]
+        assert uri_calls[0][1] == "http://localhost:19120/api/v1"
 
         key_calls = [
             args for args in all_config_args if args[0] == "spark.hadoop.fs.s3a.access.key"
         ]
-        assert "admin" == key_calls[0][1]
+        assert key_calls[0][1] == "admin"

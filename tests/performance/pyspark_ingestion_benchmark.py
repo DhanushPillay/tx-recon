@@ -2,6 +2,7 @@ import argparse
 import logging
 import os
 import platform
+import statistics
 import sys
 import time
 
@@ -203,9 +204,6 @@ def run_benchmark(partitions=16):
     spark.stop()
 
     return result
-
-
-import statistics
 
 
 def main():

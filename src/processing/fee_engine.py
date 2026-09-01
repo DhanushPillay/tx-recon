@@ -1,6 +1,5 @@
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 import yaml
 
@@ -17,7 +16,7 @@ class FeeResult:
 
 
 class FeeEngine:
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: str | None = None):
         settings = get_settings()
         path = config_path or os.path.join(settings.project_root, settings.fee_rate_config)
         if os.path.exists(path):
@@ -33,7 +32,7 @@ class FeeEngine:
         self._instruments = self._config.get("instruments", {})
         self._merchants = self._config.get("merchants", {})
 
-    def get_rate(self, instrument_type: str, merchant_id: Optional[str] = None) -> dict:
+    def get_rate(self, instrument_type: str, merchant_id: str | None = None) -> dict:
         if merchant_id and merchant_id in self._merchants:
             merchant_rates = self._merchants[merchant_id]
             if instrument_type in merchant_rates:
@@ -45,7 +44,7 @@ class FeeEngine:
         return self._default
 
     def compute_fee(
-        self, amount_paise: int, instrument_type: str = "UPI", merchant_id: Optional[str] = None
+        self, amount_paise: int, instrument_type: str = "UPI", merchant_id: str | None = None
     ) -> FeeResult:
         rate = self.get_rate(instrument_type, merchant_id)
         mdr_bps = rate.get("mdr_rate_bps", 150)
@@ -65,7 +64,7 @@ class FeeEngine:
         )
 
     def compute_expected_settled(
-        self, amount_paise: int, instrument_type: str = "UPI", merchant_id: Optional[str] = None
+        self, amount_paise: int, instrument_type: str = "UPI", merchant_id: str | None = None
     ) -> int:
         return self.compute_fee(amount_paise, instrument_type, merchant_id).net_paise
 
@@ -74,7 +73,7 @@ class FeeEngine:
         amount_paise: int,
         settled_amount_paise: int,
         instrument_type: str = "UPI",
-        merchant_id: Optional[str] = None,
+        merchant_id: str | None = None,
     ) -> tuple[bool, FeeResult]:
         rate = self.get_rate(instrument_type, merchant_id)
         tolerance = rate.get("tolerance_paise", 1)
@@ -84,7 +83,7 @@ class FeeEngine:
         return diff <= tolerance, result
 
 
-_fee_engine: Optional[FeeEngine] = None
+_fee_engine: FeeEngine | None = None
 
 
 def get_fee_engine() -> FeeEngine:

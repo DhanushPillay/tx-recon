@@ -30,10 +30,7 @@ def generate_settlement_file(num_records=100, output_dir=None, webhook_ids=None)
         writer.writerow(headers)
 
         for _ in range(num_records):
-            if webhook_ids:
-                tx_id = random.choice(webhook_ids)
-            else:
-                tx_id = f"tx_{uuid.uuid4().hex[:12]}"
+            tx_id = random.choice(webhook_ids) if webhook_ids else f"tx_{uuid.uuid4().hex[:12]}"
 
             gateway_amount = random.randint(1000, 1000000)
             instrument = random.choice(INSTRUMENT_TYPES)

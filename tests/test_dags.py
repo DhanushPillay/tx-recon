@@ -7,9 +7,9 @@ cosmos_mock = MagicMock()
 sys.modules["cosmos"] = cosmos_mock
 sys.modules["astronomer_cosmos"] = cosmos_mock
 
-import pytest
-from airflow.models import DagBag
-from airflow.utils.dag_cycle_tester import check_cycle
+import pytest  # noqa: E402
+from airflow.models import DagBag  # noqa: E402
+from airflow.utils.dag_cycle_tester import check_cycle  # noqa: E402
 
 
 @pytest.fixture(scope="session")

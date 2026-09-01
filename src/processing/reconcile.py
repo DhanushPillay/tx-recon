@@ -27,8 +27,8 @@ def run_reconciliation():
     bank_df.createOrReplaceTempView("bank_settlements")
 
     # Instrument-aware MERGE: compute expected fee per row based on instrument type
-    merge_sql = """
-    MERGE INTO {table} t
+    merge_sql = f"""
+    MERGE INTO {settings.webhook_table} t
     USING (
         SELECT
             s.transaction_id,
@@ -50,7 +50,7 @@ def run_reconciliation():
                 ELSE ((t.amount_paise * 150) DIV 10000 * 18) DIV 100
             END AS expected_gst
         FROM bank_settlements s
-        JOIN {table} t ON t.transaction_id = s.transaction_id
+        JOIN {settings.webhook_table} t ON t.transaction_id = s.transaction_id
     ) s
     ON t.transaction_id = s.transaction_id
     WHEN MATCHED AND (t.amount_paise - s.expected_fee - s.expected_gst) = s.settled_amount_paise THEN
@@ -64,9 +64,7 @@ def run_reconciliation():
     WHEN NOT MATCHED THEN
         UPDATE SET
             t.reconciliation_status = 'EXCEPTION_NO_WEBHOOK'
-    """.format(
-        table=settings.webhook_table
-    )
+    """
 
     logger.info("Executing MERGE INTO operation")
     spark.sql(merge_sql)
