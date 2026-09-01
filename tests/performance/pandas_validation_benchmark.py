@@ -120,9 +120,7 @@ def run_single(rows, output_dir, warmup_runs=2):
     }
 
     for m in methods.values():
-        m["rows_per_sec"] = (
-            round(rows / (m["mean_ms"] / 1000)) if m["mean_ms"] > 0 else 0
-        )
+        m["rows_per_sec"] = round(rows / (m["mean_ms"] / 1000)) if m["mean_ms"] > 0 else 0
 
     return {"rows": rows, "methods": methods}
 
@@ -135,9 +133,7 @@ def main():
     args = parser.parse_args()
 
     hw = get_hardware_info()
-    print(
-        f"Hardware: {hw['platform']}, {hw['cpu_count']} cores, Python {hw['python_version']}"
-    )
+    print(f"Hardware: {hw['platform']}, {hw['cpu_count']} cores, Python {hw['python_version']}")
 
     output_dir = "benchmarks/data"
     os.makedirs(output_dir, exist_ok=True)
@@ -151,9 +147,7 @@ def main():
         results_list.append(result)
 
         for method, m in result["methods"].items():
-            print(
-                f"  {method:<20} {m['mean_ms']:>10.2f}ms  ({m['rows_per_sec']:>12,} rows/sec)"
-            )
+            print(f"  {method:<20} {m['mean_ms']:>10.2f}ms  ({m['rows_per_sec']:>12,} rows/sec)")
 
     output = {"hardware": hw, "benchmarks": results_list}
 

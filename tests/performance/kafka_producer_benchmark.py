@@ -125,20 +125,14 @@ def measure_latency(broker, count, acks, compression, record_size):
         "p99": round(percentile(latencies_ms, 99), 2),
         "max": round(max(latencies_ms), 2),
         "mean": round(statistics.mean(latencies_ms), 2),
-        "stdev": (
-            round(statistics.stdev(latencies_ms), 2) if len(latencies_ms) > 1 else 0
-        ),
+        "stdev": (round(statistics.stdev(latencies_ms), 2) if len(latencies_ms) > 1 else 0),
     }
 
 
 def run(broker, count, acks, compression, record_size, mode):
     hw = get_hardware_info()
-    print(
-        f"Hardware: {hw['platform']}, {hw['cpu_count']} cores, Python {hw['python_version']}"
-    )
-    print(
-        f"Broker: {broker}, acks={acks}, compression={compression}, record_size={record_size}"
-    )
+    print(f"Hardware: {hw['platform']}, {hw['cpu_count']} cores, Python {hw['python_version']}")
+    print(f"Broker: {broker}, acks={acks}, compression={compression}, record_size={record_size}")
 
     throughput = None
     latency = None
@@ -171,13 +165,9 @@ def run(broker, count, acks, compression, record_size, mode):
 def main():
     parser = argparse.ArgumentParser(description="Kafka Producer Benchmark")
     parser.add_argument("--count", type=int, default=1000000)
-    parser.add_argument(
-        "--mode", choices=["throughput", "latency", "both"], default="both"
-    )
+    parser.add_argument("--mode", choices=["throughput", "latency", "both"], default="both")
     parser.add_argument("--acks", choices=["0", "1", "all"], default="1")
-    parser.add_argument(
-        "--compression", choices=["lz4", "gzip", "snappy", "none"], default="lz4"
-    )
+    parser.add_argument("--compression", choices=["lz4", "gzip", "snappy", "none"], default="lz4")
     parser.add_argument("--record-size", type=int, default=1024)
     parser.add_argument(
         "--compare",
@@ -186,9 +176,7 @@ def main():
     )
     args = parser.parse_args()
 
-    brokers = (
-        ["localhost:9092", "localhost:19092"] if args.compare else ["localhost:19092"]
-    )
+    brokers = ["localhost:9092", "localhost:19092"] if args.compare else ["localhost:19092"]
 
     results = {}
     for broker in brokers:
@@ -222,12 +210,8 @@ def main():
         print(f"{'Throughput (msgs/sec)':<30} {t_k!s:<15} {t_r!s:<15}")
         lat_k = kafka_r.get("ack_latency", {})
         lat_r = rp_r.get("ack_latency", {})
-        print(
-            f"{'p50 (ms)':<30} {lat_k.get('p50','error'):<15} {lat_r.get('p50','error'):<15}"
-        )
-        print(
-            f"{'p99 (ms)':<30} {lat_k.get('p99','error'):<15} {lat_r.get('p99','error'):<15}"
-        )
+        print(f"{'p50 (ms)':<30} {lat_k.get('p50','error'):<15} {lat_r.get('p50','error'):<15}")
+        print(f"{'p99 (ms)':<30} {lat_k.get('p99','error'):<15} {lat_r.get('p99','error'):<15}")
 
     return results
 

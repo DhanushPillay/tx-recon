@@ -8,6 +8,9 @@ import sys
 import time
 import uuid
 
+os.environ["PYSPARK_PYTHON"] = sys.executable
+os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from pyspark.sql.types import (
@@ -20,9 +23,7 @@ from pyspark.sql.types import (
 
 from src.common.config import get_spark_session
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 MERGE_SQL = """
@@ -126,15 +127,11 @@ def create_settlement_data(spark, table_name, update_fraction):
     settlement_df = (
         ids_df.withColumn(
             "settled_amount_paise",
-            (col("amount_paise") - ((col("amount_paise") * lit(15)) / lit(1000))).cast(
-                "int"
-            ),
+            (col("amount_paise") - ((col("amount_paise") * lit(15)) / lit(1000))).cast("int"),
         )
         .withColumn("bank_ref_id", col("transaction_id"))
         .withColumn("settlement_date", lit("2024-01-16"))
-        .select(
-            "bank_ref_id", "transaction_id", "settled_amount_paise", "settlement_date"
-        )
+        .select("bank_ref_id", "transaction_id", "settled_amount_paise", "settlement_date")
     )
 
     settlement_df.createOrReplaceTempView("bank_settlements")

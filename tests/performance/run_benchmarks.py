@@ -78,9 +78,7 @@ def print_summary(results):
         benchmarks = iceberg.get("benchmarks", {})
         if benchmarks:
             first = next(iter(benchmarks.values()))
-            print(
-                f"{'Iceberg MERGE (500k/50%)':<30} {first.get('write_time_sec', 'N/A')}s write"
-            )
+            print(f"{'Iceberg MERGE (500k/50%)':<30} {first.get('write_time_sec', 'N/A')}s write")
     else:
         print(f"{'Iceberg MERGE':<30} SKIPPED: {iceberg['error'][:40]}")
 

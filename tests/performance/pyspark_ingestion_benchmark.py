@@ -5,6 +5,9 @@ import platform
 import sys
 import time
 
+os.environ["PYSPARK_PYTHON"] = sys.executable
+os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from pyspark.sql.functions import col, current_timestamp, from_json
@@ -17,11 +20,10 @@ from pyspark.sql.types import (
     StructType,
 )
 
-from src.common.config import get_spark_session, redpanda_host
+from src.common.config import get_spark_session
+from src.common.settings import get_settings
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 WARMUP_SECONDS = 30
@@ -103,20 +105,18 @@ def run_benchmark(partitions=16):
 
     df = (
         spark.readStream.format("kafka")
-        .option("kafka.bootstrap.servers", f"{redpanda_host}:19092")
+        .option("kafka.bootstrap.servers", f"{get_settings().redpanda_host}:19092")
         .option("subscribe", "gateway_webhooks")
         .option("startingOffsets", "earliest")
         .option("maxOffsetsPerTrigger", 500000)
         .load()
     )
 
-    parsed_df = df.select(
-        from_json(col("value").cast("string"), schema).alias("data")
-    ).select("data.*")
-
-    valid_df = parsed_df.filter(
-        (col("amount_paise") > 0) & (col("transaction_id").isNotNull())
+    parsed_df = df.select(from_json(col("value").cast("string"), schema).alias("data")).select(
+        "data.*"
     )
+
+    valid_df = parsed_df.filter((col("amount_paise") > 0) & (col("transaction_id").isNotNull()))
 
     enriched_df = (
         valid_df.withColumn("reconciliation_status", col("gateway_status"))
@@ -159,9 +159,9 @@ def run_benchmark(partitions=16):
 
     spark.streams.removeListener(listener)
 
-    count_result = spark.sql(
-        "SELECT COUNT(*) as cnt FROM nessie.db.webhooks_bench"
-    ).collect()[0]["cnt"]
+    count_result = spark.sql("SELECT COUNT(*) as cnt FROM nessie.db.webhooks_bench").collect()[0][
+        "cnt"
+    ]
 
     sustained_rate = count_result / total_duration if total_duration > 0 else 0
 
@@ -171,12 +171,8 @@ def run_benchmark(partitions=16):
     avg_input_rps = 0
     avg_batch_duration_ms = 0
     if listener_batches:
-        avg_processed_rps = statistics.mean(
-            b["processedRowsPerSecond"] for b in listener_batches
-        )
-        avg_input_rps = statistics.mean(
-            b["inputRowsPerSecond"] for b in listener_batches
-        )
+        avg_processed_rps = statistics.mean(b["processedRowsPerSecond"] for b in listener_batches)
+        avg_input_rps = statistics.mean(b["inputRowsPerSecond"] for b in listener_batches)
         avg_batch_duration_ms = statistics.mean(
             sum(b["durationMs"].values()) for b in listener_batches
         )
