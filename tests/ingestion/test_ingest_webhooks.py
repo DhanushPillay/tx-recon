@@ -26,6 +26,9 @@ class MockColumn:
     def __or__(self, other):
         return self
 
+    def __invert__(self):
+        return self
+
     def isNotNull(self):
         return self
 
@@ -33,6 +36,9 @@ class MockColumn:
         return self
 
     def alias(self, name):
+        return self
+
+    def cast(self, type_str):
         return self
 
 
@@ -44,8 +50,9 @@ class MockColumn:
 @patch("src.ingestion.ingest_webhooks.current_timestamp", return_value=MockColumn())
 @patch("src.ingestion.ingest_webhooks.col", return_value=MockColumn())
 @patch("src.ingestion.ingest_webhooks.expr", return_value=MockColumn())
+@patch("src.ingestion.ingest_webhooks.lit", return_value=MockColumn())
 def test_run_ingestion_wiring(
-    mock_expr, mock_col, mock_ts, mock_from_avro, mock_get_spark
+    mock_lit, mock_expr, mock_col, mock_ts, mock_from_avro, mock_get_spark
 ):
     mock_spark = MagicMock()
     mock_get_spark.return_value = mock_spark
@@ -86,8 +93,9 @@ def test_run_ingestion_wiring(
 @patch("src.ingestion.ingest_webhooks.current_timestamp", return_value=MockColumn())
 @patch("src.ingestion.ingest_webhooks.col", return_value=MockColumn())
 @patch("src.ingestion.ingest_webhooks.expr", return_value=MockColumn())
+@patch("src.ingestion.ingest_webhooks.lit", return_value=MockColumn())
 def test_run_ingestion_main_block(
-    mock_expr, mock_col, mock_ts, mock_from_avro, mock_get_spark
+    mock_lit, mock_expr, mock_col, mock_ts, mock_from_avro, mock_get_spark
 ):
     mock_spark = MagicMock()
     mock_get_spark.return_value = mock_spark
