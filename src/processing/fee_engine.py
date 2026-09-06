@@ -13,45 +13,76 @@ class FeeResult:
     rate_bps: int
     gst_paise: int
     instrument_type: str
+    rate_version: str
 
 
 class FeeEngine:
     def __init__(self, config_path: str | None = None):
         settings = get_settings()
         path = config_path or os.path.join(settings.project_root, settings.fee_rate_config)
+
+        self.config_version = "v1"
         if os.path.exists(path):
             with open(path) as f:
-                self._config = yaml.safe_load(f)
+                self.config = yaml.safe_load(f)
         else:
-            self._config = {
+            self.config = {
+                "version": "v1.0.0",
                 "default": {"mdr_rate_bps": 150, "gst_on_mdr": 18.0, "tolerance_paise": 1},
                 "instruments": {},
             }
 
-        self._default = self._config.get("default", {})
-        self._instruments = self._config.get("instruments", {})
-        self._merchants = self._config.get("merchants", {})
+        self.config_version = self.config.get("version", "unknown")
+
+    @property
+    def default_rate(self) -> dict:
+        return self.config.get("default", {})
+
+    def get_default_rate(self) -> dict:
+        """Public accessor for the default rate card (keeps SQL builder decoupled)."""
+        return dict(self.default_rate)
+
+    @property
+    def default_tolerance_paise(self) -> int:
+        """Rounding tolerance used by MERGE matching (single source of truth)."""
+        return int(self.default_rate.get("tolerance_paise", 1))
+
+    @property
+    def default_mdr_bps(self) -> int:
+        return self.default_rate.get("mdr_rate_bps", 150)
+
+    @property
+    def default_gst_pct(self) -> float:
+        return float(self.default_rate.get("gst_on_mdr", 18))
 
     def get_rate(self, instrument_type: str, merchant_id: str | None = None) -> dict:
-        if merchant_id and merchant_id in self._merchants:
-            merchant_rates = self._merchants[merchant_id]
+        merchants = self.config.get("merchants", {})
+        if merchant_id and merchant_id in merchants:
+            merchant_rates = merchants[merchant_id]
             if instrument_type in merchant_rates:
-                return {**self._default, **merchant_rates[instrument_type]}
+                return {**self.default_rate, **merchant_rates[instrument_type]}
 
-        if instrument_type in self._instruments:
-            return {**self._default, **self._instruments[instrument_type]}
+        instruments = self.config.get("instruments", {})
+        if instrument_type in instruments:
+            return {**self.default_rate, **instruments[instrument_type]}
 
-        return self._default
+        return self.default_rate
 
     def compute_fee(
         self, amount_paise: int, instrument_type: str = "UPI", merchant_id: str | None = None
     ) -> FeeResult:
+        """Fee + GST in integer paise. Raises ValueError on negative amounts."""
+        if amount_paise < 0:
+            raise ValueError(f"amount_paise must be non-negative, got {amount_paise}")
         rate = self.get_rate(instrument_type, merchant_id)
         mdr_bps = rate.get("mdr_rate_bps", 150)
         gst_pct = rate.get("gst_on_mdr", 0)
 
-        fee_before_gst = (amount_paise * mdr_bps) // 10000
-        gst = int(fee_before_gst * gst_pct / 100) if gst_pct > 0 else 0
+        # Standard round-to-nearest integer algorithm (half-up equivalent for positive integers).
+        # Integer-only: no float money math. GST via bps keeps SQL/Python identical.
+        fee_before_gst = (amount_paise * mdr_bps + 5000) // 10000
+        gst_bps = int(round(float(gst_pct) * 100))
+        gst = (fee_before_gst * gst_bps + 5000) // 10000 if gst_bps > 0 else 0
         total_fee = fee_before_gst + gst
         net = amount_paise - total_fee
 
@@ -61,6 +92,7 @@ class FeeEngine:
             rate_bps=mdr_bps,
             gst_paise=gst,
             instrument_type=instrument_type,
+            rate_version=self.config_version,
         )
 
     def compute_expected_settled(

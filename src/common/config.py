@@ -5,11 +5,36 @@ from pyspark.sql import SparkSession
 from src.common.settings import get_settings
 
 
-def get_spark_session(app_name="TxRecon"):
+def _check_java_home() -> None:
+    """Drop a dangling JAVA_HOME so the JVM launch fails clearly, not cryptically.
+
+    A stale JAVA_HOME (e.g. pointing at a deleted JDK) makes PySpark die with a
+    bare FileNotFoundError from the gateway launcher. Warn and fall back to PATH.
+    """
+    import logging
+    import shutil
+
+    java_home = os.environ.get("JAVA_HOME")
+    if not java_home:
+        return
+    exe = os.path.join(java_home, "bin", "java.exe" if os.name == "nt" else "java")
+    if not os.path.isfile(exe):
+        logging.getLogger(__name__).warning(
+            "Ignoring dangling JAVA_HOME=%s (no java binary at %s), falling back to PATH=%s",
+            java_home,
+            exe,
+            shutil.which("java"),
+        )
+        os.environ.pop("JAVA_HOME", None)
+
+
+def get_spark_session(app_name: str = "TxRecon") -> SparkSession:
+    """Build the Iceberg+Nessie+S3A Spark session. Reads all config from Settings."""
     settings = get_settings()
 
-    if "SPARK_HOME" in os.environ:
-        del os.environ["SPARK_HOME"]
+    # PySpark ships its own Hadoop; a stale SPARK_HOME breaks worker classpath.
+    os.environ.pop("SPARK_HOME", None)
+    _check_java_home()
 
     packages = settings.spark_jar_packages.split(",")
 

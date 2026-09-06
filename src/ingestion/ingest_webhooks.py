@@ -1,14 +1,38 @@
 import logging
+import re
 
 from pyspark.sql.avro.functions import from_avro
 from pyspark.sql.functions import col, current_timestamp, expr, lit
+from pyspark.sql.streaming.listener import StreamingQueryListener
 
 from src.common.config import get_spark_session
 from src.common.schemas import WEBHOOK_AVRO_SCHEMA
 from src.common.settings import get_settings
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
+
+_TABLE_RE = re.compile(r"^[A-Za-z0-9_.]+$")
+
+
+class _BatchProgressLogger(StreamingQueryListener):
+    def onQueryStarted(self, event):
+        pass
+
+    def onQueryProgress(self, event):
+        p = event.progress
+        logger.info(
+            f"ingest_batch query={p.name} batch={p.batchId} "
+            f"rows={p.numInputRows} duration_ms={p.durationMs.get('triggerExecution', 0)}"
+        )
+
+    def onQueryTerminated(self, event):
+        pass
+
+
+def _qualified_table(name: str) -> str:
+    if not _TABLE_RE.match(name):
+        raise ValueError(f"Unsafe table identifier: {name!r}")
+    return name
 
 
 def run_ingestion():
@@ -44,26 +68,31 @@ def run_ingestion():
     )
 
     warehouse = settings.iceberg_warehouse
+    webhook_table = _qualified_table(settings.webhook_table)
+    dlq_table = _qualified_table(settings.dlq_table)
 
-    logger.info(f"Starting stream to Iceberg {settings.webhook_table}")
+    logger.info(f"Starting stream to Iceberg {webhook_table}")
     (
         enriched_df.writeStream.format("iceberg")
         .outputMode("append")
+        .queryName("webhooks_valid")
         .trigger(processingTime="2 seconds")
         .option("maxOffsetsPerTrigger", 50000)
         .option("checkpointLocation", f"{warehouse}/checkpoints/webhooks_valid")
-        .toTable(settings.webhook_table)
+        .toTable(webhook_table)
     )
 
     (
         invalid_df.writeStream.format("iceberg")
         .outputMode("append")
+        .queryName("webhooks_dlq")
         .trigger(processingTime="2 seconds")
         .option("maxOffsetsPerTrigger", 50000)
         .option("checkpointLocation", f"{warehouse}/checkpoints/webhooks_dlq")
-        .toTable(settings.dlq_table)
+        .toTable(dlq_table)
     )
 
+    spark.streams.addListener(_BatchProgressLogger())
     spark.streams.awaitAnyTermination()
 
 
@@ -78,10 +107,11 @@ if __name__ == "__main__":
         f"""
         CREATE TABLE IF NOT EXISTS {settings.webhook_table} (
             transaction_id string,
-            amount_paise int,
+            amount_paise bigint,
             gateway_status string,
             timestamp_utc string,
             merchant_id string,
+            processing_run_id string,
             reconciliation_status string,
             bank_ref_id string,
             ingested_at timestamp
@@ -93,10 +123,11 @@ if __name__ == "__main__":
         f"""
         CREATE TABLE IF NOT EXISTS {settings.dlq_table} (
             transaction_id string,
-            amount_paise int,
+            amount_paise bigint,
             gateway_status string,
             timestamp_utc string,
-            merchant_id string
+            merchant_id string,
+            processing_run_id string
         ) USING iceberg
     """
     )

@@ -3,6 +3,7 @@ import logging
 import os
 
 import pandas as pd
+import pandera.pandas as pa
 from pandera.errors import SchemaErrors
 
 from src.validation.settlement_schema import settlement_schema
@@ -10,11 +11,15 @@ from src.validation.settlement_schema import settlement_schema
 logger = logging.getLogger(__name__)
 
 
-class SettlementValidation_error(Exception):
+class SettlementValidationError(Exception):
     pass
 
 
-def validate_and_quarantine(df, schema):
+def validate_and_quarantine(
+    df: pd.DataFrame, schema: pa.DataFrameSchema
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split df into (valid, invalid) rows. Fails closed with an explicit error
+    if pandera's failure_cases shape is unexpected (never silently quarantine all)."""
     try:
         schema.validate(df, lazy=True)
         return df, pd.DataFrame(columns=df.columns)
@@ -23,15 +28,22 @@ def validate_and_quarantine(df, schema):
         if hasattr(failure_idx, "index") and "index" in failure_idx.columns:
             invalid_mask = df.index.isin(failure_idx["index"].unique())
         else:
-            # Fallback: quarantine all rows if failure_cases structure is unexpected
-            invalid_mask = pd.Series(True, index=df.index)
+            raise SettlementValidationError(
+                f"Could not map validation failures to rows: {failure_idx.head()!r}"
+            ) from exc
         return df[~invalid_mask], df[invalid_mask]
 
 
-def validate_latest_settlement(project_root=None):
+def validate_latest_settlement(
+    project_root: str | None = None, date_str: str | None = None
+) -> None:
     root = project_root or os.environ.get("PROJECT_ROOT", os.getcwd())
     data_dir = os.path.join(root, "data")
-    files = glob.glob(os.path.join(data_dir, "settlement_*.csv"))
+    if date_str:
+        file_pattern = f"settlement_{date_str.replace('-', '')}.csv"
+        files = glob.glob(os.path.join(data_dir, file_pattern))
+    else:
+        files = glob.glob(os.path.join(data_dir, "settlement_*.csv"))
     if not files:
         raise FileNotFoundError(f"No settlement file found in {data_dir}")
 
@@ -46,7 +58,10 @@ def validate_latest_settlement(project_root=None):
     logger.info(f"Quarantine rate: {quarantine_rate:.1f}% ({len(invalid)}/{len(df)} rows)")
 
     if not invalid.empty:
-        raise SettlementValidation_error(
+        invalid_path = latest_file.replace("settlement_", "quarantine_")
+        invalid.to_csv(invalid_path, index=False)
+        logger.warning(f"Wrote {len(invalid)} quarantined rows to {invalid_path}")
+        raise SettlementValidationError(
             f"Data contract validation failed: {len(invalid)} rows quarantined"
         )
 

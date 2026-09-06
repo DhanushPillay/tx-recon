@@ -1,20 +1,23 @@
 import os
 
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
+    """Central typed config. All infra URLs come from env/.env; code never hardcodes hosts."""
+
     # Project
     project_root: str = os.environ.get("PROJECT_ROOT", os.getcwd())
 
     # MinIO / S3
     minio_endpoint: str = "http://localhost:9000"
-    minio_access_key: str = "admin"
-    minio_secret_key: str = "password"
+    minio_access_key: str = ""
+    minio_secret_key: str = ""
 
     # Nessie
     nessie_host: str = "localhost"
-    nessie_port: int = 19120
+    nessie_port: int = Field(default=19120, gt=0, lt=65536)
     nessie_ref: str = "main"
 
     # Redpanda / Kafka
@@ -27,9 +30,9 @@ class Settings(BaseSettings):
     spark_shuffle_partitions: int = 8
     spark_jar_packages: str = (
         "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0,"
-        "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,"
-        "org.apache.spark:spark-avro_2.12:3.5.1,"
-        "org.projectnessie.nessie-integrations:nessie-spark-extensions-3.5_2.12:0.107.1,"
+        "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.5,"
+        "org.apache.spark:spark-avro_2.12:3.5.5,"
+        "org.projectnessie.nessie-integrations:nessie-spark-extensions-3.5_2.12:0.107.9,"
         "org.apache.hadoop:hadoop-aws:3.3.4,"
         "com.amazonaws:aws-java-sdk-bundle:1.12.262"
     )
@@ -65,3 +68,9 @@ def get_settings() -> Settings:
         is_airflow = os.environ.get("AIRFLOW_HOME") is not None
         _settings = Settings.for_airflow() if is_airflow else Settings()
     return _settings
+
+
+def reset_settings() -> None:
+    """Test helper: clear the module singleton (use in fixtures, not prod code)."""
+    global _settings
+    _settings = None

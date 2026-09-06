@@ -1,4 +1,5 @@
 import argparse
+import logging
 import random
 import time
 import uuid
@@ -12,6 +13,8 @@ from confluent_kafka.serialization import StringSerializer
 from src.common.schemas import WEBHOOK_AVRO_SCHEMA
 from src.common.settings import get_settings
 
+logger = logging.getLogger(__name__)
+
 
 def generate_webhook_event():
     amount_paise = random.randint(1000, 1000000)
@@ -23,14 +26,15 @@ def generate_webhook_event():
         "gateway_status": "SUCCESS",
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "merchant_id": "merch_12345",
+        "processing_run_id": None,
     }
 
 
 def delivery_report(err, msg):
     if err is not None:
-        print(f"Delivery failed: {err}")
+        logger.error(f"Delivery failed: {err}")
     else:
-        print(f"Produced record to {msg.topic()} [{msg.partition()}] @ offset {msg.offset()}")
+        logger.info(f"Produced record to {msg.topic()} [{msg.partition()}] @ offset {msg.offset()}")
 
 
 def main():
@@ -52,30 +56,46 @@ def main():
         "linger.ms": 50,
         "batch.size": 131072,
         "compression.type": "lz4",
-        "acks": "1",
+        "acks": "all",  # money pipeline: never lose a webhook on leader failover
+        "enable.idempotence": True,
     }
 
     producer = SerializingProducer(producer_conf)
 
     if args.stress > 0:
-        print(
+        logger.info(
             f"Starting STRESS TEST mode. Pushing {args.stress} messages to {settings.topic_name}..."
         )
         start_time = time.time()
         for i in range(args.stress):
             event = generate_webhook_event()
-            producer.produce(topic=settings.topic_name, key=event["transaction_id"], value=event)
+            try:
+                producer.produce(
+                    topic=settings.topic_name,
+                    key=event["transaction_id"],
+                    value=event,
+                    on_delivery=delivery_report,
+                )
+            except BufferError:
+                logger.warning("Producer queue full, flushing...")
+                producer.flush()
+                producer.produce(
+                    topic=settings.topic_name,
+                    key=event["transaction_id"],
+                    value=event,
+                    on_delivery=delivery_report,
+                )
             producer.poll(0)
             if i > 0 and i % 10000 == 0:
-                print(f"Pushed {i} messages...")
+                logger.info(f"Pushed {i} messages...")
         producer.flush()
         elapsed = time.time() - start_time
-        print(
+        logger.info(
             f"STRESS TEST COMPLETE: {args.stress} messages in {elapsed:.2f} seconds ({args.stress / elapsed:.2f} msgs/sec)"
         )
         return
 
-    print(f"Starting webhook stream to {settings.topic_name}...")
+    logger.info(f"Starting webhook stream to {settings.topic_name}...")
     try:
         while True:
             event = generate_webhook_event()
@@ -88,7 +108,7 @@ def main():
             producer.poll(0)
             time.sleep(random.uniform(0.1, 1.5))
     except KeyboardInterrupt:
-        print("Stopping producer...")
+        logger.info("Stopping producer...")
     finally:
         producer.flush()
 
