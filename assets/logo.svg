@@ -1,29 +1,33 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 200" width="640" height="200">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 200" width="800" height="200">
   <defs>
-    <!-- Subtle architectural grid pattern -->
-    <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
-      <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#E2E8F0" stroke-width="0.5" />
-    </pattern>
+    <filter id="grain">
+      <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="4" stitchTiles="stitch"/>
+      <feColorMatrix type="matrix" values="
+        0 0 0 0 0,
+        0 0 0 0 0,
+        0 0 0 0 0,
+        0 0 0 0.1 0" />
+    </filter>
   </defs>
 
-  <!-- Background Plaque -->
-  <rect width="100%" height="100%" fill="#F8F9FA" />
-  <rect width="100%" height="100%" fill="url(#grid)" />
+  <!-- Tactile paper background -->
+  <rect width="100%" height="100%" fill="#EBE9E1" />
+  <rect width="100%" height="100%" filter="url(#grain)" style="pointer-events:none;" />
 
-  <g transform="translate(20, 0)">
-    <!-- Piece 1: Bank/Base Data (Deep Navy - representing stability) -->
-    <path d="M 64,44 L 96,44 L 96,124 L 136,124 L 136,156 L 64,156 Z" fill="#0B192C" />
-    
-    <!-- Piece 2: External/Gateway Data (Slate Grey - representing external flow) -->
-    <path d="M 104,44 L 176,44 L 176,156 L 144,156 L 144,76 L 104,76 Z" fill="#64748B" />
-    
-    <!-- Center Block: The Reconciliation Match (Audit Red - representing the verified core) -->
-    <rect x="104" y="84" width="32" height="32" fill="#D0342C" />
-    
-    <!-- Brand Name -->
-    <text x="210" y="115" font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="900" font-size="76" fill="#0B192C" letter-spacing="-2.5">tx-recon</text>
-    
-    <!-- Brand Subtitle -->
-    <text x="216" y="148" font-family="ui-monospace, 'SF Mono', Consolas, 'Liberation Mono', monospace" font-weight="700" font-size="13" fill="#D0342C" letter-spacing="5">FINANCIAL DATA LAKEHOUSE</text>
+  <!-- Brutalist/Editorial Mark -->
+  <g transform="translate(40, 35)">
+    <!-- Stark, heavy geometric rectangle -->
+    <rect x="0" y="0" width="65" height="130" fill="#111111" />
+    <!-- Single high-contrast, offset organic shape -->
+    <circle cx="75" cy="100" r="30" fill="#F03A17" />
+    <!-- Hairline tension line -->
+    <line x1="-10" y1="45" x2="110" y2="45" stroke="#111111" stroke-width="2" />
   </g>
+
+  <!-- Opinionated Typography -->
+  <!-- Main text: robust monospace for an engineering feel -->
+  <text x="210" y="115" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" font-size="56" font-weight="bold" fill="#111111">tx-recon</text>
+  
+  <!-- Sub-label: clean, readable sans-serif -->
+  <text x="214" y="150" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" letter-spacing="4" fill="#111111">EVERY TRANSACTION, ACCOUNTED FOR.</text>
 </svg>
