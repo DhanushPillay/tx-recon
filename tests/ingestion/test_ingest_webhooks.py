@@ -1,7 +1,21 @@
 import json
+import logging
 from unittest.mock import MagicMock, patch
 
 from src.common.schemas import WEBHOOK_AVRO_SCHEMA as avro_schema_str
+from src.ingestion.ingest_webhooks import _BatchProgressLogger
+
+
+def test_batch_progress_line_is_key_value(caplog):
+    event = MagicMock()
+    event.progress.name = "webhooks_valid"
+    event.progress.batchId = 3
+    event.progress.numInputRows = 1200
+    event.progress.durationMs = {"triggerExecution": 450}
+    with caplog.at_level(logging.INFO, logger="src.ingestion.ingest_webhooks"):
+        _BatchProgressLogger().onQueryProgress(event)
+    line = caplog.text
+    assert "ingest_batch query=webhooks_valid batch=3 rows=1200 duration_ms=450" in line
 
 
 def test_avro_schema_valid_json():
@@ -10,7 +24,7 @@ def test_avro_schema_valid_json():
     assert schema_dict["name"] == "WebhookEvent"
     fields = {f["name"]: f["type"] for f in schema_dict["fields"]}
     assert fields["transaction_id"] == "string"
-    assert fields["amount_paise"] == "int"
+    assert fields["amount_paise"] == "long"  # must stay 64-bit: matches reconcile LongType
 
 
 class MockColumn:
@@ -58,9 +72,7 @@ def test_run_ingestion_wiring(
     mock_get_spark.return_value = mock_spark
 
     mock_df = MagicMock()
-    mock_spark.readStream.format.return_value.option.return_value.option.return_value.load.return_value = (
-        mock_df
-    )
+    mock_spark.readStream.format.return_value.option.return_value.option.return_value.load.return_value = mock_df
 
     mock_df.withColumn.return_value = mock_df
     mock_df.select.return_value = mock_df
@@ -101,9 +113,7 @@ def test_run_ingestion_main_block(
     mock_get_spark.return_value = mock_spark
 
     mock_df = MagicMock()
-    mock_spark.readStream.format.return_value.option.return_value.option.return_value.load.return_value = (
-        mock_df
-    )
+    mock_spark.readStream.format.return_value.option.return_value.option.return_value.load.return_value = mock_df
 
     mock_enriched = MagicMock()
     mock_enriched.withColumn.return_value = mock_enriched

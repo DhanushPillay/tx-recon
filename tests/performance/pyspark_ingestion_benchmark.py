@@ -15,7 +15,7 @@ from pyspark.sql.functions import col, current_timestamp, from_json  # noqa: E40
 from pyspark.sql.streaming import StreamingQueryListener  # noqa: E402
 from pyspark.sql.types import (  # noqa: E402
     DoubleType,
-    IntegerType,
+    LongType,
     StringType,
     StructField,
     StructType,
@@ -88,7 +88,7 @@ def run_benchmark(partitions=16):
     schema = StructType(
         [
             StructField("transaction_id", StringType(), True),
-            StructField("amount_paise", IntegerType(), True),
+            StructField("amount_paise", LongType(), True),
             StructField("gateway_status", StringType(), True),
             StructField("timestamp_utc", StringType(), True),
             StructField("merchant_id", StringType(), True),
@@ -127,7 +127,7 @@ def run_benchmark(partitions=16):
         )
     )
 
-    checkpoint_path = f"s3a://lakehouse/checkpoints/benchmark_ingestion_p{partitions}"
+    checkpoint_path = f"s3a://lakehouse/checkpoints/ingest_p{partitions}_{int(time.time())}"
 
     logger.info(f"Starting streaming ingestion for {WARMUP_SECONDS + MEASURE_SECONDS}s")
 
@@ -143,8 +143,12 @@ def run_benchmark(partitions=16):
     logger.info(f"Warmup: {WARMUP_SECONDS}s...")
     time.sleep(WARMUP_SECONDS)
 
-    # Measure
+    # Measure rows written inside the window only: the table also holds
+    # warmup rows, so snapshot the count before measuring.
     logger.info(f"Measuring: {MEASURE_SECONDS}s...")
+    count_before = spark.sql("SELECT COUNT(*) as cnt FROM nessie.db.webhooks_bench").collect()[
+        0
+    ]["cnt"]
     measure_start = time.time()
     time.sleep(MEASURE_SECONDS)
     query.stop()
@@ -156,7 +160,8 @@ def run_benchmark(partitions=16):
         "cnt"
     ]
 
-    sustained_rate = count_result / total_duration if total_duration > 0 else 0
+    new_rows = count_result - count_before
+    sustained_rate = new_rows / total_duration if total_duration > 0 else 0
 
     # Aggregate listener data
     listener_batches = listener.batches
@@ -177,7 +182,7 @@ def run_benchmark(partitions=16):
             "warmup_seconds": WARMUP_SECONDS,
             "measure_seconds": MEASURE_SECONDS,
         },
-        "total_rows_written": count_result,
+        "total_rows_written": new_rows,
         "total_duration_sec": round(total_duration, 1),
         "sustained_throughput_rows_sec": round(sustained_rate, 0),
         "avg_processed_rows_per_sec": round(avg_processed_rps, 0),
@@ -187,7 +192,7 @@ def run_benchmark(partitions=16):
     }
 
     logger.info("=== BENCHMARK RESULTS ===")
-    logger.info(f"Total rows written:     {count_result:,}")
+    logger.info(f"Total rows written:     {new_rows:,}")
     logger.info(f"Total time:             {total_duration:.1f}s")
     logger.info(f"Sustained throughput:   {sustained_rate:,.0f} rows/sec")
     logger.info(f"Avg batch duration:     {avg_batch_duration_ms:.0f}ms")

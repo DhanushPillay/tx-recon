@@ -67,4 +67,4 @@ def test_get_spark_session_config_values(monkeypatch):
         key_calls = [
             args for args in all_config_args if args[0] == "spark.hadoop.fs.s3a.access.key"
         ]
-        assert key_calls[0][1] == "admin"
+        assert key_calls[0][1] == settings_mod.get_settings().minio_access_key

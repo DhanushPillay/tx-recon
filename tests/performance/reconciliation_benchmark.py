@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 
 from hardware import get_hardware_info  # noqa: E402
 from pyspark.sql.types import (  # noqa: E402
-    IntegerType,
+    LongType,
     StringType,
     StructField,
     StructType,
@@ -26,21 +26,24 @@ from src.common.config import get_spark_session  # noqa: E402
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
+# Canonical fee math (must mirror src/processing/reconcile.py build_fee_case_sql
+# for the default 150bps + 18% GST rate card). Integer DIV only — Spark DIV
+# rejects float operands. Tolerance-aware: |expected_net - settled| <= 1.
 MERGE_SQL = """
 MERGE INTO {table} t
 USING bank_settlements s
 ON t.transaction_id = s.transaction_id
-WHEN MATCHED AND (t.amount_paise - ((t.amount_paise * 15) DIV 1000)) = s.settled_amount_paise THEN
+WHEN MATCHED AND ABS((t.amount_paise - ((t.amount_paise * 150 + 5000) DIV 10000) - ((((t.amount_paise * 150 + 5000) DIV 10000 * 1800 + 5000) DIV 10000))) - s.settled_amount_paise) <= 1 THEN
     UPDATE SET
         t.reconciliation_status = 'MATCHED',
         t.bank_ref_id = s.bank_ref_id
-WHEN MATCHED AND (t.amount_paise - ((t.amount_paise * 15) DIV 1000)) != s.settled_amount_paise THEN
+WHEN MATCHED AND ABS((t.amount_paise - ((t.amount_paise * 150 + 5000) DIV 10000) - ((((t.amount_paise * 150 + 5000) DIV 10000 * 1800 + 5000) DIV 10000))) - s.settled_amount_paise) > 1 THEN
     UPDATE SET
         t.reconciliation_status = 'EXCEPTION_FEE_MISMATCH',
         t.bank_ref_id = s.bank_ref_id
 """
 
-SCALE_OPTIONS = [100_000, 500_000, 1_000_000, 2_000_000]
+SCALE_OPTIONS = [100_000, 500_000, 1_000_000, 2_000_000, 5_000_000]
 
 
 def create_table(spark, table_name, num_rows):
@@ -51,7 +54,7 @@ def create_table(spark, table_name, num_rows):
         f"""
         CREATE TABLE {table_name} (
             transaction_id string,
-            amount_paise int,
+            amount_paise bigint,
             gateway_status string,
             timestamp_utc string,
             merchant_id string,
@@ -71,7 +74,7 @@ def create_table(spark, table_name, num_rows):
     schema = StructType(
         [
             StructField("transaction_id", StringType()),
-            StructField("amount_paise", IntegerType()),
+            StructField("amount_paise", LongType()),
             StructField("gateway_status", StringType()),
             StructField("timestamp_utc", StringType()),
             StructField("merchant_id", StringType()),
@@ -107,7 +110,7 @@ def create_settlement_data(spark, table_name, update_fraction):
     count = spark.sql(f"SELECT COUNT(*) FROM {table_name}").collect()[0][0]
     settlement_count = int(count * update_fraction)
     logger.info(
-        f"Creating settlement data: {settlement_count:,} rows ({update_fraction*100:.0f}% of {count:,})"
+        f"Creating settlement data: {settlement_count:,} rows ({update_fraction * 100:.0f}% of {count:,})"
     )
 
     ids_df = spark.sql(
@@ -119,7 +122,16 @@ def create_settlement_data(spark, table_name, update_fraction):
     settlement_df = (
         ids_df.withColumn(
             "settled_amount_paise",
-            (col("amount_paise") - ((col("amount_paise") * lit(15)) / lit(1000))).cast("int"),
+            col("amount_paise")
+            - ((col("amount_paise") * lit(150) + lit(5000)) / lit(10000)).cast("long")
+            - (
+                (
+                    ((col("amount_paise") * lit(150) + lit(5000)) / lit(10000)).cast("long")
+                    * lit(18.0)
+                    + lit(50)
+                )
+                / lit(100)
+            ).cast("long"),
         )
         .withColumn("bank_ref_id", col("transaction_id"))
         .withColumn("settlement_date", lit("2024-01-16"))
@@ -155,6 +167,7 @@ def measure_merge(spark, table_name, update_fraction):
     return {
         "write_time_sec": round(write_time, 2),
         "read_time_sec": round(read_time, 2),
+        "rows_per_sec": round((matched + mismatched) / write_time, 1) if write_time > 0 else 0,
         "files_before": files_before,
         "files_after": files_after,
         "matched": matched,

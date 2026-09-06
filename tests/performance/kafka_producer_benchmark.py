@@ -156,9 +156,9 @@ def main():
     parser = argparse.ArgumentParser(description="Kafka Producer Benchmark")
     parser.add_argument("--count", type=int, default=1000000)
     parser.add_argument("--mode", choices=["throughput", "latency", "both"], default="both")
-    parser.add_argument("--acks", choices=["0", "1", "all"], default="1")
+    parser.add_argument("--acks", choices=["0", "1", "all"], default="all")
     parser.add_argument("--compression", choices=["lz4", "gzip", "snappy", "none"], default="lz4")
-    parser.add_argument("--record-size", type=int, default=1024)
+    parser.add_argument("--record-size", type=int, default=1024, help="bytes per record; real Avro webhooks are ~150B, default pads to 1KB with filler")
     parser.add_argument(
         "--compare",
         action="store_true",
@@ -171,9 +171,9 @@ def main():
     results = {}
     for broker in brokers:
         label = "kafka" if "9092" in broker and "19" not in broker else "redpanda"
-        print(f"\n{'='*50}")
+        print(f"\n{'=' * 50}")
         print(f"  {label.upper()} ({broker})")
-        print(f"{'='*50}")
+        print(f"{'=' * 50}")
         try:
             results[label] = run(
                 broker,
@@ -188,11 +188,11 @@ def main():
             print(f"  FAILED: {e}")
 
     if args.compare and len(results) == 2:
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print("  COMPARISON")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         print(f"{'Metric':<30} {'Kafka:9092':<15} {'Redpanda:19092':<15}")
-        print(f"{'-'*30} {'-'*15} {'-'*15}")
+        print(f"{'-' * 30} {'-' * 15} {'-' * 15}")
         kafka_r = results.get("kafka", {})
         rp_r = results.get("redpanda", {})
         t_k = kafka_r.get("throughput_msgs_sec") or "error"
@@ -200,8 +200,8 @@ def main():
         print(f"{'Throughput (msgs/sec)':<30} {t_k!s:<15} {t_r!s:<15}")
         lat_k = kafka_r.get("ack_latency", {})
         lat_r = rp_r.get("ack_latency", {})
-        print(f"{'p50 (ms)':<30} {lat_k.get('p50','error'):<15} {lat_r.get('p50','error'):<15}")
-        print(f"{'p99 (ms)':<30} {lat_k.get('p99','error'):<15} {lat_r.get('p99','error'):<15}")
+        print(f"{'p50 (ms)':<30} {lat_k.get('p50', 'error'):<15} {lat_r.get('p50', 'error'):<15}")
+        print(f"{'p99 (ms)':<30} {lat_k.get('p99', 'error'):<15} {lat_r.get('p99', 'error'):<15}")
 
     return results
 

@@ -4,7 +4,7 @@ from pandera.errors import SchemaErrors
 
 from src.validation.settlement_schema import settlement_schema
 from src.validation.validate_settlement import (
-    SettlementValidation_error,
+    SettlementValidationError,
     validate_and_quarantine,
     validate_latest_settlement,
 )
@@ -118,7 +118,7 @@ def test_validate_latest_settlement_success(valid_csv):
 
 
 def test_validate_latest_settlement_failure(invalid_csv_duplicate_ids):
-    with pytest.raises(SettlementValidation_error):
+    with pytest.raises(SettlementValidationError):
         validate_latest_settlement(project_root=str(invalid_csv_duplicate_ids))
 
 

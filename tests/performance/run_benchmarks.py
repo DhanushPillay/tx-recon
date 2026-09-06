@@ -33,11 +33,11 @@ def run_module(module_name, extra_args=None):
 
 
 def print_summary(results):
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("  HEADLINE NUMBERS")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"{'Benchmark':<30} {'Result':<30}")
-    print(f"{'-'*30} {'-'*30}")
+    print(f"{'-' * 30} {'-' * 30}")
 
     kafka = results.get("kafka", {})
     if "error" not in kafka:
@@ -77,7 +77,7 @@ def print_summary(results):
     else:
         print(f"{'Pandera Validation':<30} SKIPPED: {pandera['error'][:40]}")
 
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
 
 def main():

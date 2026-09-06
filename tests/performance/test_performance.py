@@ -1,33 +1,39 @@
 import json
 import os
-import sys
+from contextlib import suppress
 
 import pandas as pd
 import pytest
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
-
 from src.generators.settlement_generator import generate_settlement_file
-from src.validation.validate_settlement import settlement_schema
+from src.validation.settlement_schema import settlement_schema
+from src.validation.settlement_schema_pl import settlement_schema_pl
 
 
 @pytest.fixture(scope="module")
-def benchmark_data_file():
-    num_records = 100000
-    output_dir = "benchmarks/data"
-    os.makedirs(output_dir, exist_ok=True)
-    generate_settlement_file(num_records, output_dir=output_dir)
-    import glob
-
-    files = glob.glob(f"{output_dir}/settlement_*.csv")
-    latest_file = max(files, key=os.path.getctime)
-    return latest_file
+def benchmark_data_file(tmp_path_factory):
+    output_dir = str(tmp_path_factory.mktemp("bench_data"))
+    path = generate_settlement_file(100000, output_dir=output_dir, seed=42)
+    yield path
+    # cleanup: don't pollute the repo with 100K-row CSVs
+    with suppress(OSError):
+        os.remove(path)
 
 
 def test_pandas_validation_performance(benchmark, benchmark_data_file):
     def load_and_validate():
         df = pd.read_csv(benchmark_data_file)
         settlement_schema.validate(df, lazy=True)
+
+    benchmark(load_and_validate)
+
+
+def test_polars_validation_performance(benchmark, benchmark_data_file):
+    import polars as pl
+
+    def load_and_validate():
+        df = pl.read_csv(benchmark_data_file)
+        settlement_schema_pl.validate(df, lazy=True)
 
     benchmark(load_and_validate)
 

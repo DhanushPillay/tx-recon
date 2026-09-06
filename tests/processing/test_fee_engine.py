@@ -1,7 +1,4 @@
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+import pytest
 
 from src.processing.fee_engine import FeeEngine
 
@@ -73,3 +70,34 @@ def test_unknown_instrument_uses_default():
     # Default is 150 bps = 1.5%, fee = 1500, GST = 270
     assert result.fee_paise == 1770
     assert result.rate_bps == 150
+
+
+def test_zero_amount():
+    engine = FeeEngine()
+    result = engine.compute_fee(0, "CREDIT_CARD")
+    assert result.fee_paise == 0
+    assert result.net_paise == 0
+
+
+def test_negative_amount_rejected():
+    engine = FeeEngine()
+    with pytest.raises(ValueError):
+        engine.compute_fee(-100000, "UPI")
+
+
+def test_merchant_override():
+    engine = FeeEngine()
+    engine.config.setdefault("merchants", {})["merch_test"] = {"CREDIT_CARD": {"mdr_rate_bps": 100}}
+    result = engine.compute_fee(100000, "CREDIT_CARD", merchant_id="merch_test")
+    # overridden 100bps: fee 1000 + GST 180 = 1180
+    assert result.fee_paise == 1180
+    assert result.rate_bps == 100
+
+
+def test_tolerance_boundary_values():
+    engine = FeeEngine()
+    net = engine.compute_expected_settled(100000, "CREDIT_CARD")
+    matched, _ = engine.check_match(100000, net + 1, "CREDIT_CARD")
+    assert matched is True
+    matched, _ = engine.check_match(100000, net + 2, "CREDIT_CARD")
+    assert matched is False
