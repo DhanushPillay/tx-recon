@@ -1,6 +1,6 @@
 services:
   redpanda:
-    image: docker.redpanda.com/redpandadata/redpanda:v23.2.2
+    image: docker.redpanda.com/redpandadata/redpanda:v24.1.1
     container_name: redpanda
     command:
       - redpanda
@@ -23,7 +23,7 @@ services:
       retries: 5
 
   minio:
-    image: minio/minio:RELEASE.2024-01-18T22-51-28Z
+    image: minio/minio:RELEASE.2024-11-07T00-52-20Z
     container_name: minio
     environment:
       - MINIO_ROOT_USER=admin
@@ -41,7 +41,7 @@ services:
       retries: 5
 
   minio-createbucket:
-    image: minio/mc:latest
+    image: minio/mc:RELEASE.2024-11-07T00-52-20Z
     depends_on:
       minio:
         condition: service_healthy
@@ -66,83 +66,9 @@ services:
       timeout: 5s
       retries: 5
 
-  postgres:
-    image: postgres:16
-    container_name: postgres
-    environment:
-      - POSTGRES_USER=airflow
-      - POSTGRES_PASSWORD=airflow
-      - POSTGRES_DB=airflow
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U airflow"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  airflow-init:
-    build:
-      context: .
-      dockerfile: Dockerfile.airflow
-    container_name: airflow-init
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
-      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-    command: >
-      bash -c "
-      airflow db migrate &&
-      airflow users create --role Admin --username admin --password admin --email admin@example.com --firstname admin --lastname admin
-      "
-
-  airflow-webserver:
-    build:
-      context: .
-      dockerfile: Dockerfile.airflow
-    container_name: airflow-webserver
-    depends_on:
-      postgres:
-        condition: service_healthy
-      airflow-init:
-        condition: service_completed_successfully
-    ports:
-      - "8080:8080"
-    environment:
-      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
-      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-      - AIRFLOW__CORE__LOAD_EXAMPLES=False
-      - PROJECT_ROOT=/opt/airflow
-    volumes:
-      - ./dags:/opt/airflow/dags
-      - ./src:/opt/airflow/src
-      - ./data:/opt/airflow/data
-    command: webserver
-
-  airflow-scheduler:
-    build:
-      context: .
-      dockerfile: Dockerfile.airflow
-    container_name: airflow-scheduler
-    depends_on:
-      postgres:
-        condition: service_healthy
-      airflow-init:
-        condition: service_completed_successfully
-    environment:
-      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
-      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-      - AIRFLOW__CORE__LOAD_EXAMPLES=False
-      - PROJECT_ROOT=/opt/airflow
-    volumes:
-      - ./dags:/opt/airflow/dags
-      - ./src:/opt/airflow/src
-      - ./data:/opt/airflow/data
-    command: scheduler
-
 volumes:
   redpanda_data:
   minio_data:
   postgres_data:
+  prometheus_data:
+  grafana_data:

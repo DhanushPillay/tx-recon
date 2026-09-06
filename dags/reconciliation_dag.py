@@ -29,35 +29,35 @@ default_args = {
 }
 
 
-def generate_settlement_task():
+def generate_settlement_task(ds, **kwargs):
     from src.generators.settlement_generator import generate_settlement_file
 
-    generate_settlement_file(500)
+    seed = int(ds.replace("-", ""))
+    generate_settlement_file(num_records=500, seed=seed, date_str=ds)
 
 
-def validate_settlement_task():
+def validate_settlement_task(ds, **kwargs):
     from src.validation.validate_settlement import validate_latest_settlement
 
-    validate_latest_settlement()
+    validate_latest_settlement(date_str=ds)
 
 
-def run_reconciliation_task():
+def run_reconciliation_task(ds, **kwargs):
     from src.processing.reconcile import run_reconciliation
 
-    run_reconciliation()
+    run_reconciliation(date_str=ds)
 
 
 with DAG(
     "daily_tx_reconciliation",
     default_args=default_args,
     description="Daily reconciliation of payment gateway webhooks against bank settlements",
-    schedule_interval="@daily",
+    schedule="@daily",
     start_date=datetime(2023, 1, 1, tzinfo=timezone.utc),
     catchup=False,
     tags=["finance", "reconciliation"],
     sla_miss_callback=failure_callback,
 ) as dag:
-
     generate_settlement = PythonOperator(
         task_id="generate_bank_settlement",
         python_callable=generate_settlement_task,

@@ -1,8 +1,11 @@
-.PHONY: up down install clean format lint test
+.PHONY: up down install clean format lint test demo
+
+demo:
+	python tests/performance/quick_perf.py
 
 install:
 	python -m venv .venv
-	.venv/bin/pip install -r requirements.txt
+	.venv/Scripts/pip install -e ".[dev]"
 
 up:
 	docker compose up -d
@@ -15,7 +18,7 @@ clean:
 	find . -type f -name "*.pyc" -delete 2>/dev/null || true
 
 format:
-	black src/ tests/ dags/
+	ruff format src/ tests/ dags/
 
 lint:
 	ruff check src/ tests/ dags/

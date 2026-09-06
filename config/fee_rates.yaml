@@ -2,6 +2,8 @@
 # Rates are in basis points (bps) where 1 bps = 0.01%
 # GST on MDR is applied separately where applicable (India context)
 
+version: "v1.0.0"
+
 default:
   mdr_rate_bps: 150  # 1.5%
   gst_on_mdr: 18.0   # 18% GST on the MDR fee
