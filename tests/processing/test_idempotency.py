@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from src.common.config import get_spark_session
@@ -5,6 +7,15 @@ from src.common.settings import get_settings
 from src.processing.reconcile import run_reconciliation
 
 pytestmark = pytest.mark.integration
+
+# ponytail: hermetic fixture — data/ is gitignored so CI has no CSVs;
+# the test seeds its own and deletes it afterwards.
+SEED_STAMP = "19990101"
+SEED_ROWS = """bank_ref_id,transaction_id,settled_amount_paise,settlement_date
+bnk_idem001,tx_idem_001,100000,1999-01-01
+bnk_idem002,tx_idem_002,97640,1999-01-01
+bnk_idem003,tx_idem_003,50000,1999-01-01
+"""
 
 
 def test_reconciliation_is_idempotent():
@@ -33,24 +44,32 @@ def test_reconciliation_is_idempotent():
     )
 
     # Run once
-    run_reconciliation()
-
-    # Capture state after first run
+    data_dir = os.path.join(settings.project_root, "data")
+    os.makedirs(data_dir, exist_ok=True)
+    seed_path = os.path.join(data_dir, f"settlement_{SEED_STAMP}.csv")
+    with open(seed_path, "w") as f:
+        f.write(SEED_ROWS)
     try:
-        df_run1 = spark.table(settings.webhook_table)
-        count_run1 = df_run1.count()
-        checksum_run1 = df_run1.orderBy("transaction_id").collect()
-    except Exception as e:
-        pytest.skip(f"Could not read Iceberg table (ensure infra is up): {e}")
+        run_reconciliation(SEED_STAMP)
 
-    # Run second time
-    run_reconciliation()
+        # Capture state after first run
+        try:
+            df_run1 = spark.table(settings.webhook_table)
+            count_run1 = df_run1.count()
+            checksum_run1 = df_run1.orderBy("transaction_id").collect()
+        except Exception as e:
+            pytest.skip(f"Could not read Iceberg table (ensure infra is up): {e}")
 
-    # Capture state after second run
-    df_run2 = spark.table(settings.webhook_table)
-    count_run2 = df_run2.count()
-    checksum_run2 = df_run2.orderBy("transaction_id").collect()
+        # Run second time
+        run_reconciliation(SEED_STAMP)
 
-    # Verify exact match
-    assert count_run1 == count_run2, "Row count changed on second run!"
-    assert checksum_run1 == checksum_run2, "Data changed on second run!"
+        # Capture state after second run
+        df_run2 = spark.table(settings.webhook_table)
+        count_run2 = df_run2.count()
+        checksum_run2 = df_run2.orderBy("transaction_id").collect()
+
+        # Verify exact match
+        assert count_run1 == count_run2, "Row count changed on second run!"
+        assert checksum_run1 == checksum_run2, "Data changed on second run!"
+    finally:
+        os.remove(seed_path)
