@@ -150,19 +150,22 @@ Per-class recall is 1.0 across MATCHED / FEE_MISMATCH / MISSING_WEBHOOK.
 (The script used to default to weaker `acks=1`; it now defaults to `acks=all`
 so the number you reproduce matches the number published.)
 
-**Validation bake-off @100K rows (measured; lower time is better):**
+**Validation benchmark (Pandera vs. manual pandas vs. Polars vs. Pydantic):**
 
-| Method | Time | Throughput |
-| :--- | :--- | :--- |
-| Manual pandas | 8.94ms | ~11.2M rows/sec |
-| Polars | 64.71ms | ~1.5M rows/sec |
-| Pandera | 88.63ms | ~1.1M rows/sec |
-| Pydantic | 220.29ms | ~454K rows/sec |
+Run via `python tests/performance/pandas_validation_benchmark.py`.
 
-Takeaway: manual pandas is fastest at this scale; Pandera costs ~10x for the
-declarative contract — worth it at the batch boundary. (An earlier table
-quoting 10M-row runs was retired: those runs were never reproduced on this
-box.)
+Results on Windows 11, 28 cores, Python 3.13.5 (`tests/performance/results_pandera.json`):
+
+| Rows | Manual Pandas | Polars | Pandera | Pydantic |
+| :--- | :--- | :--- | :--- | :--- |
+| 10,000 | 5.8M rows/sec (1.7ms) | 65K rows/sec (153ms)* | 544K rows/sec (18ms) | 271K rows/sec (36ms) |
+| 100,000 | 9.0M rows/sec (11ms) | 6.1M rows/sec (16ms) | 2.3M rows/sec (43ms) | 401K rows/sec (249ms) |
+| 1,000,000 | 6.8M rows/sec (145ms) | 8.2M rows/sec (120ms) | 2.2M rows/sec (446ms) | 397K rows/sec (2.5s) |
+| 10,000,000 | 2.7M rows/sec (3.6s) | 6.8M rows/sec (1.4s) | 1.5M rows/sec (6.6s) | 405K rows/sec (24.6s) |
+
+*Polars has a cold-start overhead on the first run.
+
+Manual pandas is faster below 100,000 rows because it avoids framework overhead. Polars is faster above 1,000,000 rows. Pandera processes 1.5M rows/sec at 10M rows, which covers the cost of using declarative contracts at the batch boundary.
 
 > Spark streaming + Iceberg MERGE throughput suites are not yet run on this
 > box: the Spark/Iceberg path was broken (stale JAVA_HOME/SPARK_HOME,

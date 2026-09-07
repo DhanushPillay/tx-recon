@@ -1,138 +1,14 @@
 {
-  "timestamp": "2026-09-01T12:00:00+00:00",
+  "timestamp": "2026-09-06T17:37:32.855275+00:00",
   "hardware": {
     "platform": "Windows-11-10.0.26200-SP0",
     "cpu_count": 28,
-    "python_version": "3.13.5"
+    "ram_gb": 15.8,
+    "python_version": "3.13.5",
+    "fingerprint": "d2e5f67d5861"
   },
-  "kafka": {
-    "broker": "localhost:19092",
-    "throughput_msgs_sec": 119338,
-    "ack_latency": {
-      "p50": 0.82,
-      "p95": 1.62,
-      "p99": 2.95,
-      "max": null,
-      "mean": null,
-      "stdev": null
-    },
-    "config": {
-      "acks": "1",
-      "compression": "lz4",
-      "record_size": 1024,
-      "count": 1000000
-    }
-  },
-  "pyspark": {
-    "total_rows_written": 1007000,
-    "total_duration_sec": 120.0,
-    "sustained_throughput_rows_sec": 8389,
-    "avg_batch_duration_ms": 12796,
-    "num_batches": 9
-  },
-  "iceberg": {
-    "note": "Windows PySpark 3.5+Python 3.13 worker crash. Results from prior WSL2 run (Linux, Python 3.8.18, 28 cores).",
-    "benchmarks": {
-      "100k_rows_10pct_update": {
-        "write_time_sec": 1.77,
-        "read_time_sec": 0.08,
-        "files_before": 8,
-        "files_after": 8,
-        "matched": 43,
-        "mismatched": 9957
-      },
-      "100k_rows_50pct_update": {
-        "write_time_sec": 0.97,
-        "read_time_sec": 0.09,
-        "files_before": 2,
-        "files_after": 2,
-        "matched": 239,
-        "mismatched": 49761
-      },
-      "500k_rows_10pct_update": {
-        "write_time_sec": 1.06,
-        "read_time_sec": 0.06,
-        "files_before": 40,
-        "files_after": 37,
-        "matched": 143,
-        "mismatched": 24857
-      },
-      "500k_rows_50pct_update": {
-        "write_time_sec": 2.26,
-        "read_time_sec": 0.05,
-        "files_before": 9,
-        "files_after": 18,
-        "matched": 1242,
-        "mismatched": 248758
-      },
-      "1000k_rows_10pct_update": {
-        "write_time_sec": 1.26,
-        "read_time_sec": 0.05,
-        "files_before": 80,
-        "files_after": 74,
-        "matched": 234,
-        "mismatched": 49766
-      },
-      "1000k_rows_50pct_update": {
-        "write_time_sec": 3.04,
-        "read_time_sec": 0.05,
-        "files_before": 18,
-        "files_after": 37,
-        "matched": 2535,
-        "mismatched": 497465
-      },
-      "2000k_rows_10pct_update": {
-        "write_time_sec": 1.82,
-        "read_time_sec": 0.06,
-        "files_before": 160,
-        "files_after": 155,
-        "matched": 386,
-        "mismatched": 74614
-      },
-      "2000k_rows_50pct_update": {
-        "write_time_sec": 3.85,
-        "read_time_sec": 0.05,
-        "files_before": 32,
-        "files_after": 44,
-        "matched": 5100,
-        "mismatched": 994900
-      }
-    }
-  },
-  "pandera": {
-    "benchmarks": [
-      {
-        "rows": 10000,
-        "methods": {
-          "pandera": {"rows_per_sec": 396354, "mean_ms": 25.23},
-          "manual_pandas": {"rows_per_sec": 3355705, "mean_ms": 2.98},
-          "pydantic": {"rows_per_sec": 310655, "mean_ms": 32.19}
-        }
-      },
-      {
-        "rows": 100000,
-        "methods": {
-          "pandera": {"rows_per_sec": 2488800, "mean_ms": 40.18},
-          "manual_pandas": {"rows_per_sec": 10482180, "mean_ms": 9.54},
-          "pydantic": {"rows_per_sec": 458400, "mean_ms": 218.15}
-        }
-      },
-      {
-        "rows": 1000000,
-        "methods": {
-          "pandera": {"rows_per_sec": 2037324, "mean_ms": 490.84},
-          "manual_pandas": {"rows_per_sec": 6611133, "mean_ms": 151.26},
-          "pydantic": {"rows_per_sec": 430569, "mean_ms": 2322.51}
-        }
-      },
-      {
-        "rows": 10000000,
-        "methods": {
-          "pandera": {"rows_per_sec": 1551340, "mean_ms": 6446.04},
-          "manual_pandas": {"rows_per_sec": 2703916, "mean_ms": 3698.34},
-          "pydantic": {"rows_per_sec": 294226, "mean_ms": 33987.5}
-        }
-      }
-    ]
+  "accuracy": {
+    "min_f1": 1.0,
+    "max_false_positives": 0
   }
 }
