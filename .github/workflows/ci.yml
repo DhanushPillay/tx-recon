@@ -76,5 +76,7 @@ jobs:
         env:
           PYTHONPATH: .
           PROJECT_ROOT: ${{ github.workspace }}
+          MINIO_ACCESS_KEY: admin
+          MINIO_SECRET_KEY: password
         run: |
           pytest tests/ -m "integration"
