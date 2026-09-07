@@ -17,6 +17,9 @@ dependencies = [
     "pydantic-settings>=2.0,<3.0",
     "confluent-kafka>=2.0,<3.0",
     "authlib>=1.0.0",
+    "cachetools>=5.5.0",
+    "httpx>=0.26",
+    "certifi",
     "apache-airflow==2.11.2",
 ]
 
