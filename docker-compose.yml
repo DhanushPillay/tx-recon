@@ -47,7 +47,7 @@ services:
         condition: service_started
     entrypoint: >
       /bin/sh -c "
-      until (/usr/bin/mc config host add myminio http://minio:9000 admin password) do echo '...waiting for minio...' && sleep 1; done;
+      until (/usr/bin/mc alias set myminio http://minio:9000 admin password) do echo '...waiting for minio...' && sleep 1; done;
       /usr/bin/mc mb myminio/lakehouse || true;
       /usr/bin/mc anonymous set public myminio/lakehouse;
       exit 0;
