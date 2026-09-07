@@ -19,7 +19,10 @@ def test_generate_webhook_event():
     assert "merchant_id" in event
 
 
-def test_delivery_report_success(capsys):
+def test_delivery_report_success(caplog):
+    import logging
+
+    caplog.set_level(logging.INFO)
     msg = MagicMock()
     msg.topic.return_value = "gateway_webhooks"
     msg.partition.return_value = 0
@@ -27,18 +30,16 @@ def test_delivery_report_success(capsys):
 
     delivery_report(None, msg)
 
-    captured = capsys.readouterr()
-    assert "Produced record to gateway_webhooks [0] @ offset 42" in captured.out
+    assert "Produced record to gateway_webhooks [0] @ offset 42" in caplog.text
 
 
-def test_delivery_report_failure(capsys):
+def test_delivery_report_failure(caplog):
     err = MagicMock()
     err.__str__ = lambda self: "broker down"
 
     delivery_report(err, None)
 
-    captured = capsys.readouterr()
-    assert "Delivery failed:" in captured.out
+    assert "Delivery failed:" in caplog.text
 
 
 @patch("src.generators.webhook_producer.time.sleep", side_effect=KeyboardInterrupt)

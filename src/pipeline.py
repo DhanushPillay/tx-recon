@@ -48,7 +48,8 @@ def _build_demo_plan(num_records: int, seed: int = 42) -> list[tuple[str, int, s
     from src.common.schemas import INSTRUMENT_TYPES
 
     rnd = random.Random(seed)
-    planned, seen = [], set()
+    planned: list[tuple[str, int, str]] = []
+    seen: set[str] = set()
     while len(planned) < num_records:
         tx = f"tx_{rnd.getrandbits(48):012x}"
         if tx in seen:

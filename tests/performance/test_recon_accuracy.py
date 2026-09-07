@@ -30,6 +30,7 @@ def test_harness_catches_fee_engine_bug(monkeypatch):
     # Falsifiability pin: ground truth comes from the YAML rate card, not
     # FeeEngine, so a broken matcher must score below 1.0.
     from recon_accuracy import build_case, match, score
+
     from src.processing.fee_engine import FeeEngine, FeeResult
 
     def _broken_fee(self, amount_paise, instrument_type="UPI", merchant_id=None):

@@ -158,7 +158,12 @@ def main():
     parser.add_argument("--mode", choices=["throughput", "latency", "both"], default="both")
     parser.add_argument("--acks", choices=["0", "1", "all"], default="all")
     parser.add_argument("--compression", choices=["lz4", "gzip", "snappy", "none"], default="lz4")
-    parser.add_argument("--record-size", type=int, default=1024, help="bytes per record; real Avro webhooks are ~150B, default pads to 1KB with filler")
+    parser.add_argument(
+        "--record-size",
+        type=int,
+        default=1024,
+        help="bytes per record; real Avro webhooks are ~150B, default pads to 1KB with filler",
+    )
     parser.add_argument(
         "--compare",
         action="store_true",

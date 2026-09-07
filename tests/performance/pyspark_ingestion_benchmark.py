@@ -146,9 +146,9 @@ def run_benchmark(partitions=16):
     # Measure rows written inside the window only: the table also holds
     # warmup rows, so snapshot the count before measuring.
     logger.info(f"Measuring: {MEASURE_SECONDS}s...")
-    count_before = spark.sql("SELECT COUNT(*) as cnt FROM nessie.db.webhooks_bench").collect()[
-        0
-    ]["cnt"]
+    count_before = spark.sql("SELECT COUNT(*) as cnt FROM nessie.db.webhooks_bench").collect()[0][
+        "cnt"
+    ]
     measure_start = time.time()
     time.sleep(MEASURE_SECONDS)
     query.stop()
