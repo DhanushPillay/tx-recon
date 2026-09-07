@@ -66,6 +66,25 @@ services:
       timeout: 5s
       retries: 5
 
+  trino:
+    image: trinodb/trino:latest
+    container_name: trino
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog
+    depends_on:
+      - minio
+      - nessie
+
+  metabase:
+    image: metabase/metabase:latest
+    container_name: metabase
+    ports:
+      - "3001:3000"
+    depends_on:
+      - trino
+
 volumes:
   redpanda_data:
   minio_data:

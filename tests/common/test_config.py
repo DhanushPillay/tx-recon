@@ -23,6 +23,19 @@ def test_settings_switch_when_airflow_present(monkeypatch):
     assert s.redpanda_host == "redpanda"
 
 
+def test_table_prefix_rewrites_catalog(monkeypatch):
+    monkeypatch.setenv("TABLE_PREFIX", "glue")
+    s = Settings()
+    assert s.webhook_table == "glue.db.webhooks"
+    assert s.dlq_table == "glue.db.webhooks_dlq"
+
+
+def test_no_table_prefix_keeps_local_tables(monkeypatch):
+    monkeypatch.delenv("TABLE_PREFIX", raising=False)
+    s = Settings()
+    assert s.webhook_table == "nessie.db.webhooks"
+
+
 @patch("src.common.config.SparkSession")
 def test_get_spark_session_clears_spark_home(mock_spark_cls, monkeypatch):
     from src.common import config

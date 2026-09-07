@@ -77,6 +77,21 @@ jobs:
           PYTHONPATH: .
           PROJECT_ROOT: ${{ github.workspace }}
           MINIO_ACCESS_KEY: admin
-          MINIO_SECRET_KEY: password
+          MINIO_SECRET_KEY: [REDACTED]
         run: |
           pytest tests/ -m "integration"
+
+  cloud-dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform validate
+        working-directory: infra/terraform
+        run: |
+          terraform init -backend=false
+          terraform validate

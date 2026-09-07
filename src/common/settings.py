@@ -1,6 +1,6 @@
 import os
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -41,12 +41,26 @@ class Settings(BaseSettings):
     iceberg_warehouse: str = "s3a://lakehouse/warehouse"
     webhook_table: str = "nessie.db.webhooks"
     dlq_table: str = "nessie.db.webhooks_dlq"
+    # Cloud targeting without fork: TABLE_PREFIX=glue rewrites nessie.db.* to
+    # glue.db.* (Glue catalog), so run_reconciliation() runs unchanged on AWS.
+    table_prefix: str = ""
 
     # Fee engine
     fee_rate_config: str = "config/fee_rates.yaml"
     default_mdr_rate: float = 0.015
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
+
+    @model_validator(mode="after")
+    def _apply_table_prefix(self) -> "Settings":
+        if self.table_prefix:
+            prefix = self.table_prefix.rstrip(".")
+            for attr in ("webhook_table", "dlq_table"):
+                name = getattr(self, attr)
+                if "." in name:
+                    _, rest = name.split(".", 1)
+                    object.__setattr__(self, attr, f"{prefix}.{rest}")
+        return self
 
     @classmethod
     def for_airflow(cls) -> "Settings":
