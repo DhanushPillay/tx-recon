@@ -63,7 +63,7 @@ jobs:
           pytest tests/ -m "not integration" --benchmark-disable --cov=src --cov-report=term --cov-report=xml --cov-fail-under=70
 
       - name: Start Docker Services for Integration Tests
-        run: docker compose up -d redpanda minio minio-createbucket nessie postgres
+        run: docker compose up -d redpanda minio minio-createbucket nessie
 
       - name: Wait for services to initialize
         run: |
