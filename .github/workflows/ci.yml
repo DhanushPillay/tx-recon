@@ -75,7 +75,6 @@ jobs:
       - name: Run Integration Tests
         env:
           PYTHONPATH: .
-          AIRFLOW_HOME: ${{ github.workspace }}/airflow
           PROJECT_ROOT: ${{ github.workspace }}
         run: |
           pytest tests/ -m "integration"
