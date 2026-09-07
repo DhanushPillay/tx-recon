@@ -27,7 +27,7 @@ def _reconcile_statuses(spark, webhooks_rows, bank_rows, instrument="CREDIT_CARD
     for tx, (amount, settled) in joined.items():
         matched, _ = engine.check_match(amount, settled, instrument)
         statuses[tx] = "MATCHED" if matched else "EXCEPTION_FEE_MISMATCH"
-    webhook_ids = {r["transaction_id"] for r in webhooks_rows}
+    webhook_ids = {r[0] for r in webhooks_rows}
     for tx in webhook_ids - set(statuses):
         statuses[tx] = "UNRECONCILED"
     return statuses

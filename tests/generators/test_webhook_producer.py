@@ -57,11 +57,10 @@ def test_main_continuous_loop(mock_parser_cls, mock_registry_cls, mock_producer_
     mock_producer_cls.return_value.flush.assert_called_once()
 
 
-@patch("src.generators.webhook_producer.time.time", side_effect=[0.0, 1.0])
 @patch("src.generators.webhook_producer.SerializingProducer")
 @patch("src.generators.webhook_producer.SchemaRegistryClient")
 @patch("src.generators.webhook_producer.argparse.ArgumentParser")
-def test_main_stress_mode(mock_parser_cls, mock_registry_cls, mock_producer_cls, mock_time):
+def test_main_stress_mode(mock_parser_cls, mock_registry_cls, mock_producer_cls):
     mock_parser = MagicMock()
     mock_parser.parse_args.return_value = MagicMock(stress=10)
     mock_parser_cls.return_value = mock_parser
