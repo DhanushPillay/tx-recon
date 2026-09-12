@@ -8,7 +8,6 @@ import time
 import uuid
 
 os.environ["PYSPARK_PYTHON"] = sys.executable
-os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
@@ -46,8 +45,9 @@ WHEN MATCHED AND ABS((t.amount_paise - ((t.amount_paise * 150 + 5000) DIV 10000)
 SCALE_OPTIONS = [100_000, 500_000, 1_000_000, 2_000_000, 5_000_000]
 
 
-def create_table(spark, table_name, num_rows):
+def create_table(spark, table_name, num_rows, seed=7):
     logger.info(f"Creating {table_name} with {num_rows:,} rows...")
+    rnd = random.Random(seed)
 
     spark.sql(f"DROP TABLE IF EXISTS {table_name}")
     spark.sql(
@@ -87,8 +87,8 @@ def create_table(spark, table_name, num_rows):
         current_batch = min(batch_size, num_rows - offset)
         data = [
             (
-                f"tx_{uuid.uuid4().hex[:12]}",
-                random.randint(1000, 1000000),
+                f"tx_{uuid.UUID(int=rnd.getrandbits(128)).hex[:12]}",
+                rnd.randint(1000, 1000000),
                 "SUCCESS",
                 "2024-01-15T10:00:00Z",
                 "merch_12345",
@@ -114,7 +114,7 @@ def create_settlement_data(spark, table_name, update_fraction):
     )
 
     ids_df = spark.sql(
-        f"SELECT transaction_id, amount_paise FROM {table_name} LIMIT {settlement_count}"
+        f"SELECT transaction_id, amount_paise FROM {table_name} ORDER BY transaction_id LIMIT {settlement_count}"
     )
 
     from pyspark.sql.functions import col, lit
@@ -142,14 +142,30 @@ def create_settlement_data(spark, table_name, update_fraction):
     return settlement_count
 
 
-def measure_merge(spark, table_name, update_fraction):
+def measure_merge(spark, table_name, update_fraction, repeats=3):
+    import statistics
+
     create_settlement_data(spark, table_name, update_fraction)
 
     files_before = spark.sql(f"SELECT COUNT(*) FROM {table_name}.files").collect()[0][0]
 
+    writes = []
+    for _ in range(repeats):
+        start = time.time()
+        spark.sql(MERGE_SQL.format(table=table_name))
+        writes.append(time.time() - start)
+        # Reset state between repeats so each timing measures the same work.
+        spark.sql(
+            f"""UPDATE {table_name}
+                SET reconciliation_status = 'PENDING_SETTLEMENT',
+                    bank_ref_id = NULL"""
+        )
+    # One final MERGE leaves the table matched for the count queries below.
     start = time.time()
     spark.sql(MERGE_SQL.format(table=table_name))
     write_time = time.time() - start
+    writes.append(write_time)
+    write_time = statistics.median(writes)
 
     files_after = spark.sql(f"SELECT COUNT(*) FROM {table_name}.files").collect()[0][0]
 
@@ -166,17 +182,22 @@ def measure_merge(spark, table_name, update_fraction):
 
     return {
         "write_time_sec": round(write_time, 2),
+        "write_time_median_sec": round(write_time, 2),
+        "write_time_repeats": repeats + 1,
         "read_time_sec": round(read_time, 2),
         "rows_per_sec": round((matched + mismatched) / write_time, 1) if write_time > 0 else 0,
         "files_before": files_before,
         "files_after": files_after,
         "matched": matched,
         "mismatched": mismatched,
+        "healthy": bool(matched + mismatched > 0),
     }
 
 
 def run_benchmark(scale=None):
-    hw = get_hardware_info()
+    from hardware import fingerprint
+
+    hw = {**get_hardware_info(), "fingerprint": fingerprint()}
     logger.info(
         f"Hardware: {hw['platform']}, {hw['cpu_count']} cores, Python {hw['python_version']}"
     )
