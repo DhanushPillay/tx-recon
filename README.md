@@ -4,30 +4,30 @@
 
 # Transaction Reconciliation
 
-> **A local data lakehouse for payment gateway reconciliation, correct by construction.**
+Local lakehouse that reconciles payment webhooks against bank settlements.
 
-![CI](https://github.com/DhanushPillay/tx-recon/actions/workflows/ci.yml/badge.svg?branch=main)
-![License](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)
+[![CI](https://github.com/DhanushPillay/tx-recon/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DhanushPillay/tx-recon/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white)](https://www.python.org)
 
 </div>
 
-**The Problem:** Finance teams manually match payment gateway webhooks against delayed bank settlement files to verify Merchant Discount Rates (MDR). This manual process causes month-end delays and masks revenue leakage.
+**The Problem:** Finance teams match payment gateway webhooks against delayed bank settlement files to verify Merchant Discount Rates (MDR). Manual matching delays month-end close and hides fee leakage.
 
-**The Solution:** An automated pipeline that reconciles real-time webhooks against batch settlements using Iceberg MERGE, with instrument-aware fee calculation and configurable rate cards.
+**The Solution:** A pipeline that reconciles streaming webhooks against batch settlements using Iceberg MERGE, with instrument-aware fee calculation and rate cards in `config/fee_rates.yaml`.
 
 ---
 
 ## What This Is (and Isn't)
 
 **This is:**
-- A working local proof-of-concept for streaming + batch reconciliation
-- A demonstration of Iceberg MERGE for incremental updates
+- A local proof of concept for streaming + batch reconciliation
+- An example of Iceberg MERGE for incremental updates
 - A reference architecture for payment reconciliation
 
 **This is NOT:**
 - Production-ready — it runs on Docker Compose, not a Spark cluster
 - A payments system — it processes synthetic data, not real money
-- Scalable to billions of transactions — benchmarks are single-node only
+- Tested at billion-row scale — benchmarks are single-node only
 
 ---
 
@@ -37,17 +37,15 @@
 flowchart LR
     A[Webhook] -->|Stream| B(Redpanda)
     B -->|PySpark| C[(Iceberg / MinIO)]
-    
     E[Settlement] -->|Pandera| V{Contract}
     V -->|Validated| F[PySpark MERGE]
     F --> C
-    
     G[pipeline.py cron] -->|Orchestrates| F
     C <--> H(Nessie Catalog)
 ```
 
 > `dags/` keeps the original Airflow DAG as reference. The lean local runner is
-> `python -m src.pipeline` (cron/systemd); Airflow/MWAA is the scale-up path.
+> `python -m src.pipeline` (cron or systemd); Airflow/MWAA is the scale-up path.
 
 | Local Component | Cloud Equivalent |
 | :--- | :--- |
@@ -57,139 +55,107 @@ flowchart LR
 | PySpark on Docker | EMR / Dataproc |
 | pipeline.py on cron | MWAA / Cloud Composer |
 
----
+## Features
 
-## Key Features
+- Instrument-aware fees from `config/fee_rates.yaml` with integer paise math (`src/processing/fee_engine.py`)
+- GST on MDR per instrument and merchant tier
+- Iceberg MERGE upsert on `transaction_id` with `WHEN NOT MATCHED` handling (`src/processing/reconcile.py`)
+- Pandera contracts with strict types, uniqueness checks, and `quarantine_*.csv` isolation (`src/validation/validate_settlement.py`)
+- Dead letter queue table for failed webhooks (`src/ingestion/ingest_webhooks.py`)
+- Sealed accuracy harness with precision, recall, F1, and per-break recall (`tests/performance/recon_accuracy.py`)
+- Regression gate that fails a PR when throughput drops more than 15 percent (`tests/performance/check_regression.py`)
 
-| Feature | Implementation |
-| :--- | :--- |
-| **Instrument-aware fees** | Configurable via `config/fee_rates.yaml`, with canonical Python `fee_engine.py` that translates logic to Spark SQL for MERGE |
-| **GST on MDR** | Automatic GST calculation on the MDR fee per instrument and merchant tier |
-| **ACID MERGE** | Iceberg MERGE INTO with WHEN NOT MATCHED handling |
-| **Data contracts** | Pandera schemas with strict type + uniqueness checks |
-| **Quarantine** | Invalid records isolated, not dropped |
-| **Dead Letter Queue** | Failed webhook records captured in separate Iceberg table |
+## Tech stack
 
----
+Python 3.11 · PySpark 3.5.1 · Apache Iceberg · Project Nessie · Redpanda · MinIO · Trino · Pandera · Airflow 2.11.2
 
-## Design decisions
-
-| Decision | Why |
-| :--- | :--- |
-| Iceberg MERGE on `transaction_id` | ACID upsert: re-runs converge instead of duplicating; late corrections UPDATE in place |
-| Integer paise, no floats | Floats round; money must not. The Spark SQL uses integer `DIV` mirroring FeeEngine exactly |
-| One FeeEngine, SQL generated from it | Single source of truth; a golden test pins SQL == Python across instruments and edge amounts |
-| Pandera at the batch boundary + quarantine | Write-Audit-Publish: bad rows isolate to `quarantine_*.csv` / DLQ instead of crashing the pipeline |
-| `pipeline.py` on cron, Airflow DAG as reference | Lean local runner; MWAA/Composer is the scale-up path, not a second implementation |
-
----
-
-## Quick Start
+## Installation
 
 ```bash
-# 1. Start infrastructure (Redpanda + MinIO + Nessie)
+# 1. Configure environment
+cp .env.example .env
+# set MINIO_ROOT_PASSWORD in .env — compose fails without it
+# Windows: copy .env.example .env
+
+# 2. Start infrastructure
 docker compose up -d
 
-# 2. Run the full pipeline (cron replacement for the Airflow DAG)
+# 3. Create virtual environment and install
+python -m venv .venv
+.venv/Scripts/pip install -e ".[dev]"
+# macOS/Linux: .venv/bin/pip install -e ".[dev]"
+
+# 4. Verify
+ruff check src/ tests/ dags/
+pytest tests/ -m "not integration" -v
+```
+
+## Usage
+
+```bash
+# 10-second accuracy gate, no infra needed — writes tests/performance/results_accuracy.json
+make demo
+# or
+python tests/performance/quick_perf.py
+
+# Full pipeline for a date (needs Docker services up)
 python -m src.pipeline --date 2026-09-04
 
-# 3. Or run individual steps manually
+# Generate a settlement file, then validate it
 python src/generators/settlement_generator.py
 python src/validation/validate_settlement.py
+
+# Run tests
+pytest tests/ -m "not integration" -v   # unit only
+pytest tests/ -m integration -v         # needs Redpanda/MinIO/Nessie
 ```
 
----
+## Benchmarks
 
-## Benchmarking
+Correctness first — a fast wrong match corrupts the ledger. Throughput numbers are single-machine and single-run unless noted. Full method, commands, and environment are in `docs/BENCHMARKS.md`.
 
-We measure throughput, latency, **correctness**, and validation overhead —
-correctness first (a fast wrong match is silent ledger corruption).
-
-| Suite | Script | What it measures |
+| Suite | What is measured | Result (this repo) |
 | :--- | :--- | :--- |
-| Accuracy (sealed key) | `tests/performance/recon_accuracy.py` | Precision/recall/F1 + per-break recall + FP count on injected EXACT / ROUNDING / FEE_MISMATCH / ORPHAN / DUPLICATE / OUT_OF_ORDER / LATE_CORRECTION breaks. Answer key never touches the matcher. Gate: `test_recon_accuracy.py` (P=R=F1=1.0, FP=0 @500 rows ×2 seeds, plus @2000 rows for rare classes). |
-| Kafka producer | `kafka_producer_benchmark.py` | msgs/sec, ack latency p50/p95/p99 |
-| Spark streaming | `pyspark_ingestion_benchmark.py` | sustained rows/sec, batch duration |
-| Iceberg MERGE | `reconciliation_benchmark.py` | write/read sec, **rows/sec**, file counts, matched/mismatched @100K/500K/1M/2M/5M |
-| Validation | `pandas_validation_benchmark.py` | rows/sec: Pandera vs manual pandas vs pydantic vs Polars |
-| Regression gate | `check_regression.py` | fails PR if throughput drops >15% or p99 rises >20% vs baseline; warns (not fails) when the hardware fingerprint differs so a new machine isn't mistaken for a slowdown |
-| Quick gate (no infra) | `quick_perf.py` / `make demo` | sealed accuracy harness @2000 rows ×3 seeds + hardware fingerprint; writes `results.json` for the regression gate |
+| Accuracy (sealed key) | Precision, recall, F1, false positives on injected `EXACT / ROUNDING / FEE_MISMATCH / ORPHAN / DUPLICATE / OUT_OF_ORDER / LATE_CORRECTION` | `min_f1=1.0, FP=0` @ 2000 rows x 3 seeds (42, 7, 123). Per-class recall 1.0. Source: `tests/performance/results_accuracy.json` |
+| Kafka producer | Async msgs/sec + serial flush p50/p95/p99 | **135,091 msgs/sec** async; **p50 0.76ms / p95 1.07ms / p99 1.72ms** serial flush. Config `acks=all`, lz4, 1KB records, 5000 warmup + 5000 measured + 1000 serial, Redpanda `localhost:19092`. Latency is a single sample, not a repeated median |
+| Validation | In-memory rows/sec (Pandera vs manual pandas vs Polars vs Pydantic) | Pandera 1.0M rows/sec @10k, 2.8M @1M. Polars 2.3M @10k, 19.0M @1M. Pydantic row loop is 5x slower. See `results_pandera.json` |
+| Iceberg MERGE | Median write sec and rows/sec at 100k rows | **10% update:** 1.28s median, 7,822 rows/sec, **50% update:** 1.36s median, 36,887 rows/sec. `SPARK_MODE=local`, healthy, 4 repeats. Source: `results_iceberg.json`. Larger scales not yet measured |
 
 ```bash
-# Ensure infrastructure is up
-docker compose up -d
+# Reproduce the gate
+python tests/performance/quick_perf.py
 
-# 10-second signal, no infra needed (accuracy harness + machine fingerprint)
-make demo
-
-# Accuracy gate (no infra needed) + unit tests
-pytest tests/performance/test_recon_accuracy.py tests/processing/test_fee_engine.py -v
-
-# Full benchmark suite (needs Redpanda/MinIO/Nessie)
-pytest tests/performance/ -v
+# Reproduce all suites (needs Docker; small counts for quick run)
+python tests/performance/run_benchmarks.py --suite pandera
+python tests/performance/run_benchmarks.py --suite iceberg
+python tests/performance/kafka_producer_benchmark.py --count 5000 --acks all --compression lz4
 ```
-
-### Measured results
-
-Environment (measured September 2026): Windows 11, 28 cores, 15.8GB RAM,
-Python 3.13.5, Redpanda/MinIO/Nessie via Docker, JDK 17 for Spark.
-Source of truth: `tests/performance/results.json`.
-
-**Accuracy (sealed key — answer key never touches the matcher):**
-
-| Scale | Precision | Recall | F1 | False positives |
-| :--- | :--- | :--- | :--- | :--- |
-| 2,000 rows | 1.0 | 1.0 | 1.0 | 0 |
-| 10,000 rows | 1.0 | 1.0 | 1.0 | 0 |
-
-Per-class recall is 1.0 across MATCHED / FEE_MISMATCH / MISSING_WEBHOOK.
-
-**Kafka producer (`acks=all`, lz4 — strongest durability):**
-142,188 msgs/sec, p50 0.78ms / p95 4.03ms / p99 7.53ms
-(2,000-message run, 1KB records).
-(The script used to default to weaker `acks=1`; it now defaults to `acks=all`
-so the number you reproduce matches the number published.)
-
-**Validation benchmark (Pandera vs. manual pandas vs. Polars vs. Pydantic):**
-
-Run via `python tests/performance/pandas_validation_benchmark.py`.
-
-Results on Windows 11, 28 cores, Python 3.13.5 (`tests/performance/results_pandera.json`):
-
-| Rows | Manual Pandas | Polars | Pandera | Pydantic |
-| :--- | :--- | :--- | :--- | :--- |
-| 10,000 | 5.8M rows/sec (1.7ms) | 65K rows/sec (153ms)* | 544K rows/sec (18ms) | 271K rows/sec (36ms) |
-| 100,000 | 9.0M rows/sec (11ms) | 6.1M rows/sec (16ms) | 2.3M rows/sec (43ms) | 401K rows/sec (249ms) |
-| 1,000,000 | 6.8M rows/sec (145ms) | 8.2M rows/sec (120ms) | 2.2M rows/sec (446ms) | 397K rows/sec (2.5s) |
-| 10,000,000 | 2.7M rows/sec (3.6s) | 6.8M rows/sec (1.4s) | 1.5M rows/sec (6.6s) | 405K rows/sec (24.6s) |
-
-*Polars has a cold-start overhead on the first run.
-
-Manual pandas is faster below 100,000 rows because it avoids framework overhead. Polars is faster above 1,000,000 rows. Pandera processes 1.5M rows/sec at 10M rows, which covers the cost of using declarative contracts at the batch boundary.
-
-> Spark streaming + Iceberg MERGE throughput suites are not yet run on this
-> box: the Spark/Iceberg path was broken (stale JAVA_HOME/SPARK_HOME,
-> unpublished Maven artifacts) and is now fixed — a live Spark→Nessie→MinIO
-> probe passes (create/insert/count/drop). Full scale runs are pending; those
-> suites also run in CI on Linux (see `.github/workflows/ci.yml`).
-> Older MERGE figures were generated with a pre-GST fee formula and are retired,
-> not repeated.
-
-Scaling curves measure whether MERGE degrades sub-linearly, linearly, or
-exponentially. Merge-on-Read is typically sub-linear on write but degrades reads
-over time, necessitating compaction (`write.target-file-size-bytes=256MB`, zstd).
-
-Data quality follows Write-Audit-Publish: Pandera contracts validate at the
-batch boundary, failures quarantine to `quarantine_*.csv` / `webhooks_dlq`
-instead of crashing the pipeline.
-
----
 
 ## Configuration
 
-All configuration is centralized in `src/common/settings.py` using `pydantic-settings`. Values load from `.env` + environment overrides.
+All settings are in `src/common/settings.py` via `pydantic-settings` and loaded from `.env`.
 
----
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `MINIO_ROOT_USER` | `admin` | MinIO console user |
+| `MINIO_ROOT_PASSWORD` | `change-me` | MinIO console password (required) |
+| `MINIO_ENDPOINT` | `http://localhost:9000` | S3 endpoint |
+| `MINIO_ACCESS_KEY` |  | S3 access key |
+| `MINIO_SECRET_KEY` |  | S3 secret key |
+| `NESSIE_HOST` | `localhost` | Nessie host |
+| `NESSIE_PORT` | `19120` | Nessie port |
+| `NESSIE_REF` | `main` | Nessie branch |
+| `KAFKA_BROKER` | `localhost:19092` | Redpanda/Kafka broker |
+| `SCHEMA_REGISTRY_URL` | `http://localhost:8081` | Schema registry |
+| `TOPIC_NAME` | `gateway_webhooks` | Webhook topic |
+| `SPARK_MODE` | `local` | `local` or `cluster` |
+| `SPARK_MASTER` | `local[*]` | Spark master URL |
+| `TABLE_PREFIX` |  | Catalog prefix for Glue (`glue`) |
+| `PROJECT_ROOT` | `.` | Repo root for Airflow/DAGs |
+| `FEE_RATE_CONFIG` | `config/fee_rates.yaml` | Fee card path |
+| `GRAFANA_REMOTE_WRITE_URL` |  | Optional: Alloy remote write |
+| `GRAFANA_USERNAME` |  | Optional: Grafana user |
+| `GRAFANA_API_KEY` |  | Optional: Grafana key |
 
 ## Project Structure
 
@@ -205,7 +171,18 @@ All configuration is centralized in `src/common/settings.py` using `pydantic-set
 ├── tests/
 │   ├── processing/          # Fee engine (unit + property) + reconcile logic
 │   ├── validation/          # Schema validation tests
-│   ├── performance/         # Accuracy harness + throughput/latency benchmarks
+│   ├── performance/         # Accuracy harness + throughput benchmarks
 │   └── common/              # Config tests
 └── docker-compose.yml       # Redpanda + MinIO + Nessie
 ```
+
+## Contributing
+
+Keep changes small and add a test for new behavior.
+
+```bash
+ruff format src/ tests/ dags/ && ruff check src/ tests/ dags/
+pytest tests/ -m "not integration" --cov=src --cov-fail-under=70
+```
+
+See `.github/PULL_REQUEST_TEMPLATE.md` for the PR checklist.
