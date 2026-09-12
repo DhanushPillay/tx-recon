@@ -27,7 +27,13 @@ class Settings(BaseSettings):
     topic_name: str = "gateway_webhooks"
 
     # Spark
+    spark_mode: str = "local"
+    load_csv_on_driver: bool = False
     spark_shuffle_partitions: int = 8
+    spark_master: str = "local[*]"
+    spark_driver_memory: str = "2g"
+    spark_executor_memory: str = "2g"
+    spark_executor_cores: int = 2
     spark_jar_packages: str = (
         "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0,"
         "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.5,"
@@ -63,13 +69,40 @@ class Settings(BaseSettings):
         return self
 
     @classmethod
-    def for_airflow(cls) -> "Settings":
+    def for_airflow(cls, _base: "Settings | None" = None) -> "Settings":
+        base = _base.model_dump() if _base else {}
         return cls(
-            nessie_host="nessie",
-            minio_endpoint="http://minio:9000",
-            redpanda_host="redpanda",
-            kafka_broker="redpanda:9092",
-            schema_registry_url="http://redpanda:8081",
+            **{
+                **base,
+                "nessie_host": "nessie",
+                "minio_endpoint": "http://minio:9000",
+                "redpanda_host": "redpanda",
+                "kafka_broker": "redpanda:9092",
+                "schema_registry_url": "http://redpanda:8081",
+            }
+        )
+
+    @classmethod
+    def for_cluster(cls, _base: "Settings | None" = None) -> "Settings":
+        """Free local multinode: driver on host, 1 master + 2 workers in compose.
+
+        Requires hosts entries (minio/nessie/redpanda/spark-master -> 127.0.0.1)
+        and SPARK_MODE=cluster. See docker-compose.spark.yml header.
+        """
+        base = _base.model_dump() if _base else {}
+        return cls(
+            **{
+                **base,
+                "nessie_host": "nessie",
+                "minio_endpoint": "http://minio:9000",
+                "redpanda_host": "redpanda",
+                "kafka_broker": "redpanda:9092",
+                "schema_registry_url": "http://redpanda:8081",
+                "spark_master": "spark://spark-master:7077",
+                "spark_shuffle_partitions": 400,
+                "spark_executor_cores": 5,
+                "load_csv_on_driver": True,
+            }
         )
 
 
@@ -79,8 +112,12 @@ _settings: Settings | None = None
 def get_settings() -> Settings:
     global _settings
     if _settings is None:
+        base = Settings()
         is_airflow = os.environ.get("AIRFLOW_HOME") is not None
-        _settings = Settings.for_airflow() if is_airflow else Settings()
+        if base.spark_mode == "cluster":
+            _settings = Settings.for_cluster(base)
+        else:
+            _settings = Settings.for_airflow(base) if is_airflow else base
     return _settings
 
 
