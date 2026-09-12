@@ -89,7 +89,7 @@ def main():
             if i > 0 and i % 10000 == 0:
                 logger.info(f"Pushed {i} messages...")
         producer.flush()
-        elapsed = time.time() - start_time
+        elapsed = max(time.time() - start_time, 1e-9)
         logger.info(
             f"STRESS TEST COMPLETE: {args.stress} messages in {elapsed:.2f} seconds ({args.stress / elapsed:.2f} msgs/sec)"
         )
