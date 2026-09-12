@@ -51,6 +51,8 @@ def validate_latest_settlement(
     logger.info(f"Validating {latest_file} with Pandera...")
 
     df = pd.read_csv(latest_file)
+    if df.empty:
+        raise SettlementValidationError(f"Settlement file is empty: {latest_file}")
 
     _, invalid = validate_and_quarantine(df, settlement_schema)
 
@@ -58,7 +60,11 @@ def validate_latest_settlement(
     logger.info(f"Quarantine rate: {quarantine_rate:.1f}% ({len(invalid)}/{len(df)} rows)")
 
     if not invalid.empty:
-        invalid_path = latest_file.replace("settlement_", "quarantine_")
+        base, ext = os.path.splitext(latest_file)
+        if "settlement_" in os.path.basename(base):
+            invalid_path = base.replace("settlement_", "quarantine_") + ext
+        else:
+            invalid_path = base + "_quarantine" + ext
         invalid.to_csv(invalid_path, index=False)
         logger.warning(f"Wrote {len(invalid)} quarantined rows to {invalid_path}")
         raise SettlementValidationError(
