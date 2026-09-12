@@ -53,12 +53,17 @@ def test_get_spark_session_clears_spark_home(mock_spark_cls, monkeypatch):
 
 def test_get_spark_session_config_values(monkeypatch):
     monkeypatch.delenv("AIRFLOW_HOME", raising=False)
+    # Repo .env (docker hosts) must not leak into unit asserts: env wins over .env.
+    monkeypatch.setenv("SPARK_MODE", "local")
+    monkeypatch.setenv("NESSIE_HOST", "localhost")
+    monkeypatch.setenv("NESSIE_PORT", "19120")
     settings_mod._settings = None
     from src.common import config
 
     with patch("src.common.config.SparkSession") as mock_spark_cls:
         mock_builder = MagicMock()
         mock_spark_cls.builder.appName.return_value = mock_builder
+        mock_builder.master.return_value = mock_builder
         mock_builder.config.return_value = mock_builder
         mock_builder.getOrCreate.return_value = MagicMock()
 
