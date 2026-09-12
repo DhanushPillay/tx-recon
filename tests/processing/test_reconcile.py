@@ -82,8 +82,14 @@ def test_run_reconciliation_wiring(
     using_clause = merge_sql.split("ON t.transaction_id")[0]
     assert "JOIN" not in using_clause
     assert "IS NOT NULL" in merge_sql, "null guards required on both branches"
-    assert merge_sql.count("UPDATE SET") == 3  # null-amount + matched + mismatched
+    assert (
+        merge_sql.count("UPDATE SET") == 4
+    )  # placeholder-keep + null-amount + matched + mismatched
     assert merge_sql.count("WHEN NOT MATCHED") == 1
+    # Placeholder rows (inserted by WHEN NOT MATCHED on an earlier run) must
+    # keep EXCEPTION_MISSING_WEBHOOK on rerun, not flip to FEE_MISMATCH.
+    placeholder_clause = merge_sql.split("WHEN MATCHED AND t.amount_paise IS NULL")[0]
+    assert "EXCEPTION_MISSING_WEBHOOK" in placeholder_clause
     assert "DELETE" not in merge_sql
     assert counts["settlement_rows_deduped"] == 4
     assert counts["MATCHED"] == 3
