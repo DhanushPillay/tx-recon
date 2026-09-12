@@ -59,8 +59,16 @@ def print_summary(results):
     if "error" not in iceberg:
         benchmarks = iceberg.get("benchmarks", {})
         if benchmarks:
-            first = next(iter(benchmarks.values()))
-            print(f"{'Iceberg MERGE (500k/50%)':<30} {first.get('write_time_sec', 'N/A')}s write")
+            # Show the largest-scale 50% update row when present, else the last row.
+            pick = next(
+                (v for k, v in benchmarks.items() if k.endswith("50pct_update")),
+                next(iter(benchmarks.values())),
+            )
+            label = next(
+                (k for k, v in benchmarks.items() if v is pick),
+                "iceberg",
+            )
+            print(f"{f'Iceberg MERGE ({label})':<30} {pick.get('write_time_sec', 'N/A')}s write")
     else:
         print(f"{'Iceberg MERGE':<30} SKIPPED: {iceberg['error'][:40]}")
 
@@ -99,6 +107,12 @@ def main():
     hw = get_hardware_info()
     print(f"Hardware: {json.dumps(hw, indent=2)}")
 
+    try:
+        from hardware import fingerprint
+
+        hw = {**hw, "fingerprint": fingerprint()}
+    except Exception:
+        pass
     results = {"timestamp": datetime.now(timezone.utc).isoformat(), "hardware": hw}
 
     if args.suite in ("all", "kafka"):
