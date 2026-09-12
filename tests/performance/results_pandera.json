@@ -1,33 +1,33 @@
 {
   "hardware": {
-    "platform": "Windows-11-10.0.26200-SP0",
+    "platform": "Windows-10-10.0.26200-SP0",
     "cpu_count": 28,
     "ram_gb": 15.8,
-    "python_version": "3.13.5"
+    "python_version": "3.11.14"
   },
   "benchmarks": [
     {
       "rows": 10000,
       "methods": {
         "pandera": {
-          "mean_ms": 18.35,
-          "std_ms": 17.74,
-          "rows_per_sec": 544959
+          "mean_ms": 9.86,
+          "std_ms": 8.41,
+          "rows_per_sec": 1014199
         },
         "manual_pandas": {
-          "mean_ms": 1.72,
-          "std_ms": 0.71,
-          "rows_per_sec": 5813953
+          "mean_ms": 1.29,
+          "std_ms": 0.86,
+          "rows_per_sec": 7751938
         },
         "pydantic": {
-          "mean_ms": 36.9,
-          "std_ms": 14.62,
-          "rows_per_sec": 271003
+          "mean_ms": 21.26,
+          "std_ms": 3.39,
+          "rows_per_sec": 470367
         },
         "polars": {
-          "mean_ms": 153.17,
-          "std_ms": 259.6,
-          "rows_per_sec": 65287
+          "mean_ms": 4.38,
+          "std_ms": 7.94,
+          "rows_per_sec": 2283105
         }
       }
     },
@@ -35,24 +35,24 @@
       "rows": 100000,
       "methods": {
         "pandera": {
-          "mean_ms": 43.2,
-          "std_ms": 0.36,
-          "rows_per_sec": 2314815
+          "mean_ms": 36.92,
+          "std_ms": 2.12,
+          "rows_per_sec": 2708559
         },
         "manual_pandas": {
-          "mean_ms": 11.11,
-          "std_ms": 1.24,
-          "rows_per_sec": 9000900
+          "mean_ms": 8.54,
+          "std_ms": 0.32,
+          "rows_per_sec": 11709602
         },
         "pydantic": {
-          "mean_ms": 249.15,
-          "std_ms": 5.29,
-          "rows_per_sec": 401365
+          "mean_ms": 195.59,
+          "std_ms": 6.4,
+          "rows_per_sec": 511274
         },
         "polars": {
-          "mean_ms": 16.26,
-          "std_ms": 2.38,
-          "rows_per_sec": 6150062
+          "mean_ms": 5.22,
+          "std_ms": 0.78,
+          "rows_per_sec": 19157088
         }
       }
     },
@@ -60,24 +60,24 @@
       "rows": 1000000,
       "methods": {
         "pandera": {
-          "mean_ms": 446.36,
-          "std_ms": 12.31,
-          "rows_per_sec": 2240344
+          "mean_ms": 355.47,
+          "std_ms": 35.4,
+          "rows_per_sec": 2813177
         },
         "manual_pandas": {
-          "mean_ms": 145.2,
-          "std_ms": 4.88,
-          "rows_per_sec": 6887052
+          "mean_ms": 116.93,
+          "std_ms": 5.35,
+          "rows_per_sec": 8552125
         },
         "pydantic": {
-          "mean_ms": 2512.74,
-          "std_ms": 83.05,
-          "rows_per_sec": 397972
+          "mean_ms": 1891.23,
+          "std_ms": 20.93,
+          "rows_per_sec": 528756
         },
         "polars": {
-          "mean_ms": 120.73,
-          "std_ms": 7.01,
-          "rows_per_sec": 8282945
+          "mean_ms": 52.59,
+          "std_ms": 11.18,
+          "rows_per_sec": 19015022
         }
       }
     },
@@ -85,24 +85,24 @@
       "rows": 10000000,
       "methods": {
         "pandera": {
-          "mean_ms": 6631.66,
-          "std_ms": 192.83,
-          "rows_per_sec": 1507918
+          "mean_ms": 6603.35,
+          "std_ms": 88.46,
+          "rows_per_sec": 1514383
         },
         "manual_pandas": {
-          "mean_ms": 3659.39,
-          "std_ms": 14.97,
-          "rows_per_sec": 2732696
+          "mean_ms": 4016.12,
+          "std_ms": 26.85,
+          "rows_per_sec": 2489965
         },
         "pydantic": {
-          "mean_ms": 24654.66,
-          "std_ms": 529.94,
-          "rows_per_sec": 405603
+          "mean_ms": 20920.47,
+          "std_ms": 492.64,
+          "rows_per_sec": 478001
         },
         "polars": {
-          "mean_ms": 1449.66,
-          "std_ms": 62.25,
-          "rows_per_sec": 6898169
+          "mean_ms": 1145.58,
+          "std_ms": 114.57,
+          "rows_per_sec": 8729203
         }
       }
     }
