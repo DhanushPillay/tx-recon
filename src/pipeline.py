@@ -17,10 +17,12 @@ DEMO_MERCHANT = "merch_demo"
 
 
 def _seed_demo_webhooks(spark, table: str, planned: list[tuple[str, int, str]]) -> int:
-    """Insert one webhook row per planned triple; re-runnable (deletes prior demo rows first)."""
+    """Bulk-seed one webhook row per planned triple; re-runnable (MERGE-DELETEs prior rows first)."""
     from datetime import datetime, timezone
 
     # ponytail: DDL duplicated from src/ingestion/ingest_webhooks.py __main__; extract if it changes.
+    *parts, _ = table.split(".")
+    spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {'.'.join(parts)}")
     spark.sql(
         f"""CREATE TABLE IF NOT EXISTS {table} (
             transaction_id string, amount_paise bigint, gateway_status string,
@@ -28,19 +30,22 @@ def _seed_demo_webhooks(spark, table: str, planned: list[tuple[str, int, str]]) 
             reconciliation_status string, bank_ref_id string, ingested_at timestamp
         ) USING iceberg"""
     )
-    ids = ",".join(f"'{tx}'" for tx, _, _ in planned)
-    spark.sql(f"DELETE FROM {table} WHERE transaction_id IN ({ids})")
-    now = datetime.now(timezone.utc).isoformat()
-    values = ",\n".join(
-        f"('{tx}', {amt}, 'SUCCESS', '{now}', '{DEMO_MERCHANT}', NULL, 'SUCCESS', NULL, current_timestamp())"
-        for tx, amt, _ in planned
-    )
+    now = datetime.now(timezone.utc)
+    plan_df = spark.createDataFrame(
+        [
+            (tx, amt, "SUCCESS", now.isoformat(), DEMO_MERCHANT, None, "SUCCESS", None, now)
+            for tx, amt, _ in planned
+        ],
+        "transaction_id string, amount_paise long, gateway_status string, timestamp_utc string, "
+        "merchant_id string, processing_run_id string, reconciliation_status string, "
+        "bank_ref_id string, ingested_at timestamp",
+    ).repartition(32)
+    plan_df.createOrReplaceTempView("demo_plan")
     spark.sql(
-        f"""INSERT INTO {table}
-            (transaction_id, amount_paise, gateway_status, timestamp_utc, merchant_id,
-             processing_run_id, reconciliation_status, bank_ref_id, ingested_at)
-            VALUES {values}"""
+        f"MERGE INTO {table} t USING demo_plan s "
+        "ON t.transaction_id = s.transaction_id WHEN MATCHED THEN DELETE"
     )
+    plan_df.writeTo(table).append()
     return len(planned)
 
 
@@ -75,6 +80,7 @@ def main() -> dict:
     from src.validation.validate_settlement import validate_latest_settlement
 
     planned = _build_demo_plan(args.num_records) if args.demo else None
+    spark = None
     if planned is not None:
         from src.common.config import get_spark_session
         from src.common.settings import get_settings
@@ -82,7 +88,13 @@ def main() -> dict:
 
         logger.info("Step 0/3: seeding demo webhooks (same plan as settlements)")
         spark = get_spark_session("DemoSeed")
-        seeded = _seed_demo_webhooks(spark, _qualified_table(get_settings().webhook_table), planned)
+        try:
+            seeded = _seed_demo_webhooks(
+                spark, _qualified_table(get_settings().webhook_table), planned
+            )
+        finally:
+            spark.stop()
+            spark = None
         logger.info(f"Seeded {seeded} demo webhooks")
     logger.info("Step 1/3: generating settlement file")
     generate_settlement_file(
@@ -93,7 +105,9 @@ def main() -> dict:
     logger.info("Step 3/3: running reconciliation MERGE")
     counts = run_reconciliation(date_str=args.date)
     logger.info(f"Pipeline done: {counts}")
-    if args.demo and not counts.get("MATCHED"):
+    batch_n = counts.get("settlement_rows_deduped", 0)
+    batch_matched = counts.get("batch_MATCHED", counts.get("MATCHED", 0))
+    if args.demo and batch_n and not batch_matched:
         logger.warning("Demo matched nothing — seeding and settlement plan diverged, investigate.")
     return counts
 
