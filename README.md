@@ -4,177 +4,76 @@
 
 # Transaction Reconciliation
 
-Local lakehouse that reconciles payment webhooks against bank settlements.
+Makes sure the money a payment gateway collected matches what the bank actually settled. Flags anything that doesn't.
 
 [![CI](https://github.com/DhanushPillay/tx-recon/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DhanushPillay/tx-recon/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white)](https://www.python.org)
 
 </div>
 
-**The Problem:** Finance teams match payment gateway webhooks against delayed bank settlement files to verify Merchant Discount Rates (MDR). Manual matching delays month-end close and hides fee leakage.
+## Why this exists
 
-**The Solution:** A pipeline that reconciles streaming webhooks against batch settlements using Iceberg MERGE, with instrument-aware fee calculation and rate cards in `config/fee_rates.yaml`.
+When you pay online, two records are created: the payment gateway says "we collected ₹1,000", and days later the bank says "we settled ₹976.40". The gap is the gateway's fee plus tax. Finance teams match these records by hand to catch overcharging. This project does that matching automatically, on a small local setup.
 
----
+A concrete example: a ₹1,000 credit card payment carries a 2% gateway fee (₹20) plus 18% tax on that fee (₹3.60), so the bank should settle ₹976.40. If it settles ₹976.40, the payment is marked MATCHED. If it settles ₹970, it is flagged as a fee mismatch for a human to check.
 
-## What This Is (and Isn't)
+**Honest limits:** this runs on Docker on one machine with made-up data. It is a working proof of concept, not a production system and not a real payments product.
 
-**This is:**
-- A local proof of concept for streaming + batch reconciliation
-- An example of Iceberg MERGE for incremental updates
-- A reference architecture for payment reconciliation
-
-**This is NOT:**
-- Production-ready — it runs on Docker Compose, not a Spark cluster
-- A payments system — it processes synthetic data, not real money
-- Tested at billion-row scale — benchmarks are single-node only
-
----
-
-## Architecture
-
-```mermaid
-flowchart LR
-    A[Webhook] -->|Stream| B(Redpanda)
-    B -->|PySpark| C[(Iceberg / MinIO)]
-    E[Settlement] -->|Pandera| V{Contract}
-    V -->|Validated| F[PySpark MERGE]
-    F --> C
-    G[pipeline.py cron] -->|Orchestrates| F
-    C <--> H(Nessie Catalog)
-```
-
-> `dags/` keeps the original Airflow DAG as reference. The lean local runner is
-> `python -m src.pipeline` (cron or systemd); Airflow/MWAA is the scale-up path.
-
-| Local Component | Cloud Equivalent |
-| :--- | :--- |
-| Redpanda (Docker) | Amazon MSK / Confluent Cloud |
-| MinIO (Docker) | Amazon S3 / GCS |
-| Nessie (Docker) | AWS Glue Data Catalog |
-| PySpark on Docker | EMR / Dataproc |
-| pipeline.py on cron | MWAA / Cloud Composer |
-
-## Features
-
-- Instrument-aware fees from `config/fee_rates.yaml` with integer paise math (`src/processing/fee_engine.py`)
-- GST on MDR per instrument and merchant tier
-- Iceberg MERGE upsert on `transaction_id` with `WHEN NOT MATCHED` handling (`src/processing/reconcile.py`)
-- Pandera contracts with strict types, uniqueness checks, and `quarantine_*.csv` isolation (`src/validation/validate_settlement.py`)
-- Dead letter queue table for failed webhooks (`src/ingestion/ingest_webhooks.py`)
-- Sealed accuracy harness with precision, recall, F1, and per-break recall (`tests/performance/recon_accuracy.py`)
-- Regression gate that fails a PR when throughput drops more than 15 percent (`tests/performance/check_regression.py`)
-
-## Tech stack
-
-Python 3.11 · PySpark 3.5.1 · Apache Iceberg · Project Nessie · Redpanda · MinIO · Trino · Pandera · Airflow 2.11.2
-
-## Installation
+## Run it in 3 steps
 
 ```bash
-# 1. Configure environment
+# 1. Configure (compose fails without MINIO_ROOT_PASSWORD set in .env)
 cp .env.example .env
-# set MINIO_ROOT_PASSWORD in .env — compose fails without it
-# Windows: copy .env.example .env
 
-# 2. Start infrastructure
+# 2. Start the local services
 docker compose up -d
 
-# 3. Create virtual environment and install
-python -m venv .venv
-.venv/Scripts/pip install -e ".[dev]"
-# macOS/Linux: .venv/bin/pip install -e ".[dev]"
-
-# 4. Verify
-ruff check src/ tests/ dags/
-pytest tests/ -m "not integration" -v
-```
-
-## Usage
-
-```bash
-# 10-second accuracy gate, no infra needed — writes tests/performance/results_accuracy.json
+# 3. Run the demo check (needs nothing but Python, takes ~10 seconds)
 make demo
-# or
-python tests/performance/quick_perf.py
-
-# Full pipeline for a date (needs Docker services up)
-python -m src.pipeline --date 2026-09-04
-
-# Generate a settlement file, then validate it
-python src/generators/settlement_generator.py
-python src/validation/validate_settlement.py
-
-# Run tests
-pytest tests/ -m "not integration" -v   # unit only
-pytest tests/ -m integration -v         # needs Redpanda/MinIO/Nessie
 ```
 
-## Benchmarks
-
-Correctness first — a fast wrong match corrupts the ledger. Throughput numbers are single-machine and single-run unless noted. Full method, commands, and environment are in `docs/BENCHMARKS.md`.
-
-| Suite | What is measured | Result (this repo) |
-| :--- | :--- | :--- |
-| Accuracy (sealed key) | Precision, recall, F1, false positives on injected `EXACT / ROUNDING / FEE_MISMATCH / ORPHAN / DUPLICATE / OUT_OF_ORDER / LATE_CORRECTION` | `min_f1=1.0, FP=0` @ 2000 rows x 3 seeds (42, 7, 123). Per-class recall 1.0. Source: `tests/performance/results_accuracy.json` |
-| Kafka producer | Async msgs/sec + serial flush p50/p95/p99 | **135,091 msgs/sec** async; **p50 0.76ms / p95 1.07ms / p99 1.72ms** serial flush. Config `acks=all`, lz4, 1KB records, 5000 warmup + 5000 measured + 1000 serial, Redpanda `localhost:19092`. Latency is a single sample, not a repeated median |
-| Validation | In-memory rows/sec (Pandera vs manual pandas vs Polars vs Pydantic) | Pandera 1.0M rows/sec @10k, 2.8M @1M. Polars 2.3M @10k, 19.0M @1M. Pydantic row loop is 5x slower. See `results_pandera.json` |
-| Iceberg MERGE | Median write sec and rows/sec at 100k rows | **10% update:** 1.28s median, 7,822 rows/sec, **50% update:** 1.36s median, 36,887 rows/sec. `SPARK_MODE=local`, healthy, 4 repeats. Source: `results_iceberg.json`. Larger scales not yet measured |
-
-```bash
-# Reproduce the gate
-python tests/performance/quick_perf.py
-
-# Reproduce all suites (needs Docker; small counts for quick run)
-python tests/performance/run_benchmarks.py --suite pandera
-python tests/performance/run_benchmarks.py --suite iceberg
-python tests/performance/kafka_producer_benchmark.py --count 5000 --acks all --compression lz4
-```
-
-## Configuration
-
-All settings are in `src/common/settings.py` via `pydantic-settings` and loaded from `.env`.
-
-| Variable | Default | Purpose |
-| :--- | :--- | :--- |
-| `MINIO_ROOT_USER` | `admin` | MinIO console user |
-| `MINIO_ROOT_PASSWORD` | `change-me` | MinIO console password (required) |
-| `MINIO_ENDPOINT` | `http://localhost:9000` | S3 endpoint |
-| `MINIO_ACCESS_KEY` |  | S3 access key |
-| `MINIO_SECRET_KEY` |  | S3 secret key |
-| `NESSIE_HOST` | `localhost` | Nessie host |
-| `NESSIE_PORT` | `19120` | Nessie port |
-| `NESSIE_REF` | `main` | Nessie branch |
-| `KAFKA_BROKER` | `localhost:19092` | Redpanda/Kafka broker |
-| `SCHEMA_REGISTRY_URL` | `http://localhost:8081` | Schema registry |
-| `TOPIC_NAME` | `gateway_webhooks` | Webhook topic |
-| `SPARK_MODE` | `local` | `local` or `cluster` |
-| `SPARK_MASTER` | `local[*]` | Spark master URL |
-| `TABLE_PREFIX` |  | Catalog prefix for Glue (`glue`) |
-| `PROJECT_ROOT` | `.` | Repo root for Airflow/DAGs |
-| `FEE_RATE_CONFIG` | `config/fee_rates.yaml` | Fee card path |
-| `GRAFANA_REMOTE_WRITE_URL` |  | Optional: Alloy remote write |
-| `GRAFANA_USERNAME` |  | Optional: Grafana user |
-| `GRAFANA_API_KEY` |  | Optional: Grafana key |
-
-## Project Structure
+Expected output:
 
 ```text
-├── dags/                    # Airflow DAG (reference; lean runner is src/pipeline.py)
-├── src/
-│   ├── common/              # Settings, Spark session, domain contracts
-│   ├── generators/          # Webhook producer + settlement generator
-│   ├── ingestion/           # Spark streaming Kafka -> Iceberg (+DLQ)
-│   ├── processing/          # FeeEngine + MERGE reconciliation
-│   ├── validation/          # Pandera contracts + quarantine
-│   └── pipeline.py          # generate -> validate -> reconcile (cron entrypoint)
-├── tests/
-│   ├── processing/          # Fee engine (unit + property) + reconcile logic
-│   ├── validation/          # Schema validation tests
-│   ├── performance/         # Accuracy harness + throughput benchmarks
-│   └── common/              # Config tests
-└── docker-compose.yml       # Redpanda + MinIO + Nessie
+accuracy_min_f1=1.0000
+accuracy_max_fp=0
 ```
+
+That means: on 2,000 test payments with 7 kinds of problems deliberately injected (wrong fees, missing records, duplicates, late corrections), every problem was caught and nothing correct was flagged.
+
+## What it does
+
+- **Reads payment notifications** as they stream in and stores them.
+- **Reads the bank's settlement file** (a daily CSV), checks every row is well-formed, and quarantines bad rows into a separate file instead of crashing.
+- **Compares the two** using a fee table (`config/fee_rates.yaml`) — UPI is free, credit cards cost 2%, debit 1%, international 3%, each plus 18% tax on the fee.
+- **Marks each payment** MATCHED, fee mismatch, or missing, and stores the result.
+- **Catches its own mistakes**: a test suite injects known errors and fails if any slip through, and a second check fails a PR if speed drops more than 15%.
+
+## How it fits together
+
+Payment notifications flow through Redpanda into an Iceberg table. The bank file is validated, then a Spark job joins the two and writes the verdict back. A single `pipeline.py` script runs the whole thing on a schedule; the Airflow version in `dags/` shows how it would scale up.
+
+| Local piece | Stands in for |
+| :--- | :--- |
+| Redpanda | A message queue (Kafka) |
+| MinIO | Object storage (S3) |
+| Nessie | A data catalog (Glue) |
+| PySpark | A batch engine (EMR) |
+
+## Speed, in plain words
+
+Full method and repro commands: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md). All numbers are from one Windows machine, single runs unless noted.
+
+- **Accuracy:** catches every injected error, zero false alarms (F1 = 1.0).
+- **Sending payments in:** ~135,000 messages/second.
+- **Checking the bank file:** ~1M rows/second at 10k rows, ~2.8M at 1M rows.
+- **Matching 100,000 payments:** ~1.3 seconds.
+
+## Dig deeper
+
+- [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) — full numbers, method, and how to reproduce them
+- [`docs/LOCAL_SETUP.md`](docs/LOCAL_SETUP.md) — setup details and every setting explained
+- [`config/fee_rates.yaml`](config/fee_rates.yaml) — the fee table (change a rate, rerun, watch verdicts change)
 
 ## Contributing
 
@@ -182,7 +81,5 @@ Keep changes small and add a test for new behavior.
 
 ```bash
 ruff format src/ tests/ dags/ && ruff check src/ tests/ dags/
-pytest tests/ -m "not integration" --cov=src --cov-fail-under=70
+pytest tests/ -m "not integration"
 ```
-
-See `.github/PULL_REQUEST_TEMPLATE.md` for the PR checklist.
