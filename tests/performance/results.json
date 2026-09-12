@@ -1,11 +1,174 @@
 {
-  "timestamp": "2026-09-06T17:37:32.855275+00:00",
+  "timestamp": "2026-09-12T16:43:59.090210+00:00",
   "hardware": {
-    "platform": "Windows-11-10.0.26200-SP0",
+    "platform": "Windows-10-10.0.26200-SP0",
     "cpu_count": 28,
     "ram_gb": 15.8,
-    "python_version": "3.13.5",
+    "python_version": "3.11.14",
     "fingerprint": "d2e5f67d5861"
+  },
+  "kafka": {
+    "broker": "localhost:19092",
+    "throughput_msgs_sec": 135090.96,
+    "ack_latency": {
+      "p50": 0.76,
+      "p95": 1.07,
+      "p99": 1.72,
+      "max": 8.4,
+      "mean": 0.82,
+      "stdev": 0.44
+    },
+    "config": {
+      "acks": "all",
+      "compression": "lz4",
+      "record_size": 1024,
+      "count": 5000
+    }
+  },
+  "iceberg": {
+    "hardware": {
+      "platform": "Windows-10-10.0.26200-SP0",
+      "cpu_count": 28,
+      "ram_gb": 15.8,
+      "python_version": "3.11.14",
+      "fingerprint": "d2e5f67d5861"
+    },
+    "benchmarks": {
+      "100k_rows_10pct_update": {
+        "write_time_sec": 1.28,
+        "write_time_median_sec": 1.28,
+        "write_time_repeats": 4,
+        "read_time_sec": 0.06,
+        "rows_per_sec": 7821.9,
+        "files_before": 8,
+        "files_after": 1,
+        "matched": 10000,
+        "mismatched": 0,
+        "healthy": true
+      },
+      "100k_rows_50pct_update": {
+        "write_time_sec": 1.36,
+        "write_time_median_sec": 1.36,
+        "write_time_repeats": 4,
+        "read_time_sec": 0.06,
+        "rows_per_sec": 36887.3,
+        "files_before": 1,
+        "files_after": 1,
+        "matched": 50000,
+        "mismatched": 0,
+        "healthy": true
+      }
+    }
+  },
+  "pandera": {
+    "hardware": {
+      "platform": "Windows-10-10.0.26200-SP0",
+      "cpu_count": 28,
+      "ram_gb": 15.8,
+      "python_version": "3.11.14"
+    },
+    "benchmarks": [
+      {
+        "rows": 10000,
+        "methods": {
+          "pandera": {
+            "mean_ms": 9.86,
+            "std_ms": 8.41,
+            "rows_per_sec": 1014199
+          },
+          "manual_pandas": {
+            "mean_ms": 1.29,
+            "std_ms": 0.86,
+            "rows_per_sec": 7751938
+          },
+          "pydantic": {
+            "mean_ms": 21.26,
+            "std_ms": 3.39,
+            "rows_per_sec": 470367
+          },
+          "polars": {
+            "mean_ms": 4.38,
+            "std_ms": 7.94,
+            "rows_per_sec": 2283105
+          }
+        }
+      },
+      {
+        "rows": 100000,
+        "methods": {
+          "pandera": {
+            "mean_ms": 36.92,
+            "std_ms": 2.12,
+            "rows_per_sec": 2708559
+          },
+          "manual_pandas": {
+            "mean_ms": 8.54,
+            "std_ms": 0.32,
+            "rows_per_sec": 11709602
+          },
+          "pydantic": {
+            "mean_ms": 195.59,
+            "std_ms": 6.4,
+            "rows_per_sec": 511274
+          },
+          "polars": {
+            "mean_ms": 5.22,
+            "std_ms": 0.78,
+            "rows_per_sec": 19157088
+          }
+        }
+      },
+      {
+        "rows": 1000000,
+        "methods": {
+          "pandera": {
+            "mean_ms": 355.47,
+            "std_ms": 35.4,
+            "rows_per_sec": 2813177
+          },
+          "manual_pandas": {
+            "mean_ms": 116.93,
+            "std_ms": 5.35,
+            "rows_per_sec": 8552125
+          },
+          "pydantic": {
+            "mean_ms": 1891.23,
+            "std_ms": 20.93,
+            "rows_per_sec": 528756
+          },
+          "polars": {
+            "mean_ms": 52.59,
+            "std_ms": 11.18,
+            "rows_per_sec": 19015022
+          }
+        }
+      },
+      {
+        "rows": 10000000,
+        "methods": {
+          "pandera": {
+            "mean_ms": 6603.35,
+            "std_ms": 88.46,
+            "rows_per_sec": 1514383
+          },
+          "manual_pandas": {
+            "mean_ms": 4016.12,
+            "std_ms": 26.85,
+            "rows_per_sec": 2489965
+          },
+          "pydantic": {
+            "mean_ms": 20920.47,
+            "std_ms": 492.64,
+            "rows_per_sec": 478001
+          },
+          "polars": {
+            "mean_ms": 1145.58,
+            "std_ms": 114.57,
+            "rows_per_sec": 8729203
+          }
+        }
+      }
+    ]
   },
   "accuracy": {
     "min_f1": 1.0,
