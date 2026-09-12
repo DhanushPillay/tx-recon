@@ -1,0 +1,84 @@
+# Free local multinode Spark for tx-recon. Merged on top of the base file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.spark.yml up -d
+#   docker compose -f docker-compose.yml -f docker-compose.spark.yml down
+#
+# Layout: driver runs on HOST (.venv, proven Java), 1 master + 2 workers in Docker.
+# Master UI: http://localhost:8082 (8080 is Trino — do NOT remap to 8080).
+# Stop trino/metabase during runs to free ~3GB: docker stop trino metabase
+#
+# ONE-TIME host setup (split-brain fix: host must resolve service names):
+#   Add to C:\Windows\System32\drivers\etc\hosts:
+#     127.0.0.1  minio nessie redpanda spark-master
+#   Set SPARK_MODE=cluster in .env (or shell) before running jobs.
+#   Accept the Windows Firewall Java prompt once (workers call back to driver
+#   via spark.driver.host=host.docker.internal, see src/common/config.py).
+#
+# Verify: Master UI shows 2 alive workers; from host: curl http://minio:9000/minio/health/live
+
+services:
+  spark-master:
+    build:
+      context: .
+      dockerfile: Dockerfile.spark
+    container_name: spark-master
+    hostname: spark-master
+    command: >
+      /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+      --host spark-master --port 7077 --webui-port 8080
+    ports:
+      - "7077:7077" # driver on host dials localhost:7077
+      - "8082:8080" # master UI (NOT 8080 — Trino owns it)
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    healthcheck:
+      # no curl/wget in image; bash /dev/tcp probe instead
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/8080'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  spark-worker-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.spark
+    container_name: spark-worker-1
+    command: >
+      /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
+      spark://spark-master:7077 --cores 10 --memory 2G
+      --work-dir /tmp/spark-work --webui-port 8081
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    ports:
+      - "8083:8081" # worker UI
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+
+  spark-worker-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.spark
+    container_name: spark-worker-2
+    command: >
+      /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
+      spark://spark-master:7077 --cores 10 --memory 2G
+      --work-dir /tmp/spark-work --webui-port 8081
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    ports:
+      - "8084:8081" # worker UI
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+
+  # Host reaches redpanda:9092 via hosts entry (compose merges ports).
+  redpanda:
+    ports:
+      - "9092:9092"
