@@ -43,5 +43,7 @@ def main(out):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "results.json"))
+    ap.add_argument(
+        "--out", default=os.path.join(os.path.dirname(__file__), "results_accuracy.json")
+    )
     sys.exit(main(ap.parse_args().out))
