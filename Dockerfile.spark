@@ -1,0 +1,20 @@
+FROM apache/spark:3.5.1
+USER root
+
+# Install uv
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/usr/local/bin" sh
+
+# Install python 3.11 using uv into /opt/python
+ENV UV_PYTHON_INSTALL_DIR=/opt/python
+RUN uv python install 3.11
+
+# Fix permissions so the spark user can execute it
+RUN chown -R spark:spark /opt/python
+RUN chmod -R 755 /opt/python
+
+# Link python3 and install pip so dependencies work
+RUN ln -sf $(uv python find 3.11) /usr/bin/python3
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3 - --break-system-packages
+
+USER spark
