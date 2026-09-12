@@ -1,6 +1,7 @@
 import logging
 import re
 
+import pyspark.sql.functions as F
 from pyspark.sql.avro.functions import from_avro
 from pyspark.sql.functions import col, current_timestamp, expr, lit
 from pyspark.sql.streaming.listener import StreamingQueryListener
@@ -57,47 +58,45 @@ def run_ingestion():
         "data.*"
     )
 
-    valid_df = parsed_df.filter((col("amount_paise") > 0) & (col("transaction_id").isNotNull()))
-
-    invalid_df = parsed_df.filter((col("amount_paise") <= 0) | (col("transaction_id").isNull()))
-
-    enriched_df = (
-        valid_df.withColumn("reconciliation_status", col("gateway_status"))
-        .withColumn("bank_ref_id", lit(None).cast("string"))
-        .withColumn("ingested_at", current_timestamp())
-    )
+    # NULL-safe split: corrupt from_avro rows yield NULLs, and NULL > 0 / NULL <= 0
+    # are both NULL (3VL), so a naive <= 0 complement silently drops them.
+    # valid keeps only TRUE; invalid keeps FALSE *or* NULL via coalesce.
+    valid_cond = (col("amount_paise") > 0) & (col("transaction_id").isNotNull())
 
     warehouse = settings.iceberg_warehouse
     webhook_table = _qualified_table(settings.webhook_table)
     dlq_table = _qualified_table(settings.dlq_table)
 
-    logger.info(f"Starting stream to Iceberg {webhook_table}")
-    (
-        enriched_df.writeStream.format("iceberg")
-        .outputMode("append")
-        .queryName("webhooks_valid")
-        .trigger(processingTime="2 seconds")
-        .option("maxOffsetsPerTrigger", 50000)
-        .option("checkpointLocation", f"{warehouse}/checkpoints/webhooks_valid")
-        .toTable(webhook_table)
-    )
+    logger.info(f"Starting stream to Iceberg {webhook_table} (+ DLQ {dlq_table})")
 
-    (
-        invalid_df.writeStream.format("iceberg")
-        .outputMode("append")
-        .queryName("webhooks_dlq")
-        .trigger(processingTime="2 seconds")
-        .option("maxOffsetsPerTrigger", 50000)
-        .option("checkpointLocation", f"{warehouse}/checkpoints/webhooks_dlq")
-        .toTable(dlq_table)
-    )
+    def _write_batch(batch_df, _epoch: int) -> None:
+        batch_df.persist()
+        try:
+            v = batch_df.filter(valid_cond)
+            v.withColumn("reconciliation_status", col("gateway_status")).withColumn(
+                "bank_ref_id", lit(None).cast("string")
+            ).withColumn("ingested_at", current_timestamp()).writeTo(webhook_table).append()
+            inv = batch_df.filter(~F.coalesce(valid_cond, F.lit(False)))
+            inv.writeTo(dlq_table).append()
+        finally:
+            batch_df.unpersist()
 
     spark.streams.addListener(_BatchProgressLogger())
-    spark.streams.awaitAnyTermination()
+    query = (
+        parsed_df.writeStream.foreachBatch(_write_batch)
+        .queryName("webhooks_all")
+        .trigger(processingTime="2 seconds")
+        .option("maxOffsetsPerTrigger", 50000)
+        .option("checkpointLocation", f"{warehouse}/checkpoints/webhooks_all")
+        .start()
+    )
+    query.awaitTermination()
 
 
 if __name__ == "__main__":
     settings = get_settings()
+    webhook_table = _qualified_table(settings.webhook_table)
+    dlq_table = _qualified_table(settings.dlq_table)
 
     logger.info("Initializing Iceberg tables via Nessie")
     spark = get_spark_session("Init")
@@ -105,7 +104,7 @@ if __name__ == "__main__":
 
     spark.sql(
         f"""
-        CREATE TABLE IF NOT EXISTS {settings.webhook_table} (
+        CREATE TABLE IF NOT EXISTS {webhook_table} (
             transaction_id string,
             amount_paise bigint,
             gateway_status string,
@@ -121,7 +120,7 @@ if __name__ == "__main__":
 
     spark.sql(
         f"""
-        CREATE TABLE IF NOT EXISTS {settings.dlq_table} (
+        CREATE TABLE IF NOT EXISTS {dlq_table} (
             transaction_id string,
             amount_paise bigint,
             gateway_status string,
