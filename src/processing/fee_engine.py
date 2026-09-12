@@ -24,15 +24,34 @@ class FeeEngine:
         self.config_version = "v1"
         if os.path.exists(path):
             with open(path) as f:
-                self.config = yaml.safe_load(f)
+                loaded = yaml.safe_load(f) or {}
         else:
-            self.config = {
+            loaded = {}
+        if not loaded:
+            loaded = {
                 "version": "v1.0.0",
                 "default": {"mdr_rate_bps": 150, "gst_on_mdr": 18.0, "tolerance_paise": 1},
                 "instruments": {},
             }
-
+        self.config = loaded
+        self._validate_config()
         self.config_version = self.config.get("version", "unknown")
+
+    def _validate_config(self) -> None:
+        default = self.config.get("default", {})
+        for key in ("mdr_rate_bps", "gst_on_mdr", "tolerance_paise"):
+            if key not in default:
+                raise ValueError(f"fee config missing default.{key}")
+        if not (0 <= int(default["mdr_rate_bps"]) <= 10000):
+            raise ValueError(f"invalid default mdr_rate_bps: {default['mdr_rate_bps']!r}")
+        if float(default["gst_on_mdr"]) < 0:
+            raise ValueError(f"invalid default gst_on_mdr: {default['gst_on_mdr']!r}")
+        if int(default["tolerance_paise"]) < 0:
+            raise ValueError(f"invalid default tolerance_paise: {default['tolerance_paise']!r}")
+        for inst, rate in (self.config.get("instruments", {}) or {}).items():
+            bps = int(rate.get("mdr_rate_bps", default["mdr_rate_bps"]))
+            if not (0 <= bps <= 10000):
+                raise ValueError(f"invalid mdr_rate_bps for {inst}: {bps!r}")
 
     @property
     def default_rate(self) -> dict:
@@ -76,7 +95,7 @@ class FeeEngine:
             raise ValueError(f"amount_paise must be non-negative, got {amount_paise}")
         rate = self.get_rate(instrument_type, merchant_id)
         mdr_bps = rate.get("mdr_rate_bps", 150)
-        gst_pct = rate.get("gst_on_mdr", 0)
+        gst_pct = rate.get("gst_on_mdr", 18.0)
 
         # Standard round-to-nearest integer algorithm (half-up equivalent for positive integers).
         # Integer-only: no float money math. GST via bps keeps SQL/Python identical.
