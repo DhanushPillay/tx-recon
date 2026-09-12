@@ -30,4 +30,5 @@ logs.txt
 .opencode/
 .env
 results*.json
+.serena
 
