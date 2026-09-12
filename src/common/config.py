@@ -40,7 +40,15 @@ def get_spark_session(app_name: str = "TxRecon") -> SparkSession:
 
     spark = (
         SparkSession.builder.appName(app_name)
+        .master(settings.spark_master)
         .config("spark.jars.packages", ",".join(packages))
+        .config("spark.driver.memory", settings.spark_driver_memory)
+        .config("spark.executor.memory", settings.spark_executor_memory)
+        # ponytail: Temurin 17.0.20 C2 segfaults (hs_err in C2 CompilerThread);
+        # cap JIT at level 1 until the JDK is upgraded. ~10-30% slower, no crash.
+        .config("spark.driver.extraJavaOptions", "-XX:TieredStopAtLevel=1")
+        .config("spark.executor.extraJavaOptions", "-XX:TieredStopAtLevel=1")
+        .config("spark.executor.cores", str(settings.spark_executor_cores))
         .config(
             "spark.sql.extensions",
             "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions,"
@@ -65,7 +73,15 @@ def get_spark_session(app_name: str = "TxRecon") -> SparkSession:
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .config("spark.sql.shuffle.partitions", str(settings.spark_shuffle_partitions))
-        .getOrCreate()
     )
 
-    return spark
+    if settings.spark_master.startswith("spark://"):
+        # ponytail: host driver + Docker workers only; local[*] must not force a host.
+        builder = (
+            spark.config("spark.driver.host", "host.docker.internal")
+            .config("spark.driver.bindAddress", "0.0.0.0")
+            .config("spark.pyspark.python", "python3")
+        )
+        return builder.getOrCreate()
+
+    return spark.getOrCreate()
