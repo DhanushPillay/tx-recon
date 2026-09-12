@@ -145,6 +145,9 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
     # use the webhook amount (t.amount_paise) plus the settlement instrument
     # (s.instrument_type). The USING source is settlements only — joining the
     # target here would filter out orphans and make WHEN NOT MATCHED dead.
+    # First MATCHED clause preserves EXCEPTION_MISSING_WEBHOOK placeholders:
+    # their amount_paise equals the settled amount, so fee math would
+    # misread them as FEE_MISMATCH on rerun and break idempotency.
     table = _qualified_table(settings.webhook_table)
     merge_sql = f"""
     MERGE INTO {table} t
@@ -158,6 +161,9 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
         WHERE s.transaction_id IS NOT NULL AND s.settled_amount_paise IS NOT NULL
     ) s
     ON t.transaction_id = s.transaction_id
+    WHEN MATCHED AND t.reconciliation_status = '{EXCEPTION_MISSING_WEBHOOK}' THEN
+        UPDATE SET
+            t.bank_ref_id = s.bank_ref_id
     WHEN MATCHED AND t.amount_paise IS NULL THEN
         UPDATE SET
             t.reconciliation_status = '{EXCEPTION_FEE_MISMATCH}',
