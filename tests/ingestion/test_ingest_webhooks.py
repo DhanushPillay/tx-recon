@@ -72,20 +72,17 @@ def test_run_ingestion_wiring(
     mock_get_spark.return_value = mock_spark
 
     mock_df = MagicMock()
-    mock_spark.readStream.format.return_value.option.return_value.option.return_value.load.return_value = mock_df
+    (
+        mock_spark.readStream.format.return_value.option.return_value.option.return_value.option.return_value.load.return_value
+    ) = mock_df
 
     mock_df.withColumn.return_value = mock_df
     mock_df.select.return_value = mock_df
     mock_df.filter.return_value = mock_df
 
-    mock_enriched = MagicMock()
-    mock_enriched.withColumn.return_value = mock_enriched
-    mock_enriched.withColumn.return_value.withColumn.return_value = mock_enriched
-    mock_df.withColumn.return_value = mock_enriched
-
     mock_write = MagicMock()
-    mock_enriched.writeStream.format.return_value = mock_write
-    mock_write.outputMode.return_value = mock_write
+    mock_df.writeStream.foreachBatch.return_value = mock_write
+    mock_write.queryName.return_value = mock_write
     mock_write.trigger.return_value = mock_write
     mock_write.option.return_value = mock_write
 
@@ -94,39 +91,33 @@ def test_run_ingestion_wiring(
     run_ingestion()
 
     mock_spark.readStream.format.assert_called_with("kafka")
-    mock_spark.streams.awaitAnyTermination.assert_called_once()
+    # Single foreachBatch sink (not dual toTable): one consumer, NULL-safe split inside.
+    mock_df.writeStream.foreachBatch.assert_called_once()
+    mock_write.queryName.assert_called_with("webhooks_all")
+    assert any(
+        "webhooks_all" in str(c) for c in mock_write.option.call_args_list
+    ), "checkpoint must be the unified webhooks_all path"
+    mock_spark.streams.addListener.assert_called_once()
 
 
-@patch("src.ingestion.ingest_webhooks.get_spark_session")
-@patch(
-    "src.ingestion.ingest_webhooks.from_avro",
-    return_value=MagicMock(alias=MagicMock(return_value=MockColumn())),
-)
-@patch("src.ingestion.ingest_webhooks.current_timestamp", return_value=MockColumn())
-@patch("src.ingestion.ingest_webhooks.col", return_value=MockColumn())
-@patch("src.ingestion.ingest_webhooks.expr", return_value=MockColumn())
-@patch("src.ingestion.ingest_webhooks.lit", return_value=MockColumn())
-def test_run_ingestion_main_block(
-    mock_lit, mock_expr, mock_col, mock_ts, mock_from_avro, mock_get_spark
-):
-    mock_spark = MagicMock()
-    mock_get_spark.return_value = mock_spark
+def test_run_ingestion_ddl_uses_qualified_tables():
+    import src.ingestion.ingest_webhooks as mod
 
-    mock_df = MagicMock()
-    mock_spark.readStream.format.return_value.option.return_value.option.return_value.load.return_value = mock_df
+    assert hasattr(mod, "_qualified_table")
+    with_unsafe = False
+    try:
+        mod._qualified_table("x; DROP TABLE --")
+    except ValueError:
+        with_unsafe = True
+    assert with_unsafe, "_qualified_table must reject injection"
 
-    mock_enriched = MagicMock()
-    mock_enriched.withColumn.return_value = mock_enriched
-    mock_df.withColumn.return_value = mock_enriched
 
-    mock_write = MagicMock()
-    mock_enriched.writeStream.format.return_value = mock_write
-    mock_write.outputMode.return_value = mock_write
-    mock_write.trigger.return_value = mock_write
-    mock_write.option.return_value = mock_write
+def test_run_ingestion_null_safe_split():
+    """NULL 3VL regression: invalid filter must catch NULLs, not drop them."""
+    import inspect
 
-    from src.ingestion.ingest_webhooks import run_ingestion
+    from src.ingestion import ingest_webhooks as mod
 
-    run_ingestion()
-
-    mock_spark.streams.awaitAnyTermination.assert_called_once()
+    src = inspect.getsource(mod.run_ingestion)
+    assert "coalesce" in src, "invalid split must be NULL-safe via coalesce"
+    assert "awaitAnyTermination" not in src, "single query uses query.awaitTermination"
