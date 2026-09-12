@@ -4,30 +4,20 @@
 
 # Transaction Reconciliation
 
-Local lakehouse that reconciles payment webhooks against bank settlements.
+Local lakehouse that reconciles payment gateway webhooks against bank settlement files.
 
 [![CI](https://github.com/DhanushPillay/tx-recon/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DhanushPillay/tx-recon/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white)](https://www.python.org)
 
 </div>
 
-**The Problem:** Finance teams match payment gateway webhooks against delayed bank settlement files to verify Merchant Discount Rates (MDR). Manual matching delays month-end close and hides fee leakage.
+**The problem:** every online payment creates two records — the gateway's webhook ("we collected ₹1,000") and, days later, the bank's settlement file ("we settled ₹976.40"). The gap is the Merchant Discount Rate (MDR, the gateway's cut) plus GST (tax) on that fee. Finance teams match these by hand to catch overcharging and delayed closes.
 
-**The Solution:** A pipeline that reconciles streaming webhooks against batch settlements using Iceberg MERGE, with instrument-aware fee calculation and rate cards in `config/fee_rates.yaml`.
+**The solution:** a pipeline that streams webhooks into an Iceberg table, validates the daily settlement CSV, and joins the two with an Iceberg MERGE that marks each payment MATCHED, fee mismatch, or missing.
 
----
+A worked example from the default rate card (`config/fee_rates.yaml`): a ₹1,000 (100,000 paise) credit card payment carries 2% MDR (₹20) plus 18% GST on the fee (₹3.60), so the expected settlement is ₹976.40. A settlement of ₹976.40 reconciles; ₹970.00 raises `EXCEPTION_FEE_MISMATCH`.
 
-## What This Is (and Isn't)
-
-**This is:**
-- A local proof of concept for streaming + batch reconciliation
-- An example of Iceberg MERGE for incremental updates
-- A reference architecture for payment reconciliation
-
-**This is NOT:**
-- Production-ready — it runs on Docker Compose, not a Spark cluster
-- A payments system — it processes synthetic data, not real money
-- Tested at billion-row scale — benchmarks are single-node only
+> **Scope:** local proof of concept on Docker with synthetic data — not a production system. Benchmarks are single-node only.
 
 ---
 
@@ -44,10 +34,7 @@ flowchart LR
     C <--> H(Nessie Catalog)
 ```
 
-> `dags/` keeps the original Airflow DAG as reference. The lean local runner is
-> `python -m src.pipeline` (cron or systemd); Airflow/MWAA is the scale-up path.
-
-| Local Component | Cloud Equivalent |
+| Local component | Production equivalent |
 | :--- | :--- |
 | Redpanda (Docker) | Amazon MSK / Confluent Cloud |
 | MinIO (Docker) | Amazon S3 / GCS |
@@ -55,15 +42,18 @@ flowchart LR
 | PySpark on Docker | EMR / Dataproc |
 | pipeline.py on cron | MWAA / Cloud Composer |
 
+> `dags/` keeps the original Airflow DAG as reference. The lean local runner is
+> `python -m src.pipeline` (cron or systemd); Airflow/MWAA is the scale-up path.
+
 ## Features
 
-- Instrument-aware fees from `config/fee_rates.yaml` with integer paise math (`src/processing/fee_engine.py`)
-- GST on MDR per instrument and merchant tier
-- Iceberg MERGE upsert on `transaction_id` with `WHEN NOT MATCHED` handling (`src/processing/reconcile.py`)
-- Pandera contracts with strict types, uniqueness checks, and `quarantine_*.csv` isolation (`src/validation/validate_settlement.py`)
-- Dead letter queue table for failed webhooks (`src/ingestion/ingest_webhooks.py`)
-- Sealed accuracy harness with precision, recall, F1, and per-break recall (`tests/performance/recon_accuracy.py`)
-- Regression gate that fails a PR when throughput drops more than 15 percent (`tests/performance/check_regression.py`)
+- Instrument-aware fees from `config/fee_rates.yaml`, computed in integer paise to avoid float drift (`src/processing/fee_engine.py`)
+- GST on MDR per instrument, with optional per-merchant negotiated rates
+- Iceberg MERGE upsert on `transaction_id`, including `WHEN NOT MATCHED` handling for settlements with no webhook (`src/processing/reconcile.py`)
+- Pandera contracts (strict types, uniqueness, real calendar-date check) with bad rows isolated to `quarantine_*.csv` (`src/validation/validate_settlement.py`)
+- Dead-letter queue table for malformed webhooks (`src/ingestion/ingest_webhooks.py`)
+- Sealed accuracy harness reporting precision, recall, F1, and per-break-class recall (`tests/performance/recon_accuracy.py`)
+- Regression gate that fails a PR on >15% throughput drop (`tests/performance/check_regression.py`)
 
 ## Tech stack
 
@@ -112,7 +102,7 @@ pytest tests/ -m integration -v         # needs Redpanda/MinIO/Nessie
 
 ## Benchmarks
 
-Correctness first — a fast wrong match corrupts the ledger. Throughput numbers are single-machine and single-run unless noted. Full method, commands, and environment are in `docs/BENCHMARKS.md`.
+Correctness first — a fast wrong match corrupts the ledger. Throughput numbers are single-machine; full method, commands, and environment are in `docs/BENCHMARKS.md`.
 
 | Suite | What is measured | Result (this repo) |
 | :--- | :--- | :--- |
@@ -133,29 +123,20 @@ python tests/performance/kafka_producer_benchmark.py --count 5000 --acks all --c
 
 ## Configuration
 
-All settings are in `src/common/settings.py` via `pydantic-settings` and loaded from `.env`.
+All settings live in `src/common/settings.py` (via `pydantic-settings`) and load from `.env`. Key variables:
 
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
-| `MINIO_ROOT_USER` | `admin` | MinIO console user |
-| `MINIO_ROOT_PASSWORD` | `change-me` | MinIO console password (required) |
+| `MINIO_ROOT_PASSWORD` | `change-me` | MinIO password (**required** — compose fails without it) |
 | `MINIO_ENDPOINT` | `http://localhost:9000` | S3 endpoint |
-| `MINIO_ACCESS_KEY` |  | S3 access key |
-| `MINIO_SECRET_KEY` |  | S3 secret key |
-| `NESSIE_HOST` | `localhost` | Nessie host |
-| `NESSIE_PORT` | `19120` | Nessie port |
-| `NESSIE_REF` | `main` | Nessie branch |
-| `KAFKA_BROKER` | `localhost:19092` | Redpanda/Kafka broker |
-| `SCHEMA_REGISTRY_URL` | `http://localhost:8081` | Schema registry |
+| `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | | S3 credentials |
+| `NESSIE_HOST` / `NESSIE_PORT` | `localhost` / `19120` | Catalog connection |
+| `KAFKA_BROKER` | `localhost:19092` | Redpanda broker |
 | `TOPIC_NAME` | `gateway_webhooks` | Webhook topic |
 | `SPARK_MODE` | `local` | `local` or `cluster` |
-| `SPARK_MASTER` | `local[*]` | Spark master URL |
-| `TABLE_PREFIX` |  | Catalog prefix for Glue (`glue`) |
-| `PROJECT_ROOT` | `.` | Repo root for Airflow/DAGs |
 | `FEE_RATE_CONFIG` | `config/fee_rates.yaml` | Fee card path |
-| `GRAFANA_REMOTE_WRITE_URL` |  | Optional: Alloy remote write |
-| `GRAFANA_USERNAME` |  | Optional: Grafana user |
-| `GRAFANA_API_KEY` |  | Optional: Grafana key |
+
+Full table: [`docs/LOCAL_SETUP.md`](docs/LOCAL_SETUP.md).
 
 ## Project Structure
 
