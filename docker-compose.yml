@@ -23,11 +23,11 @@ services:
       retries: 5
 
   minio:
-    image: cgr.dev/chainguard/minio:latest
+    image: cgr.dev/chainguard/minio:v20250901
     container_name: minio
     environment:
-      - MINIO_ROOT_USER=admin
-      - MINIO_ROOT_PASSWORD=password
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-admin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
     command: server /data --console-address ":9001"
     ports:
       - "9000:9000"
@@ -41,15 +41,15 @@ services:
       retries: 5
 
   minio-createbucket:
-    image: quay.io/minio/mc:latest
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
     depends_on:
       minio:
         condition: service_started
     entrypoint: >
       /bin/sh -c "
-      until (/usr/bin/mc alias set myminio http://minio:9000 admin password) do echo '...waiting for minio...' && sleep 1; done;
+      until (/usr/bin/mc alias set myminio http://minio:9000 $${MINIO_ROOT_USER:-admin} $${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}) do echo '...waiting for minio...' && sleep 1; done;
       /usr/bin/mc mb myminio/lakehouse || true;
-      /usr/bin/mc anonymous set public myminio/lakehouse;
+      /usr/bin/mc anonymous set private myminio/lakehouse;
       exit 0;
       "
 
@@ -61,13 +61,13 @@ services:
     environment:
       - QUARKUS_HTTP_PORT=19120
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:19120/api/v1/config"]
+      test: ["CMD-SHELL", "curl -f http://localhost:19120/api/v1/config || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
 
   trino:
-    image: trinodb/trino:latest
+    image: trinodb/trino:476
     container_name: trino
     ports:
       - "8080:8080"
@@ -78,7 +78,7 @@ services:
       - nessie
 
   metabase:
-    image: metabase/metabase:latest
+    image: metabase/metabase:v0.55.5
     container_name: metabase
     ports:
       - "3001:3000"
