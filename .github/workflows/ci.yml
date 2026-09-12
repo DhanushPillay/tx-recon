@@ -76,6 +76,12 @@ jobs:
             docker compose exec -T redpanda rpk cluster health 2>/dev/null && break
             sleep 2
           done
+          # 403 = bucket exists but needs auth; anything else = keep waiting
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9000/lakehouse/)
+            [ "$code" = "403" ] && break
+            sleep 2
+          done
 
       - name: Run Integration Tests
         env:
