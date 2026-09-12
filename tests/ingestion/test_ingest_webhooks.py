@@ -94,9 +94,9 @@ def test_run_ingestion_wiring(
     # Single foreachBatch sink (not dual toTable): one consumer, NULL-safe split inside.
     mock_df.writeStream.foreachBatch.assert_called_once()
     mock_write.queryName.assert_called_with("webhooks_all")
-    assert any(
-        "webhooks_all" in str(c) for c in mock_write.option.call_args_list
-    ), "checkpoint must be the unified webhooks_all path"
+    assert any("webhooks_all" in str(c) for c in mock_write.option.call_args_list), (
+        "checkpoint must be the unified webhooks_all path"
+    )
     mock_spark.streams.addListener.assert_called_once()
 
 
