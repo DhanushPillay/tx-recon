@@ -19,6 +19,9 @@ def test_fee_case_sql_matches_fee_engine():
     assert "(t.amount_paise * 200 + 5000) DIV 10000" in fee_sql  # 200bps CC
     assert "(t.amount_paise * 0 + 5000) DIV 10000" in fee_sql  # 0bps UPI
     assert "DIV 10000" in gst_sql and "1800" in gst_sql  # 18% GST in bps
+    for inst in ("DEBIT_CARD", "NETBANKING", "WALLET", "INTERNATIONAL"):
+        assert inst in fee_sql
+    assert "ELSE" in fee_sql, "unknown instruments must fall back to default rate"
 
 
 def test_fee_case_sql_custom_columns():
@@ -33,21 +36,30 @@ def test_fee_case_sql_custom_columns():
 def test_qualified_table_rejects_injection():
     with pytest.raises(ValueError):
         _qualified_table("nessie.db.webhooks; DROP TABLE x --")
+    for bad in ("", "a b", "a-b", None):
+        with pytest.raises((ValueError, TypeError, AttributeError)):
+            _qualified_table(bad)
     assert _qualified_table("nessie.db.webhooks") == "nessie.db.webhooks"
 
 
 @patch("pyspark.sql.functions.row_number")
 @patch("pyspark.sql.functions.col")
 @patch("pyspark.sql.window.Window")
+@patch("src.processing.reconcile.get_settings")
 @patch("src.processing.reconcile.get_spark_session")
-def test_run_reconciliation_wiring(mock_get_spark, mock_window, mock_col, mock_row_number):
+def test_run_reconciliation_wiring(
+    mock_get_spark, mock_get_settings, mock_window, mock_col, mock_row_number
+):
+    mock_get_settings.return_value = MagicMock(
+        project_root=".", load_csv_on_driver=False, webhook_table="nessie.db.webhooks"
+    )
     mock_spark = MagicMock()
     mock_get_spark.return_value = mock_spark
 
     mock_bank_df = MagicMock()
     mock_spark.read.format.return_value.option.return_value.schema.return_value.load.return_value = mock_bank_df
     # counts path: 4 deduped settlement rows; table holds 3 MATCHED + 1 FEE_MISMATCH
-    mock_bank_df.withColumn.return_value.filter.return_value.drop.return_value.count.return_value = 4
+    mock_bank_df.filter.return_value.withColumn.return_value.filter.return_value.drop.return_value.count.return_value = 4
     mock_spark.sql.return_value.collect.return_value = [
         {"reconciliation_status": "MATCHED", "n": 3},
         {"reconciliation_status": "EXCEPTION_FEE_MISMATCH", "n": 1},
@@ -56,7 +68,7 @@ def test_run_reconciliation_wiring(mock_get_spark, mock_window, mock_col, mock_r
     counts = run_reconciliation()
 
     mock_spark.read.format.assert_called_with("csv")
-    dedup_df = mock_bank_df.withColumn.return_value.filter.return_value.drop.return_value
+    dedup_df = mock_bank_df.filter.return_value.withColumn.return_value.filter.return_value.drop.return_value
     dedup_df.createOrReplaceTempView.assert_called_once_with("bank_settlements")
 
     merge_sql = mock_spark.sql.call_args_list[0][0][0]
@@ -65,11 +77,14 @@ def test_run_reconciliation_wiring(mock_get_spark, mock_window, mock_col, mock_r
     assert "bank_settlements" in merge_sql
     assert "ABS(" in merge_sql  # tolerance-aware matching
     assert "EXCEPTION_MISSING_WEBHOOK" in merge_sql
-    assert merge_sql.count("UPDATE SET") == 2  # matched + mismatched, never DELETE
+    # USING source must be settlements only: joining the target filters out
+    # orphans and makes WHEN NOT MATCHED dead (regression pin for the P0 bug).
+    using_clause = merge_sql.split("ON t.transaction_id")[0]
+    assert "JOIN" not in using_clause
+    assert "IS NOT NULL" in merge_sql, "null guards required on both branches"
+    assert merge_sql.count("UPDATE SET") == 3  # null-amount + matched + mismatched
     assert merge_sql.count("WHEN NOT MATCHED") == 1
     assert "DELETE" not in merge_sql
-    assert counts == {
-        "settlement_rows_deduped": 4,
-        "MATCHED": 3,
-        "EXCEPTION_FEE_MISMATCH": 1,
-    }
+    assert counts["settlement_rows_deduped"] == 4
+    assert counts["MATCHED"] == 3
+    assert counts["EXCEPTION_FEE_MISMATCH"] == 1
