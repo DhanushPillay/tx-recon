@@ -72,11 +72,13 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
     """
     settings = get_settings()
     project_root = settings.project_root
+    data_dir = os.path.join(project_root, "data")
     if date_str:
         file_pattern = f"settlement_{date_str.replace('-', '')}.csv"
-        data_path = os.path.join(project_root, "data", file_pattern)
+        data_path = os.path.join(data_dir, file_pattern)
     else:
-        data_path = os.path.join(project_root, "data", "*.csv")
+        data_path = os.path.join(data_dir, "*.csv")
+    data_path = data_path.replace("\\", "/")
 
     logger.info("Initializing Spark Session for Batch Reconciliation")
     spark = get_spark_session("ReconciliationJob")
@@ -93,9 +95,24 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
     )
 
     try:
-        bank_df = (
-            spark.read.format("csv").option("header", "true").schema(bank_schema).load(data_path)
-        )
+        if settings.load_csv_on_driver:
+            import glob
+
+            import pandas as pd
+
+            host_path = os.path.join(project_root, "data", file_pattern if date_str else "*.csv")
+            bank_df = spark.createDataFrame(
+                pd.read_csv(host_path)
+                if date_str
+                else pd.concat([pd.read_csv(f) for f in glob.glob(host_path)], ignore_index=True)
+            )
+        else:
+            bank_df = (
+                spark.read.format("csv")
+                .option("header", "true")
+                .schema(bank_schema)
+                .load(data_path)
+            )
     except Exception as exc:
         raise FileNotFoundError(f"No settlement file readable at {data_path}: {exc}") from exc
 
@@ -104,7 +121,8 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
 
     window_spec = Window.partitionBy("transaction_id").orderBy(F.col("settlement_date").desc())
     bank_df_dedup = (
-        bank_df.withColumn("row_num", F.row_number().over(window_spec))
+        bank_df.filter(F.col("transaction_id").isNotNull())
+        .withColumn("row_num", F.row_number().over(window_spec))
         .filter(F.col("row_num") == 1)
         .drop("row_num")
     )
@@ -112,12 +130,21 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
     bank_df_dedup.createOrReplaceTempView("bank_settlements")
 
     fee_engine = get_fee_engine()
-    fee_case_sql, gst_case_sql = build_fee_case_sql(fee_engine)
+    if fee_engine.config.get("merchants"):
+        logger.warning(
+            "Per-merchant rate overrides are configured but the SQL MERGE is "
+            "instrument-only; merchant rows will use instrument rates. "
+            "Add merchant_id to settlements to enable parity."
+        )
+    fee_case_sql, gst_case_sql = build_fee_case_sql(
+        fee_engine, amount_col="t.amount_paise", inst_col="s.instrument_type"
+    )
     tolerance = fee_engine.default_tolerance_paise
 
-    # Instrument-aware MERGE: compute expected fee per row based on instrument type.
-    # Tolerance-aware: |expected_net - settled| <= tolerance counts as MATCHED
-    # (matches FeeEngine.check_match semantics).
+    # Instrument-aware MERGE: fee CASE is inlined in the MATCHED clause so it can
+    # use the webhook amount (t.amount_paise) plus the settlement instrument
+    # (s.instrument_type). The USING source is settlements only — joining the
+    # target here would filter out orphans and make WHEN NOT MATCHED dead.
     table = _qualified_table(settings.webhook_table)
     merge_sql = f"""
     MERGE INTO {table} t
@@ -126,18 +153,20 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
             s.transaction_id,
             s.bank_ref_id,
             s.settled_amount_paise,
-            s.instrument_type,
-            {fee_case_sql} AS expected_fee,
-            {gst_case_sql} AS expected_gst
+            s.instrument_type
         FROM bank_settlements s
-        JOIN {table} t ON t.transaction_id = s.transaction_id
+        WHERE s.transaction_id IS NOT NULL AND s.settled_amount_paise IS NOT NULL
     ) s
     ON t.transaction_id = s.transaction_id
-    WHEN MATCHED AND ABS((t.amount_paise - s.expected_fee - s.expected_gst) - s.settled_amount_paise) <= {tolerance} THEN
+    WHEN MATCHED AND t.amount_paise IS NULL THEN
+        UPDATE SET
+            t.reconciliation_status = '{EXCEPTION_FEE_MISMATCH}',
+            t.bank_ref_id = s.bank_ref_id
+    WHEN MATCHED AND ABS((t.amount_paise - ({fee_case_sql}) - ({gst_case_sql})) - s.settled_amount_paise) <= {tolerance} THEN
         UPDATE SET
             t.reconciliation_status = '{MATCHED}',
             t.bank_ref_id = s.bank_ref_id
-    WHEN MATCHED AND ABS((t.amount_paise - s.expected_fee - s.expected_gst) - s.settled_amount_paise) > {tolerance} THEN
+    WHEN MATCHED AND ABS((t.amount_paise - ({fee_case_sql}) - ({gst_case_sql})) - s.settled_amount_paise) > {tolerance} THEN
         UPDATE SET
             t.reconciliation_status = '{EXCEPTION_FEE_MISMATCH}',
             t.bank_ref_id = s.bank_ref_id
@@ -162,6 +191,14 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
             f"SELECT reconciliation_status, COUNT(*) AS n FROM {table} GROUP BY reconciliation_status"
         ).collect():
             counts[row["reconciliation_status"]] = row["n"]
+        # Batch-scoped outcomes: join this batch's settlement ids back to the
+        # target so a stale cumulative MATCHED can't mask a failing batch.
+        for row in spark.sql(
+            f"SELECT t.reconciliation_status AS st, COUNT(*) AS n FROM {table} t "
+            f"JOIN bank_settlements s ON t.transaction_id = s.transaction_id "
+            f"GROUP BY t.reconciliation_status"
+        ).collect():
+            counts[f"batch_{row['st']}"] = row["n"]
     except Exception as exc:  # metrics must never fail the job
         logger.warning(f"Could not fetch reconciliation counts: {exc}")
     logger.info(f"Reconciliation batch complete: {counts}")
