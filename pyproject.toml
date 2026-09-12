@@ -9,7 +9,7 @@ description = "Payment gateway reconciliation with Iceberg MERGE"
 requires-python = ">=3.10,<3.13"
 license = {text = "MIT"}
 dependencies = [
-    "pyspark==3.5.5",
+    "pyspark==3.5.1",
     "pandas>=2.0,<3.0",
     "pandera>=0.18,<1.0",
     "pyyaml>=6.0,<7.0",
