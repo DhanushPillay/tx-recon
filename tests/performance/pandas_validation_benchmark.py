@@ -40,18 +40,16 @@ def bench_pydantic(df, pydantic_model):
         pydantic_model(**r)
 
 
-def bench_polars(csv_file):
+def bench_polars(pf):
     import polars as pl
 
-    df = pl.read_csv(csv_file)
-    df = df.filter(pl.col("transaction_id").is_not_null())
     errors = []
-    if df.select(pl.col("transaction_id").is_duplicated().any()).item():
+    if pf.select(pl.col("transaction_id").is_duplicated().any()).item():
         errors.append("transaction_id not unique")
-    invalid = df.filter(~pl.col("settled_amount_paise").is_between(1, 999_999_999_999))
+    invalid = pf.filter(~pl.col("settled_amount_paise").is_between(1, 999_999_999_999))
     if invalid.height > 0:
         errors.append("invalid amounts")
-    nulls = df.filter(pl.col("bank_ref_id").is_null())
+    nulls = pf.filter(pl.col("bank_ref_id").is_null())
     if nulls.height > 0:
         errors.append("null refs")
     return errors
@@ -69,8 +67,8 @@ def build_pydantic_model():
     return SettlementRow
 
 
-def run_single(rows, output_dir, warmup_runs=2):
-    generate_settlement_file(rows, output_dir=output_dir)
+def run_single(rows, output_dir, warmup_runs=2, seed=7, iters=7):
+    generate_settlement_file(rows, output_dir=output_dir, seed=seed)
     import glob
 
     files = glob.glob(f"{output_dir}/settlement_*.csv")
@@ -81,7 +79,9 @@ def run_single(rows, output_dir, warmup_runs=2):
         pd.read_csv(latest)
 
     df = pd.read_csv(latest)
-    df = df.dropna(subset=["transaction_id"])
+    import polars as pl
+
+    pf = pl.read_csv(latest)
 
     settlement_schema = pa.DataFrameSchema(
         {
@@ -98,7 +98,7 @@ def run_single(rows, output_dir, warmup_runs=2):
 
     # Pandera
     times = []
-    for _ in range(3):
+    for _ in range(iters):
         start = time.perf_counter()
         bench_pandera(df, settlement_schema)
         times.append((time.perf_counter() - start) * 1000)
@@ -109,7 +109,7 @@ def run_single(rows, output_dir, warmup_runs=2):
 
     # Manual pandas
     times = []
-    for _ in range(3):
+    for _ in range(iters):
         start = time.perf_counter()
         bench_manual(df)
         times.append((time.perf_counter() - start) * 1000)
@@ -120,7 +120,7 @@ def run_single(rows, output_dir, warmup_runs=2):
 
     # Pydantic
     times = []
-    for _ in range(3):
+    for _ in range(iters):
         start = time.perf_counter()
         bench_pydantic(df, pydantic_model)
         times.append((time.perf_counter() - start) * 1000)
@@ -129,11 +129,11 @@ def run_single(rows, output_dir, warmup_runs=2):
         "std_ms": round(statistics.stdev(times), 2) if len(times) > 1 else 0,
     }
 
-    # Polars
+    # Polars (in-memory, same CSV preloaded once — no disk IO in the timed path)
     times = []
-    for _ in range(3):
+    for _ in range(iters):
         start = time.perf_counter()
-        bench_polars(latest)
+        bench_polars(pf)
         times.append((time.perf_counter() - start) * 1000)
     methods["polars"] = {
         "mean_ms": round(statistics.mean(times), 2),
