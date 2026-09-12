@@ -33,6 +33,14 @@ Verify that the containers are running:
 docker ps
 ```
 
+### Local Multi-Node Spark Cluster
+
+The project includes a custom local Spark topology to simulate a true distributed environment on a single machine, allowing you to test massive Iceberg `MERGE` benchmarks without a cloud cluster:
+* **Windows Host (Driver):** The main execution script runs on the host machine.
+* **Docker Linux Containers (Workers):** Two Spark worker containers (`spark-worker-1` and `spark-worker-2`) are spun up via `docker-compose.spark.yml` and connect back to the host.
+* **Python Environment Syncing:** PySpark strictly requires the exact same minor version of Python on both the driver and the executors. Because the `apache-airflow` constraint requires Python < 3.13, we standardize on **Python 3.11**. The custom Docker containers use `uv` to install Python 3.11 directly inside the image, and the Windows host runs the benchmarks using `uv run --python 3.11` to match.
+* **Networking:** The driver binds to `0.0.0.0` and announces itself to the containers as `host.docker.internal` via Spark config injection.
+
 ## 3. Run the pipeline
 
 The primary entry point for local execution is the pipeline script, which simulates a cron-based scheduler.
