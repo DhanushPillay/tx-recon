@@ -44,12 +44,17 @@ def check(current, baseline):
             failures.append(f"kafka p99 rose {d:.1f}% (>{P99_RISE_PCT}%)")
     ci, bi = current.get("iceberg", {}), baseline.get("iceberg", {})
     for bench, vals in ci.get("benchmarks", {}).items():
+        if vals.get("healthy") is False:
+            failures.append(f"iceberg {bench} matched nothing (healthy=false)")
         if bench in bi.get("benchmarks", {}):
             old, new = bi["benchmarks"][bench], vals
             if "rows_per_sec" in new and "rows_per_sec" in old:
                 d = _pct_change(new["rows_per_sec"], old["rows_per_sec"])
                 if d < -TP_DROP_PCT:
                     failures.append(f"iceberg {bench} rows/sec dropped {d:.1f}%")
+    acc = current.get("accuracy", {})
+    if acc.get("min_f1", 1.0) < 1.0 or acc.get("max_false_positives", 0) > 0:
+        failures.append("accuracy gate failed (min_f1 < 1.0 or FP > 0)")
     return failures, warn
 
 
