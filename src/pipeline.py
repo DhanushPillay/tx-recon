@@ -117,6 +117,13 @@ def main() -> dict:
     logger.info(f"Pipeline done: {counts}")
     batch_n = counts.get("settlement_rows_deduped", 0)
     batch_matched = counts.get("batch_MATCHED", counts.get("MATCHED", 0))
+    # Drift guard: batch-scoped statuses must sum to deduped settlements;
+    # otherwise MERGE missed rows or double counted.
+    batch_total = sum(v for k, v in counts.items() if k.startswith("batch_"))
+    if batch_n and batch_total and batch_total != batch_n:
+        logger.warning(
+            f"Batch drift: deduped {batch_n} but batch statuses sum {batch_total} — investigate dedup/window."
+        )
     if args.demo and batch_n and not batch_matched:
         logger.warning("Demo matched nothing — seeding and settlement plan diverged, investigate.")
     return counts

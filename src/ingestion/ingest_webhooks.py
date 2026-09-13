@@ -72,12 +72,22 @@ def run_ingestion():
     def _write_batch(batch_df, _epoch: int) -> None:
         batch_df.persist()
         try:
-            v = batch_df.filter(valid_cond)
-            v.withColumn("reconciliation_status", col("gateway_status")).withColumn(
-                "bank_ref_id", lit(None).cast("string")
-            ).withColumn("ingested_at", current_timestamp()).writeTo(webhook_table).append()
+            v = batch_df.filter(valid_cond).dropDuplicates(["transaction_id"])
+            if v.head(1):
+                v = (
+                    v.withColumn("reconciliation_status", col("gateway_status"))
+                    .withColumn("bank_ref_id", lit(None).cast("string"))
+                    .withColumn("ingested_at", current_timestamp())
+                )
+                v.createOrReplaceTempView("batch_valid")
+                spark.sql(
+                    f"MERGE INTO {webhook_table} t USING batch_valid s "
+                    "ON t.transaction_id = s.transaction_id "
+                    "WHEN NOT MATCHED THEN INSERT *"
+                )
             inv = batch_df.filter(~F.coalesce(valid_cond, F.lit(False)))
-            inv.writeTo(dlq_table).append()
+            if inv.head(1):
+                inv.writeTo(dlq_table).append()
         finally:
             batch_df.unpersist()
 
