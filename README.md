@@ -61,37 +61,6 @@ Full architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - Downgrade-only residual scorer with a formal proof that false positives never increase (`docs/PROOF.md`)
 - Sealed accuracy harness that injects 7 break classes and asserts F1=1.0 with zero false positives (`tests/performance/recon_accuracy.py`)
 
-## Quick start
-
-Prerequisites: Docker, Python 3.11, Java 17.
-
-```bash
-# 1. Clone
-git clone https://github.com/DhanushPillay/tx-recon.git
-cd tx-recon
-
-# 2. Configure environment
-cp .env.example .env
-# Edit .env: set MINIO_ROOT_PASSWORD (docker compose fails without it)
-
-# 3. Start infrastructure
-docker compose up -d
-
-# 4. Create venv and install
-python -m venv .venv
-.venv/Scripts/pip install -e ".[dev]"
-# macOS/Linux: .venv/bin/pip install -e ".[dev]"
-
-# 5. Run the accuracy gate (no infra needed)
-make demo
-# or: python tests/performance/quick_perf.py
-
-# 6. Run the full pipeline (needs Docker)
-python -m src.pipeline --date 2026-09-04
-```
-
-Full setup guide: [docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md).
-
 ## Benchmarks
 
 Single-node local numbers. Full method and repro commands: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
