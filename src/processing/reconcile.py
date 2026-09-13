@@ -90,6 +90,7 @@ def build_fee_case_sql(
     amount_col="t.amount_paise",
     inst_col="s.instrument_type",
     merchant_col="s.merchant_id",
+    settlement_date_col="s.settlement_date",
 ):
     """Build instrument-aware (and merchant-aware) fee/gst CASE expressions.
 
@@ -99,15 +100,15 @@ def build_fee_case_sql(
     """
     cards = getattr(fee_engine, "rate_cards", None)
     if cards and len(cards) > 1:
-        # Versioned: CASE on settlement_date
+        # Versioned: CASE on settlement_date (use caller-provided column, so golden test can use t.*)
         fee_parts, gst_parts = [], []
         # Latest first so WHEN matches most recent applicable
         for card in reversed(cards):
             eff_from = card.get("effective_from", "1970-01-01")
             eff_from_esc = str(eff_from).replace("'", "''")
             f_sql, g_sql, _ = _build_single_card_fee_sql(card, amount_col, inst_col, merchant_col)
-            fee_parts.append(f"WHEN s.settlement_date >= '{eff_from_esc}' THEN {f_sql}")
-            gst_parts.append(f"WHEN s.settlement_date >= '{eff_from_esc}' THEN {g_sql}")
+            fee_parts.append(f"WHEN {settlement_date_col} >= '{eff_from_esc}' THEN {f_sql}")
+            gst_parts.append(f"WHEN {settlement_date_col} >= '{eff_from_esc}' THEN {g_sql}")
         # Fallback to earliest card's inner CASE
         earliest = cards[0]
         f0, g0, _ = _build_single_card_fee_sql(earliest, amount_col, inst_col, merchant_col)
@@ -130,7 +131,10 @@ def build_fee_case_sql(
 
 
 def build_tolerance_case_sql(
-    fee_engine, inst_col="s.instrument_type", merchant_col="s.merchant_id"
+    fee_engine,
+    inst_col="s.instrument_type",
+    merchant_col="s.merchant_id",
+    settlement_date_col="s.settlement_date",
 ) -> str:
     """Build CASE that yields per-row tolerance_paise (merchant + instrument + version aware)."""
     cards = getattr(fee_engine, "rate_cards", None)
@@ -142,7 +146,7 @@ def build_tolerance_case_sql(
             _, _, tol_sql = _build_single_card_fee_sql(
                 card, "t.amount_paise", inst_col, merchant_col
             )
-            parts.append(f"WHEN s.settlement_date >= '{eff_from_esc}' THEN {tol_sql}")
+            parts.append(f"WHEN {settlement_date_col} >= '{eff_from_esc}' THEN {tol_sql}")
         _, _, tol0 = _build_single_card_fee_sql(cards[0], "t.amount_paise", inst_col, merchant_col)
         return "CASE " + " ".join(parts) + f" ELSE {tol0} END"
     card = (
