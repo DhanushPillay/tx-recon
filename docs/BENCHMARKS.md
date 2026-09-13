@@ -105,13 +105,13 @@ Measures the `MERGE INTO nessie.db.webhooks` at 100k rows. Larger scales are not
 
 ## Retired claims
 
-Earlier revisions of `README.md` cited:
+Earlier revisions cited numbers that are no longer reproducible:
 
-- Kafka **142,188 msgs/sec, p50 0.78ms/p95 4.03ms/p99 7.53ms on 2000 messages** — from a run that mixed `acks=1` and a different warmup/latency method. The current published number is the `acks=all` serial-flush measurement above.
-- Iceberg **100k-5M table with sub-linear scaling to 227K rows/sec at 5M** — single-sample writes with non-monotonic timing (1M/50% 10.66s slower than 2M/50% 5.49s) and zero-matched runs reported as `0.0 rows/sec`. Replaced by the seeded median healthy run at 100k only.
-- Validation footnote claiming Polars "cold-start overhead" — stale; the fair run seeds and validates in memory.
+- Kafka **142,188 msgs/sec, p99 7.53ms on 2000 messages** from a mixed `acks=1` run with a different warmup method. Current number is the `acks=all` serial-flush measurement above.
+- Iceberg **sub-linear scaling to 227K rows/sec at 5M** from single-sample writes with non-monotonic timing. Replaced by seeded median at 100k only.
+- Validation footnote about Polars "cold-start overhead" from a run that re-read CSV from disk. Current run validates in-memory.
 
-The old `tests/performance/results.json` blob mixing those numbers is no longer cited. Per-suite files are the source; regenerate via `run_benchmarks.py` with small counts to refresh `results.json`.
+Per-suite files (`results_accuracy.json`, `results_pandera.json`, `results_iceberg.json`) are the cited sources. `results.json` is an aggreg convenience copy.
 
 ## Hardware
 
