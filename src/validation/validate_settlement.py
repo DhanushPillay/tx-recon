@@ -50,7 +50,16 @@ def validate_latest_settlement(
     latest_file = max(files, key=os.path.getmtime)
     logger.info(f"Validating {latest_file} with Pandera...")
 
-    df = pd.read_csv(latest_file)
+    # Try PG adapter normalization (Razorpay/Cashfree/PayU/generic) before validation.
+    # Generic files pass through unchanged; PG files are converted INR->paise etc.
+    try:
+        from src.adapters.settlement import load_settlement_csv
+
+        df, pg_name = load_settlement_csv(latest_file)
+        logger.info(f"Settlement adapter detected: {pg_name} -> {len(df)} rows normalized")
+    except Exception as exc:
+        logger.warning(f"Adapter normalization failed ({exc}), falling back to raw CSV")
+        df = pd.read_csv(latest_file)
     if df.empty:
         raise SettlementValidationError(f"Settlement file is empty: {latest_file}")
 

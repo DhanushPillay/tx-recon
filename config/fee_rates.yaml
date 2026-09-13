@@ -2,7 +2,7 @@
 # Rates are in basis points (bps) where 1 bps = 0.01%
 # GST on MDR is applied separately where applicable (India context)
 
-version: "v1.0.0"
+version: "v2.0.0"
 
 default:
   mdr_rate_bps: 150  # 1.5%
@@ -35,8 +35,52 @@ instruments:
     mdr_rate_bps: 300  # 3.0%
     gst_on_mdr: 18.0
 
-# Per-merchant overrides (optional)
-# merchants:
-#   merch_001:
-#     CREDIT_CARD:
-#       mdr_rate_bps: 180  # negotiated rate
+# Per-merchant negotiated rates (merchant-aware MERGE)
+merchants:
+  merch_001:
+    CREDIT_CARD:
+      mdr_rate_bps: 180  # negotiated 1.8% vs 2.0% standard
+      gst_on_mdr: 18.0
+  merch_demo:
+    CREDIT_CARD:
+      mdr_rate_bps: 190  # demo merchant slightly better than standard
+
+# Effective-date versioned rate cards. When present, FeeEngine picks the card
+# where settlement_date lies in [effective_from, effective_to]. If absent,
+# the top-level default/instruments/merchants act as a single card from 1970.
+history:
+  - version: "v1.0.0"
+    effective_from: "2024-01-01"
+    effective_to: "2025-03-31"
+    default:
+      mdr_rate_bps: 150
+      gst_on_mdr: 18.0
+      tolerance_paise: 1
+    instruments:
+      UPI: {mdr_rate_bps: 0, gst_on_mdr: 0}
+      CREDIT_CARD: {mdr_rate_bps: 200, gst_on_mdr: 18.0}
+      DEBIT_CARD: {mdr_rate_bps: 100, gst_on_mdr: 18.0}
+      NETBANKING: {mdr_rate_bps: 150, gst_on_mdr: 18.0}
+      WALLET: {mdr_rate_bps: 150, gst_on_mdr: 18.0}
+      INTERNATIONAL: {mdr_rate_bps: 300, gst_on_mdr: 18.0}
+    merchants: {}
+
+  - version: "v2.0.0"
+    effective_from: "2025-04-01"
+    # no effective_to — ongoing
+    default:
+      mdr_rate_bps: 150
+      gst_on_mdr: 18.0
+      tolerance_paise: 1
+    instruments:
+      UPI: {mdr_rate_bps: 0, gst_on_mdr: 0}
+      CREDIT_CARD: {mdr_rate_bps: 200, gst_on_mdr: 18.0}
+      DEBIT_CARD: {mdr_rate_bps: 100, gst_on_mdr: 18.0}
+      NETBANKING: {mdr_rate_bps: 150, gst_on_mdr: 18.0}
+      WALLET: {mdr_rate_bps: 150, gst_on_mdr: 18.0}
+      INTERNATIONAL: {mdr_rate_bps: 300, gst_on_mdr: 18.0}
+    merchants:
+      merch_001:
+        CREDIT_CARD: {mdr_rate_bps: 180, gst_on_mdr: 18.0}
+      merch_demo:
+        CREDIT_CARD: {mdr_rate_bps: 190, gst_on_mdr: 18.0}

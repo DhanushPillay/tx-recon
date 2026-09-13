@@ -16,7 +16,9 @@ logger = logging.getLogger(__name__)
 DEMO_MERCHANT = "merch_demo"
 
 
-def _seed_demo_webhooks(spark, table: str, planned: list[tuple[str, int, str]]) -> int:
+def _seed_demo_webhooks(
+    spark, table: str, planned: list[tuple[str, int, str]] | list[tuple[str, int, str, str]]
+) -> int:
     """Bulk-seed one webhook row per planned triple; re-runnable (MERGE-DELETEs prior rows first)."""
     from datetime import datetime, timezone
 
@@ -31,11 +33,16 @@ def _seed_demo_webhooks(spark, table: str, planned: list[tuple[str, int, str]]) 
         ) USING iceberg"""
     )
     now = datetime.now(timezone.utc)
+    rows = []
+    for item in planned:
+        if len(item) == 4:  # type: ignore[arg-type]
+            tx, amt, _, merch = item  # type: ignore[misc]
+        else:
+            tx, amt, _ = item  # type: ignore[misc]
+            merch = DEMO_MERCHANT
+        rows.append((tx, amt, "SUCCESS", now.isoformat(), merch, None, "SUCCESS", None, now))
     plan_df = spark.createDataFrame(
-        [
-            (tx, amt, "SUCCESS", now.isoformat(), DEMO_MERCHANT, None, "SUCCESS", None, now)
-            for tx, amt, _ in planned
-        ],
+        rows,
         "transaction_id string, amount_paise long, gateway_status string, timestamp_utc string, "
         "merchant_id string, processing_run_id string, reconciliation_status string, "
         "bank_ref_id string, ingested_at timestamp",
@@ -49,18 +56,20 @@ def _seed_demo_webhooks(spark, table: str, planned: list[tuple[str, int, str]]) 
     return len(planned)
 
 
-def _build_demo_plan(num_records: int, seed: int = 42) -> list[tuple[str, int, str]]:
+def _build_demo_plan(num_records: int, seed: int = 42) -> list[tuple[str, int, str, str]]:
     from src.common.schemas import INSTRUMENT_TYPES
 
     rnd = random.Random(seed)
-    planned: list[tuple[str, int, str]] = []
+    planned: list[tuple[str, int, str, str]] = []
     seen: set[str] = set()
     while len(planned) < num_records:
         tx = f"tx_{rnd.getrandbits(48):012x}"
         if tx in seen:
             continue
         seen.add(tx)
-        planned.append((tx, rnd.randint(1000, 1000000), rnd.choice(INSTRUMENT_TYPES)))
+        # 20% merch_001 to exercise merchant overrides, rest DEMO_MERCHANT
+        merch = "merch_001" if rnd.random() < 0.2 else DEMO_MERCHANT
+        planned.append((tx, rnd.randint(1000, 1000000), rnd.choice(INSTRUMENT_TYPES), merch))
     return planned
 
 

@@ -26,27 +26,53 @@ def _qualified_table(name: str) -> str:
     return name
 
 
-def build_fee_case_sql(fee_engine, amount_col="t.amount_paise", inst_col="s.instrument_type"):
-    """Build instrument-aware fee/gst CASE expressions (pure, Spark-testable).
+def _build_single_card_fee_sql(
+    card: dict, amount_col: str, inst_col: str, merchant_col: str | None
+):
+    """Build fee/gst/tolerance CASE for a single rate card (merchant-aware)."""
+    fee_cases, gst_cases, tol_cases = [], [], []
+    default = card.get("default", {})
+    default_mdr = int(default.get("mdr_rate_bps", 150))
+    default_gst_bps = int(round(float(default.get("gst_on_mdr", 18.0)) * 100))
+    default_tol = int(default.get("tolerance_paise", 1))
 
-    Integer-only math mirroring FeeEngine: fee=(amt*bps+5000)DIV 10000,
-    gst=(fee*gst_bps+5000)DIV 10000 with gst_bps=gst_pct*100 (exact for 18.0).
-    Uses DIV on integers only — Spark DIV rejects float operands.
-    """
-    fee_cases, gst_cases = [], []
+    # Merchant overrides first (most specific)
+    merchants = card.get("merchants", {}) or {}
+    for merch, inst_map in merchants.items():
+        merch_esc = merch.replace("'", "''")
+        for inst, rate in (inst_map or {}).items():
+            mdr_bps = int(rate.get("mdr_rate_bps", default_mdr))
+            gst_pct = rate.get("gst_on_mdr", default.get("gst_on_mdr", 18.0))
+            gst_bps = int(round(float(gst_pct) * 100))
+            tol = int(rate.get("tolerance_paise", default_tol))
+            inst_esc = inst.replace("'", "''")
+            if merchant_col:
+                fee_cases.append(
+                    f"WHEN {merchant_col} = '{merch_esc}' AND {inst_col} = '{inst_esc}' THEN ({amount_col} * {mdr_bps} + 5000) DIV 10000"
+                )
+                gst_cases.append(
+                    f"WHEN {merchant_col} = '{merch_esc}' AND {inst_col} = '{inst_esc}' THEN ((({amount_col} * {mdr_bps} + 5000) DIV 10000 * {gst_bps} + 5000) DIV 10000)"
+                )
+                tol_cases.append(
+                    f"WHEN {merchant_col} = '{merch_esc}' AND {inst_col} = '{inst_esc}' THEN {tol}"
+                )
+
+    instruments = card.get("instruments", {}) or {}
     for inst in INSTRUMENT_TYPES:
-        rate = fee_engine.get_rate(inst)
-        mdr_bps = int(rate.get("mdr_rate_bps", 150))
-        gst_bps = int(round(float(rate.get("gst_on_mdr", 0)) * 100))
+        rate = instruments.get(inst, {})
+        mdr_bps = int(rate.get("mdr_rate_bps", default_mdr))
+        gst_pct = rate.get("gst_on_mdr", default.get("gst_on_mdr", 18.0))
+        gst_bps = int(round(float(gst_pct) * 100))
+        tol = int(rate.get("tolerance_paise", default_tol))
+        inst_esc = inst.replace("'", "''")
         fee_cases.append(
-            f"WHEN {inst_col} = '{inst}' THEN ({amount_col} * {mdr_bps} + 5000) DIV 10000"
+            f"WHEN {inst_col} = '{inst_esc}' THEN ({amount_col} * {mdr_bps} + 5000) DIV 10000"
         )
         gst_cases.append(
-            f"WHEN {inst_col} = '{inst}' THEN ((({amount_col} * {mdr_bps} + 5000) DIV 10000 * {gst_bps} + 5000) DIV 10000)"
+            f"WHEN {inst_col} = '{inst_esc}' THEN ((({amount_col} * {mdr_bps} + 5000) DIV 10000 * {gst_bps} + 5000) DIV 10000)"
         )
-    default_rate = fee_engine.get_default_rate()
-    default_mdr = int(default_rate.get("mdr_rate_bps", 150))
-    default_gst_bps = int(round(float(default_rate.get("gst_on_mdr", 18.0)) * 100))
+        tol_cases.append(f"WHEN {inst_col} = '{inst_esc}' THEN {tol}")
+
     fee_sql = (
         "CASE " + " ".join(fee_cases) + f" ELSE ({amount_col} * {default_mdr} + 5000) DIV 10000 END"
     )
@@ -55,7 +81,81 @@ def build_fee_case_sql(fee_engine, amount_col="t.amount_paise", inst_col="s.inst
         + " ".join(gst_cases)
         + f" ELSE ((({amount_col} * {default_mdr} + 5000) DIV 10000 * {default_gst_bps} + 5000) DIV 10000) END"
     )
+    tol_sql = "CASE " + " ".join(tol_cases) + f" ELSE {default_tol} END"
+    return fee_sql, gst_sql, tol_sql
+
+
+def build_fee_case_sql(
+    fee_engine,
+    amount_col="t.amount_paise",
+    inst_col="s.instrument_type",
+    merchant_col="s.merchant_id",
+):
+    """Build instrument-aware (and merchant-aware) fee/gst CASE expressions.
+
+    Integer-only math mirroring FeeEngine. When the engine has versioned
+    rate_cards, wraps per-version CASEs by settlement_date.
+    Returns (fee_sql, gst_sql). Tolerance is available via build_tolerance_case_sql().
+    """
+    cards = getattr(fee_engine, "rate_cards", None)
+    if cards and len(cards) > 1:
+        # Versioned: CASE on settlement_date
+        fee_parts, gst_parts = [], []
+        # Latest first so WHEN matches most recent applicable
+        for card in reversed(cards):
+            eff_from = card.get("effective_from", "1970-01-01")
+            eff_from_esc = str(eff_from).replace("'", "''")
+            f_sql, g_sql, _ = _build_single_card_fee_sql(card, amount_col, inst_col, merchant_col)
+            fee_parts.append(f"WHEN s.settlement_date >= '{eff_from_esc}' THEN {f_sql}")
+            gst_parts.append(f"WHEN s.settlement_date >= '{eff_from_esc}' THEN {g_sql}")
+        # Fallback to earliest card's inner CASE
+        earliest = cards[0]
+        f0, g0, _ = _build_single_card_fee_sql(earliest, amount_col, inst_col, merchant_col)
+        fee_sql = "CASE " + " ".join(fee_parts) + f" ELSE {f0} END"
+        gst_sql = "CASE " + " ".join(gst_parts) + f" ELSE {g0} END"
+        return fee_sql, gst_sql
+
+    # Single card path
+    card = (
+        cards[0]
+        if cards
+        else {
+            "default": fee_engine.get_default_rate(),
+            "instruments": fee_engine.config.get("instruments", {}),
+            "merchants": fee_engine.config.get("merchants", {}),
+        }
+    )
+    fee_sql, gst_sql, _ = _build_single_card_fee_sql(card, amount_col, inst_col, merchant_col)
     return fee_sql, gst_sql
+
+
+def build_tolerance_case_sql(
+    fee_engine, inst_col="s.instrument_type", merchant_col="s.merchant_id"
+) -> str:
+    """Build CASE that yields per-row tolerance_paise (merchant + instrument + version aware)."""
+    cards = getattr(fee_engine, "rate_cards", None)
+    if cards and len(cards) > 1:
+        parts = []
+        for card in reversed(cards):
+            eff_from = card.get("effective_from", "1970-01-01")
+            eff_from_esc = str(eff_from).replace("'", "''")
+            _, _, tol_sql = _build_single_card_fee_sql(
+                card, "t.amount_paise", inst_col, merchant_col
+            )
+            parts.append(f"WHEN s.settlement_date >= '{eff_from_esc}' THEN {tol_sql}")
+        _, _, tol0 = _build_single_card_fee_sql(cards[0], "t.amount_paise", inst_col, merchant_col)
+        return "CASE " + " ".join(parts) + f" ELSE {tol0} END"
+    card = (
+        cards[0]
+        if cards
+        else {
+            "default": fee_engine.get_default_rate(),
+            "instruments": fee_engine.config.get("instruments", {}),
+            "merchants": fee_engine.config.get("merchants", {}),
+        }
+    )
+    _, _, tol_sql = _build_single_card_fee_sql(card, "t.amount_paise", inst_col, merchant_col)
+    return tol_sql
 
 
 def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
@@ -91,6 +191,13 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
             StructField("settled_amount_paise", LongType(), True),
             StructField("settlement_date", StringType(), True),
             StructField("instrument_type", StringType(), True),
+            StructField("merchant_id", StringType(), True),
+            StructField("fee_paise", LongType(), True),
+            StructField("gst_paise", LongType(), True),
+            StructField("settlement_id", StringType(), True),
+            StructField("utr", StringType(), True),
+            StructField("currency", StringType(), True),
+            StructField("gross_amount_paise", LongType(), True),
         ]
     )
 
@@ -130,16 +237,15 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
     bank_df_dedup.createOrReplaceTempView("bank_settlements")
 
     fee_engine = get_fee_engine()
-    if fee_engine.config.get("merchants"):
-        logger.warning(
-            "Per-merchant rate overrides are configured but the SQL MERGE is "
-            "instrument-only; merchant rows will use instrument rates. "
-            "Add merchant_id to settlements to enable parity."
-        )
     fee_case_sql, gst_case_sql = build_fee_case_sql(
-        fee_engine, amount_col="t.amount_paise", inst_col="s.instrument_type"
+        fee_engine,
+        amount_col="t.amount_paise",
+        inst_col="s.instrument_type",
+        merchant_col="s.merchant_id",
     )
-    tolerance = fee_engine.default_tolerance_paise
+    tolerance_sql = build_tolerance_case_sql(
+        fee_engine, inst_col="s.instrument_type", merchant_col="s.merchant_id"
+    )
 
     # Instrument-aware MERGE: fee CASE is inlined in the MATCHED clause so it can
     # use the webhook amount (t.amount_paise) plus the settlement instrument
@@ -156,7 +262,9 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
             s.transaction_id,
             s.bank_ref_id,
             s.settled_amount_paise,
-            s.instrument_type
+            s.instrument_type,
+            COALESCE(s.merchant_id, 'UNKNOWN') AS merchant_id,
+            s.settlement_date
         FROM bank_settlements s
         WHERE s.transaction_id IS NOT NULL AND s.settled_amount_paise IS NOT NULL
     ) s
@@ -168,17 +276,17 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
         UPDATE SET
             t.reconciliation_status = '{EXCEPTION_FEE_MISMATCH}',
             t.bank_ref_id = s.bank_ref_id
-    WHEN MATCHED AND ABS((t.amount_paise - ({fee_case_sql}) - ({gst_case_sql})) - s.settled_amount_paise) <= {tolerance} THEN
+    WHEN MATCHED AND ABS((t.amount_paise - ({fee_case_sql}) - ({gst_case_sql})) - s.settled_amount_paise) <= ({tolerance_sql}) THEN
         UPDATE SET
             t.reconciliation_status = '{MATCHED}',
             t.bank_ref_id = s.bank_ref_id
-    WHEN MATCHED AND ABS((t.amount_paise - ({fee_case_sql}) - ({gst_case_sql})) - s.settled_amount_paise) > {tolerance} THEN
+    WHEN MATCHED AND ABS((t.amount_paise - ({fee_case_sql}) - ({gst_case_sql})) - s.settled_amount_paise) > ({tolerance_sql}) THEN
         UPDATE SET
             t.reconciliation_status = '{EXCEPTION_FEE_MISMATCH}',
             t.bank_ref_id = s.bank_ref_id
     WHEN NOT MATCHED THEN
         INSERT (transaction_id, amount_paise, gateway_status, timestamp_utc, merchant_id, reconciliation_status, bank_ref_id)
-        VALUES (s.transaction_id, s.settled_amount_paise, 'UNKNOWN', current_timestamp(), 'UNKNOWN', '{EXCEPTION_MISSING_WEBHOOK}', s.bank_ref_id)
+        VALUES (s.transaction_id, s.settled_amount_paise, 'UNKNOWN', current_timestamp(), COALESCE(s.merchant_id, 'UNKNOWN'), '{EXCEPTION_MISSING_WEBHOOK}', s.bank_ref_id)
     """
 
     logger.info("Executing MERGE INTO operation")
