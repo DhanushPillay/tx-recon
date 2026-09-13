@@ -3,7 +3,7 @@ import logging
 import random
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from confluent_kafka import SerializingProducer
 from confluent_kafka.schema_registry import SchemaRegistryClient
@@ -24,7 +24,7 @@ def generate_webhook_event():
         "transaction_id": tx_id,
         "amount_paise": amount_paise,
         "gateway_status": "SUCCESS",
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "timestamp_utc": datetime.now(UTC).isoformat(),
         "merchant_id": "merch_12345",
         "processing_run_id": None,
     }
