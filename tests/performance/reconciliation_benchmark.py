@@ -25,22 +25,25 @@ from src.common.config import get_spark_session  # noqa: E402
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
+
 # Canonical fee math (must mirror src/processing/reconcile.py build_fee_case_sql
 # for the default 150bps + 18% GST rate card). Integer DIV only — Spark DIV
 # rejects float operands. Tolerance-aware: |expected_net - settled| <= 1.
-MERGE_SQL = """
+def _build_merge_sql(table: str, fee_case_sql: str, gst_case_sql: str, tol_case_sql: str) -> str:
+    return f"""
 MERGE INTO {table} t
 USING bank_settlements s
 ON t.transaction_id = s.transaction_id
-WHEN MATCHED AND ABS((t.amount_paise - ((t.amount_paise * 150 + 5000) DIV 10000) - ((((t.amount_paise * 150 + 5000) DIV 10000 * 1800 + 5000) DIV 10000))) - s.settled_amount_paise) <= 1 THEN
+WHEN MATCHED AND ABS((t.amount_paise - ({fee_case_sql}) - ({gst_case_sql})) - s.settled_amount_paise) <= ({tol_case_sql}) THEN
     UPDATE SET
         t.reconciliation_status = 'MATCHED',
         t.bank_ref_id = s.bank_ref_id
-WHEN MATCHED AND ABS((t.amount_paise - ((t.amount_paise * 150 + 5000) DIV 10000) - ((((t.amount_paise * 150 + 5000) DIV 10000 * 1800 + 5000) DIV 10000))) - s.settled_amount_paise) > 1 THEN
+WHEN MATCHED AND ABS((t.amount_paise - ({fee_case_sql}) - ({gst_case_sql})) - s.settled_amount_paise) > ({tol_case_sql}) THEN
     UPDATE SET
         t.reconciliation_status = 'EXCEPTION_FEE_MISMATCH',
         t.bank_ref_id = s.bank_ref_id
 """
+
 
 SCALE_OPTIONS = [100_000, 500_000, 1_000_000, 2_000_000, 5_000_000]
 
@@ -119,6 +122,12 @@ def create_settlement_data(spark, table_name, update_fraction):
 
     from pyspark.sql.functions import col, lit
 
+    # Fee-accurate settlement net: mirror FeeEngine integer paise math.
+    # Settlement generation uses gateway amount -> net via compute_fee;
+    # benchmark derives settled from t.amount_paise similarly for measurement.
+    # For speed we use SQL-equivalent integer math via FeeEngine loop in Python
+    # per row is slow, so keep SQL expression for ids_df, but use correct DIV.
+    # Keep simple default 150bps/18% mirror for bench table creation.
     settlement_df = (
         ids_df.withColumn(
             "settled_amount_paise",
@@ -127,15 +136,22 @@ def create_settlement_data(spark, table_name, update_fraction):
             - (
                 (
                     ((col("amount_paise") * lit(150) + lit(5000)) / lit(10000)).cast("long")
-                    * lit(18.0)
-                    + lit(50)
+                    * lit(1800)
+                    + lit(5000)
                 )
-                / lit(100)
+                / lit(10000)
             ).cast("long"),
         )
         .withColumn("bank_ref_id", col("transaction_id"))
         .withColumn("settlement_date", lit("2024-01-16"))
-        .select("bank_ref_id", "transaction_id", "settled_amount_paise", "settlement_date")
+        .withColumn("instrument_type", lit("WALLET"))
+        .select(
+            "bank_ref_id",
+            "transaction_id",
+            "settled_amount_paise",
+            "settlement_date",
+            "instrument_type",
+        )
     )
 
     settlement_df.createOrReplaceTempView("bank_settlements")
@@ -149,10 +165,23 @@ def measure_merge(spark, table_name, update_fraction, repeats=3):
 
     files_before = spark.sql(f"SELECT COUNT(*) FROM {table_name}.files").collect()[0][0]
 
+    from src.processing.fee_engine import get_fee_engine  # noqa: E402
+    from src.processing.reconcile import (  # noqa: E402
+        build_fee_case_sql,
+        build_tolerance_case_sql,
+    )
+
+    fee_engine = get_fee_engine()
+    fee_case_sql, gst_case_sql = build_fee_case_sql(
+        fee_engine, amount_col="t.amount_paise", inst_col="s.instrument_type"
+    )
+    tol_case_sql = build_tolerance_case_sql(fee_engine)
+    merge_sql = _build_merge_sql(table_name, fee_case_sql, gst_case_sql, tol_case_sql)
+
     writes = []
     for _ in range(repeats):
         start = time.time()
-        spark.sql(MERGE_SQL.format(table=table_name))
+        spark.sql(merge_sql)
         writes.append(time.time() - start)
         # Reset state between repeats so each timing measures the same work.
         spark.sql(
@@ -162,7 +191,7 @@ def measure_merge(spark, table_name, update_fraction, repeats=3):
         )
     # One final MERGE leaves the table matched for the count queries below.
     start = time.time()
-    spark.sql(MERGE_SQL.format(table=table_name))
+    spark.sql(merge_sql)
     write_time = time.time() - start
     writes.append(write_time)
     write_time = statistics.median(writes)
