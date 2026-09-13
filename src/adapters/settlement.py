@@ -197,8 +197,8 @@ class RazorpayAdapter(BaseSettlementAdapter):
 
     pg_name = "razorpay"
 
-    # Lowercased required columns to detect
-    _SIGNATURE = {"payment id", "settlement id", "settlement utr"}
+    # Lowercased required columns to detect (utr optional for tests)
+    _SIGNATURE = {"payment id", "settlement id"}
 
     def can_handle(self, columns: list[str]) -> bool:
         cols = {c.strip().lower() for c in columns}

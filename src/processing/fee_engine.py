@@ -78,7 +78,11 @@ class FeeEngine:
                             f"invalid mdr_rate_bps for merchants.{merch}.{inst} in {label}: {bps!r}"
                         )
 
-        history = self.config.get("history") or self.config.get("rate_cards")
+        history = (
+            self.config.get("history")
+            or self.config.get("rate_card_history")
+            or self.config.get("rate_cards")
+        )
         if history:
             if not isinstance(history, list) or not history:
                 raise ValueError("fee config history must be a non-empty list")
@@ -98,7 +102,11 @@ class FeeEngine:
             validate_card(self.config, "default")
 
     def _build_rate_cards(self) -> None:
-        history = self.config.get("history") or self.config.get("rate_cards")
+        history = (
+            self.config.get("history")
+            or self.config.get("rate_card_history")
+            or self.config.get("rate_cards")
+        )
         if history:
             cards = []
             for card in history:
