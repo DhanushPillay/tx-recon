@@ -3,7 +3,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from hardware import get_hardware_info
 
@@ -113,7 +113,7 @@ def main():
         hw = {**hw, "fingerprint": fingerprint()}
     except Exception:
         pass
-    results = {"timestamp": datetime.now(timezone.utc).isoformat(), "hardware": hw}
+    results = {"timestamp": datetime.now(UTC).isoformat(), "hardware": hw}
 
     if args.suite in ("all", "kafka"):
         print("\n=== Kafka Producer Benchmark ===")

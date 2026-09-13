@@ -3,7 +3,7 @@ import logging
 import os
 import random
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from src.common.schemas import INSTRUMENT_TYPES
 from src.common.settings import get_settings
@@ -47,9 +47,7 @@ def generate_settlement_file(
         "merchant_id",
     ]
 
-    settlement_date = date_str or (datetime.now(timezone.utc) + timedelta(days=1)).strftime(
-        "%Y-%m-%d"
-    )
+    settlement_date = date_str or (datetime.now(UTC) + timedelta(days=1)).strftime("%Y-%m-%d")
     file_name = f"settlement_{settlement_date.replace('-', '')}.csv"
     output_file = os.path.join(out, file_name)
 

@@ -25,7 +25,7 @@ def main(out):
     reps = [run(n=2000, seed=s) for s in (7, 42, 123)]
     ok = all(r["f1"] == 1.0 and r["false_positives"] == 0 for r in reps)
     results = {
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
         "hardware": {**get_hardware_info(), "fingerprint": fingerprint()},
         "accuracy": {
             "min_f1": min(r["f1"] for r in reps),
