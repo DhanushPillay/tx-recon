@@ -37,7 +37,7 @@ flowchart TD
     D -->|yes| E[Keep status, refresh bank_ref_id<br/>placeholder -> real settlement]
     D -->|no| F{amount_paise<br/>IS NULL?}
     F -->|yes| G[EXCEPTION_FEE_MISMATCH<br/>cannot compute fee]
-    F -->|no| H{abs(webhook - fee - gst<br/>- settled) <= tolerance?}
+    F -->|no| H{"abs(webhook - fee - gst<br/>- settled) <= tolerance?"}
     H -->|yes| I[MATCHED]
     H -->|no| J[EXCEPTION_FEE_MISMATCH]
 ```
