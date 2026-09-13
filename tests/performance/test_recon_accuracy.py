@@ -33,7 +33,9 @@ def test_harness_catches_fee_engine_bug(monkeypatch):
 
     from src.processing.fee_engine import FeeEngine, FeeResult
 
-    def _broken_fee(self, amount_paise, instrument_type="UPI", merchant_id=None):
+    def _broken_fee(
+        self, amount_paise, instrument_type="UPI", merchant_id=None, settlement_date=None
+    ):
         return FeeResult(
             fee_paise=0,
             net_paise=amount_paise,
