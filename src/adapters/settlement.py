@@ -433,11 +433,4 @@ def load_settlement_csv(path: str, pg_hint: str | None = None) -> tuple[pd.DataF
         df = pd.read_csv(path, sep=";", dtype=str, keep_default_na=False, na_values=["", "NA"])
         df = df.replace(r"^\s*$", pd.NA, regex=True)
     canonical, pg_name = normalize_settlement_df(df, pg_hint=pg_hint)
-    # Attach raw payload for audit (json of original row limited to 2k chars)
-    try:
-        raw = df.to_json(orient="records")
-        # Store first row sample? Instead per-row raw is too heavy; keep column not needed now.
-        _ = raw  # keep for future
-    except Exception:
-        pass
     return canonical, pg_name

@@ -31,7 +31,12 @@ def _seed_demo_webhooks(
             transaction_id string, amount_paise bigint, gateway_status string,
             timestamp_utc string, merchant_id string, processing_run_id string,
             reconciliation_status string, bank_ref_id string, ingested_at timestamp
-        ) USING iceberg"""
+        ) USING iceberg
+        TBLPROPERTIES (
+            'write.target-file-size-bytes' = '134217728',
+            'write.distribution-mode' = 'hash',
+            'write.parquet.compression-codec' = 'zstd'
+        )"""
     )
     now = datetime.now(UTC)
     rows = []
@@ -47,7 +52,7 @@ def _seed_demo_webhooks(
         "transaction_id string, amount_paise long, gateway_status string, timestamp_utc string, "
         "merchant_id string, processing_run_id string, reconciliation_status string, "
         "bank_ref_id string, ingested_at timestamp",
-    ).repartition(32)
+    )
     plan_df.createOrReplaceTempView("demo_plan")
     spark.sql(
         f"MERGE INTO {table} t USING demo_plan s "

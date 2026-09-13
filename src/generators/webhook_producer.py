@@ -78,7 +78,7 @@ def main():
                 )
             except BufferError:
                 logger.warning("Producer queue full, flushing...")
-                producer.flush()
+                producer.flush(timeout=30)
                 producer.produce(
                     topic=settings.topic_name,
                     key=event["transaction_id"],
@@ -88,7 +88,7 @@ def main():
             producer.poll(0)
             if i > 0 and i % 10000 == 0:
                 logger.info(f"Pushed {i} messages...")
-        producer.flush()
+        producer.flush(timeout=30)
         elapsed = max(time.time() - start_time, 1e-9)
         logger.info(
             f"STRESS TEST COMPLETE: {args.stress} messages in {elapsed:.2f} seconds ({args.stress / elapsed:.2f} msgs/sec)"
@@ -110,7 +110,7 @@ def main():
     except KeyboardInterrupt:
         logger.info("Stopping producer...")
     finally:
-        producer.flush()
+        producer.flush(timeout=30)
 
 
 if __name__ == "__main__":

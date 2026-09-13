@@ -125,6 +125,11 @@ if __name__ == "__main__":
             bank_ref_id string,
             ingested_at timestamp
         ) USING iceberg
+        TBLPROPERTIES (
+            'write.target-file-size-bytes' = '134217728',
+            'write.distribution-mode' = 'hash',
+            'write.parquet.compression-codec' = 'zstd'
+        )
     """
     )
 
@@ -138,6 +143,11 @@ if __name__ == "__main__":
             merchant_id string,
             processing_run_id string
         ) USING iceberg
+        TBLPROPERTIES (
+            'write.target-file-size-bytes' = '134217728',
+            'write.distribution-mode' = 'hash',
+            'write.parquet.compression-codec' = 'zstd'
+        )
     """
     )
 
