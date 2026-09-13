@@ -23,7 +23,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
           cache: 'pip'
 
       - name: Set up Java
@@ -35,7 +35,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install "apache-airflow==2.11.2" --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.11.2/constraints-3.10.txt"
+          pip install "apache-airflow==2.11.2" --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.11.2/constraints-3.11.txt"
           pip install -e ".[dev]"
 
       - name: Run Ruff Formatter Check
@@ -53,6 +53,13 @@ jobs:
         run: |
           pip install pip-audit
           pip-audit --desc || true
+
+      - name: Run accuracy gate (sealed harness)
+        env:
+          PYTHONPATH: .
+          PROJECT_ROOT: ${{ github.workspace }}
+        run: |
+          python tests/performance/quick_perf.py
 
       - name: Run Pytest with Coverage
         env:
@@ -182,6 +189,10 @@ jobs:
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform fmt check
+        working-directory: infra/terraform
+        run: terraform fmt -check -diff
 
       - name: Terraform validate
         working-directory: infra/terraform

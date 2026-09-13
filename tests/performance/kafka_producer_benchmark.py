@@ -3,7 +3,7 @@ import json
 import statistics
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from confluent_kafka import Producer
 from hardware import get_hardware_info
@@ -28,7 +28,7 @@ def generate_webhook_event(record_size=1024):
         "transaction_id": f"tx_{uuid.uuid4().hex[:12]}",
         "amount_paise": 1000,
         "gateway_status": "SUCCESS",
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "timestamp_utc": datetime.now(UTC).isoformat(),
         "merchant_id": "merch_12345",
         "payload": payload,
     }

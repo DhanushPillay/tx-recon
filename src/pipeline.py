@@ -9,6 +9,7 @@ Usage:
 import argparse
 import logging
 import random
+from datetime import UTC
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -20,7 +21,7 @@ def _seed_demo_webhooks(
     spark, table: str, planned: list[tuple[str, int, str]] | list[tuple[str, int, str, str]]
 ) -> int:
     """Bulk-seed one webhook row per planned triple; re-runnable (MERGE-DELETEs prior rows first)."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     # ponytail: DDL duplicated from src/ingestion/ingest_webhooks.py __main__; extract if it changes.
     *parts, _ = table.split(".")
@@ -32,7 +33,7 @@ def _seed_demo_webhooks(
             reconciliation_status string, bank_ref_id string, ingested_at timestamp
         ) USING iceberg"""
     )
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     rows = []
     for item in planned:
         if len(item) == 4:  # type: ignore[arg-type]
@@ -116,6 +117,13 @@ def main() -> dict:
     logger.info(f"Pipeline done: {counts}")
     batch_n = counts.get("settlement_rows_deduped", 0)
     batch_matched = counts.get("batch_MATCHED", counts.get("MATCHED", 0))
+    # Drift guard: batch-scoped statuses must sum to deduped settlements;
+    # otherwise MERGE missed rows or double counted.
+    batch_total = sum(v for k, v in counts.items() if k.startswith("batch_"))
+    if batch_n and batch_total and batch_total != batch_n:
+        logger.warning(
+            f"Batch drift: deduped {batch_n} but batch statuses sum {batch_total} — investigate dedup/window."
+        )
     if args.demo and batch_n and not batch_matched:
         logger.warning("Demo matched nothing — seeding and settlement plan diverged, investigate.")
     return counts

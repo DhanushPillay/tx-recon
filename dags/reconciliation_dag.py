@@ -1,7 +1,7 @@
 import logging
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
@@ -53,7 +53,7 @@ with DAG(
     default_args=default_args,
     description="Daily reconciliation of payment gateway webhooks against bank settlements",
     schedule="@daily",
-    start_date=datetime(2023, 1, 1, tzinfo=timezone.utc),
+    start_date=datetime(2023, 1, 1, tzinfo=UTC),
     catchup=False,
     tags=["finance", "reconciliation"],
     sla_miss_callback=failure_callback,
