@@ -162,7 +162,7 @@ jobs:
           MINIO_ACCESS_KEY: admin
           MINIO_SECRET_KEY: password
         run: |
-          pytest tests/ -m "integration" -k "not pyspark" -- -q
+          pytest tests/ -m "integration" -k "not pyspark" -q
 
       - name: Dump Spark logs on failure
         if: failure()
