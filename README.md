@@ -68,9 +68,9 @@ Single-node local numbers. Full method and repro commands: [docs/BENCHMARKS.md](
 | Suite | Result |
 | :--- | :--- |
 | Accuracy (sealed key) | `min_f1=1.0, FP=0` @ 2000 rows x 3 seeds |
-| Kafka producer | **135,091 msgs/sec** async; serial flush p99 1.72ms (acks=all, lz4, 1KB) |
-| Validation (Pandera) | **2.8M rows/sec** @ 1M rows (in-memory) |
-| Iceberg MERGE | **36,887 rows/sec** @ 100k rows, 50% update (4 repeats, median) |
+| Kafka producer | **131,887 msgs/sec** async; serial flush p99 1.31ms (acks=all, lz4, 1KB) |
+| Validation (Pandera) | **2.66M rows/sec** @ 1M rows (in-memory) |
+| Iceberg MERGE | **30,886 rows/sec** @ 100k rows, 50% update (4 repeats, median) |
 
 ## Project structure
 

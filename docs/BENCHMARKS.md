@@ -40,9 +40,9 @@ Measures sustained throughput and serial flush latency against a local Redpanda.
   python tests/performance/kafka_producer_benchmark.py --count 5000 --acks all --compression lz4
   python tests/performance/run_benchmarks.py --suite kafka --kafka-count 5000 --kafka-acks all
   ```
-- **Measured result (Redpanda `localhost:19092`, 12 Sep 2026):**
-  - Throughput: **135,091 msgs/sec** (async, 5000 msgs after 5000 warmup)
-  - Ack latency (serial flush, single sample of 1000): **p50 0.76ms / p95 1.07ms / p99 1.72ms**, mean 0.82ms, max 8.4ms
+- **Measured result (Redpanda `localhost:19092`, 13 Sep 2026):**
+  - Throughput: **131,887 msgs/sec** (async, 5000 msgs after 5000 warmup)
+  - Ack latency (serial flush, single sample of 1000): **p50 0.73ms / p95 0.94ms / p99 1.31ms**, mean 0.77ms, max 10.06ms
   - Config: `acks=all`, `lz4`, 1KB records. Broker, tuning, and `WARMUP` are part of the claim.
 
 ## Validation
@@ -57,16 +57,16 @@ Compares validation paths at the batch boundary on the same in-memory DataFrame.
   python tests/performance/pandas_validation_benchmark.py
   # writes tests/performance/results_pandera.json
   ```
-- **Measured result (`results_pandera.json`, 7 iterations, seed 7, 12 Sep 2026):**
+- **Measured result (`results_pandera.json`, 7 iterations, seed 7, 13 Sep 2026):**
 
   | Rows | Manual pandas | Polars | Pandera | Pydantic |
   | :--- | :--- | :--- | :--- | :--- |
-  | 10,000 | 7.7M rows/sec (1.29ms, std 0.86) | 2.2M rows/sec (4.38ms, std 7.94) | 1.0M rows/sec (9.86ms, std 8.41) | 470K rows/sec (21.26ms) |
-  | 100,000 | 11.7M rows/sec (8.54ms) | 19.1M rows/sec (5.22ms) | 2.7M rows/sec (36.92ms) | 511K rows/sec (195.59ms) |
-  | 1,000,000 | 8.5M rows/sec (116.93ms) | 19.0M rows/sec (52.59ms) | 2.8M rows/sec (355.47ms) | 529K rows/sec (1891.23ms) |
-  | 10,000,000 | 2.4M rows/sec (4016.12ms) | 8.7M rows/sec (1145.58ms) | 1.5M rows/sec (6603.35ms) | 478K rows/sec (20920.47ms) |
+  | 10,000 | 8.4M rows/sec (1.19ms, std 0.14) | 4.4M rows/sec (2.25ms, std 0.85) | 439K rows/sec (22.77ms, std 43.51) | 371K rows/sec (26.95ms) |
+  | 100,000 | 10.4M rows/sec (9.55ms, std 0.55) | 15.8M rows/sec (6.31ms, std 1.28) | 2.57M rows/sec (38.82ms, std 2.25) | 415K rows/sec (240.87ms) |
+  | 1,000,000 | 7.9M rows/sec (125.32ms, std 3.75) | 14.7M rows/sec (67.58ms, std 9.28) | 2.66M rows/sec (375.64ms, std 3.54) | 412K rows/sec (2425.59ms) |
+  | 10,000,000 | 2.6M rows/sec (3832.9ms, std 52.09) | 9.0M rows/sec (1108.64ms, std 103.43) | 1.53M rows/sec (6522.49ms, std 132.34) | 369K rows/sec (27105.93ms) |
 
-  Manual pandas leads below 100k rows due to lower overhead. Polars leads at 100k and above. Pandera sustains 1.0-2.8M rows/sec across scales; the declarative cost is covered at the batch boundary. The old footnote about Polars "cold-start overhead on the first run" no longer applies — the current run validates from a shared in-memory frame.
+  Manual pandas leads below 100k rows due to lower overhead. Polars leads at 100k and above. Pandera sustains 1.5-2.66M rows/sec at 100k+ scales; the declarative cost is covered at the batch boundary. The old footnote about Polars "cold-start overhead on the first run" no longer applies — the current run validates from a shared in-memory frame.
 
 ## Iceberg MERGE
 
@@ -86,8 +86,8 @@ Measures the `MERGE INTO nessie.db.webhooks` at 100k rows. Larger scales are not
 
   | Scale | Update | Median write | rows/sec | matched | mismatched | files | healthy |
   | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-  | 100k | 10% | 1.28s | 7,822 | 10,000 | 0 | 8 -> 1 | true |
-  | 100k | 50% | 1.36s | 36,887 | 50,000 | 0 | 1 -> 1 | true |
+  | 100k | 10% | 1.39s | 7,210 | 10,000 | 0 | 8 -> 1 | true |
+  | 100k | 50% | 1.62s | 30,886 | 50,000 | 0 | 1 -> 1 | true |
 
   `SPARK_MODE=local` was required on this host; a multi-node Spark run is not yet measured.
 

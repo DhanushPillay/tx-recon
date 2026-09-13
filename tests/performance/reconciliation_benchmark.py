@@ -117,7 +117,7 @@ def create_settlement_data(spark, table_name, update_fraction):
     )
 
     ids_df = spark.sql(
-        f"SELECT transaction_id, amount_paise FROM {table_name} ORDER BY transaction_id LIMIT {settlement_count}"
+        f"SELECT transaction_id, amount_paise, merchant_id FROM {table_name} ORDER BY transaction_id LIMIT {settlement_count}"
     )
 
     from pyspark.sql.functions import col, lit
@@ -151,6 +151,7 @@ def create_settlement_data(spark, table_name, update_fraction):
             "settled_amount_paise",
             "settlement_date",
             "instrument_type",
+            "merchant_id",
         )
     )
 
