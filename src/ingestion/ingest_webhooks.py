@@ -70,33 +70,28 @@ def run_ingestion():
     logger.info(f"Starting stream to Iceberg {webhook_table} (+ DLQ {dlq_table})")
 
     def _write_batch(batch_df, _epoch: int) -> None:
-        batch_df.persist()
-        try:
-            v = batch_df.filter(valid_cond).dropDuplicates(["transaction_id"])
-            if v.head(1):
-                v = (
-                    v.withColumn("reconciliation_status", col("gateway_status"))
-                    .withColumn("bank_ref_id", lit(None).cast("string"))
-                    .withColumn("ingested_at", current_timestamp())
-                )
-                v.createOrReplaceTempView("batch_valid")
-                spark.sql(
-                    f"MERGE INTO {webhook_table} t USING batch_valid s "
-                    "ON t.transaction_id = s.transaction_id "
-                    "WHEN NOT MATCHED THEN INSERT *"
-                )
-            inv = batch_df.filter(~F.coalesce(valid_cond, F.lit(False)))
-            if inv.head(1):
-                inv.writeTo(dlq_table).append()
-        finally:
-            batch_df.unpersist()
+        # ponytail: no persist/head — MERGE on empty is no-op cheaper than extra jobs
+        v = batch_df.filter(valid_cond).dropDuplicates(["transaction_id"])
+        v = (
+            v.withColumn("reconciliation_status", col("gateway_status"))
+            .withColumn("bank_ref_id", lit(None).cast("string"))
+            .withColumn("ingested_at", current_timestamp())
+        )
+        v.createOrReplaceTempView("batch_valid")
+        spark.sql(
+            f"MERGE INTO {webhook_table} t USING batch_valid s "
+            "ON t.transaction_id = s.transaction_id "
+            "WHEN NOT MATCHED THEN INSERT *"
+        )
+        inv = batch_df.filter(~F.coalesce(valid_cond, F.lit(False)))
+        inv.writeTo(dlq_table).append()
 
     spark.streams.addListener(_BatchProgressLogger())
     query = (
         parsed_df.writeStream.foreachBatch(_write_batch)
         .queryName("webhooks_all")
-        .trigger(processingTime="2 seconds")
-        .option("maxOffsetsPerTrigger", 50000)
+        .trigger(processingTime="10 seconds")
+        .option("maxOffsetsPerTrigger", 200000)
         .option("checkpointLocation", f"{warehouse}/checkpoints/webhooks_all")
         .start()
     )

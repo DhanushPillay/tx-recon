@@ -5,7 +5,7 @@ from pandera import Check
 from src.common.schemas import INSTRUMENT_TYPES
 
 _settlement_date_valid = Check(
-    lambda s: __import__("pandas").to_datetime(s, format="%Y-%m-%d", errors="coerce").notna().all(),
+    lambda s: pd.to_datetime(s, format="%Y-%m-%d", errors="coerce").notna().all(),
     error="settlement_date must be a real calendar date YYYY-MM-DD",
 )
 

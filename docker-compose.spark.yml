@@ -32,7 +32,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: 2G
     healthcheck:
       # no curl/wget in image; bash /dev/tcp probe instead
       test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/8080'"]
@@ -47,7 +47,7 @@ services:
     container_name: spark-worker-1
     command: >
       /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
-      spark://spark-master:7077 --cores 10 --memory 2G
+      spark://spark-master:7077 --cores 2 --memory 4G
       --work-dir /tmp/spark-work --webui-port 8081
     depends_on:
       spark-master:
@@ -57,7 +57,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 3G
+          memory: 5G
     healthcheck:
       test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/8081'"]
       interval: 10s
@@ -72,7 +72,7 @@ services:
     container_name: spark-worker-2
     command: >
       /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
-      spark://spark-master:7077 --cores 10 --memory 2G
+      spark://spark-master:7077 --cores 2 --memory 4G
       --work-dir /tmp/spark-work --webui-port 8081
     depends_on:
       spark-master:
@@ -82,7 +82,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 3G
+          memory: 5G
     healthcheck:
       test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/8081'"]
       interval: 10s

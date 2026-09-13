@@ -53,8 +53,11 @@ def main():
         "bootstrap.servers": settings.kafka_broker,
         "key.serializer": StringSerializer("utf_8"),
         "value.serializer": avro_serializer,
-        "linger.ms": 50,
+        "linger.ms": 20,
         "batch.size": 131072,
+        "batch.num.messages": 10000,
+        "queue.buffering.max.messages": 2000000,
+        "queue.buffering.max.kbytes": 524288,
         "compression.type": "lz4",
         "acks": "all",  # money pipeline: never lose a webhook on leader failover
         "enable.idempotence": True,
@@ -85,9 +88,10 @@ def main():
                     value=event,
                     on_delivery=delivery_report,
                 )
-            producer.poll(0)
+            producer.poll(0.001)
             if i > 0 and i % 10000 == 0:
                 logger.info(f"Pushed {i} messages...")
+                producer.poll(0.001)
         producer.flush(timeout=30)
         elapsed = max(time.time() - start_time, 1e-9)
         logger.info(
@@ -105,7 +109,7 @@ def main():
                 value=event,
                 on_delivery=delivery_report,
             )
-            producer.poll(0)
+            producer.poll(0.001)
             time.sleep(random.uniform(0.1, 1.5))
     except KeyboardInterrupt:
         logger.info("Stopping producer...")

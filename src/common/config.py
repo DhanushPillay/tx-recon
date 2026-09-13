@@ -44,10 +44,15 @@ def get_spark_session(app_name: str = "TxRecon") -> SparkSession:
         .config("spark.jars.packages", ",".join(packages))
         .config("spark.driver.memory", settings.spark_driver_memory)
         .config("spark.executor.memory", settings.spark_executor_memory)
-        # ponytail: Temurin 17.0.20 C2 segfaults (hs_err in C2 CompilerThread);
-        # cap JIT at level 1 until the JDK is upgraded. ~10-30% slower, no crash.
-        .config("spark.driver.extraJavaOptions", "-XX:TieredStopAtLevel=1")
-        .config("spark.executor.extraJavaOptions", "-XX:TieredStopAtLevel=1")
+        # ponytail: Temurin 17.0.20 C2 segfault; set SPARK_TIERED_STOP=1 to re-enable cap, else native JIT
+        .config(
+            "spark.driver.extraJavaOptions",
+            "-XX:TieredStopAtLevel=1" if os.environ.get("SPARK_TIERED_STOP") == "1" else "",
+        )
+        .config(
+            "spark.executor.extraJavaOptions",
+            "-XX:TieredStopAtLevel=1" if os.environ.get("SPARK_TIERED_STOP") == "1" else "",
+        )
         .config("spark.executor.cores", str(settings.spark_executor_cores))
         .config(
             "spark.sql.extensions",
@@ -73,6 +78,10 @@ def get_spark_session(app_name: str = "TxRecon") -> SparkSession:
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .config("spark.sql.shuffle.partitions", str(settings.spark_shuffle_partitions))
+        .config("spark.sql.adaptive.enabled", "true")
+        .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
+        .config("spark.hadoop.fs.s3a.committer.name", "directory")
+        .config("spark.sql.streaming.checkpoint.compress", "true")
     )
 
     if settings.spark_master.startswith("spark://"):

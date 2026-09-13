@@ -125,6 +125,51 @@ def _to_iso_date(value) -> str | None:
         return None
 
 
+def _to_iso_series(s: pd.Series) -> pd.Series:
+    # ponytail: vectorized date parse — single pd.to_datetime over series, not per-row apply
+    if s.empty:
+        return s
+    str_s = s.astype(str).str.strip()
+    if str_s.str.match(r"^\d{4}-\d{2}-\d{2}$").all():
+        return str_s
+    out = pd.to_datetime(str_s, errors="coerce", utc=True).dt.strftime("%Y-%m-%d")
+    mask = out.isna() & s.notna() & (str_s != "nan") & (str_s != "None")
+    if mask.any():
+        fallback = s.loc[mask].apply(_to_iso_date)
+        out = out.copy()
+        out.loc[mask] = fallback
+    return out
+
+
+def _paise_inr_series(s: pd.Series) -> pd.Series:
+    # ponytail: vectorized INR->paise, no Decimal per row
+    if s.empty:
+        return s
+    cleaned = s.astype(str).str.replace(r"[₹,\s]", "", regex=True).str.strip()
+    cleaned = cleaned.replace({"nan": pd.NA, "None": pd.NA, "": pd.NA})
+    nums = pd.to_numeric(cleaned, errors="coerce")
+    return (nums * 100).round().astype("Int64")
+
+
+def _map_instrument_series(s: pd.Series) -> pd.Series:
+    # ponytail: vectorized map, fallback to row-wise substring only for unmapped
+    if s.empty:
+        return s
+    lower = (
+        s.astype(str)
+        .str.strip()
+        .str.lower()
+        .str.replace("-", "_", regex=False)
+        .str.replace(" ", "_", regex=False)
+    )
+    mapped = lower.map(_INSTRUMENT_ALIASES)
+    # substring fallback where direct miss
+    missing = mapped.isna()
+    if missing.any():
+        mapped.loc[missing] = s.loc[missing].apply(_map_instrument)
+    return mapped.fillna("CREDIT_CARD")
+
+
 class BaseSettlementAdapter:
     pg_name: str = "base"
 
@@ -170,8 +215,8 @@ class GenericAdapter(BaseSettlementAdapter):
                 rename[lower_map[want.lower()]] = want
         if rename:
             df = df.rename(columns=rename)
-        df["instrument_type"] = df["instrument_type"].apply(_map_instrument)
-        df["settlement_date"] = df["settlement_date"].apply(_to_iso_date)
+        df["instrument_type"] = _map_instrument_series(df["instrument_type"])
+        df["settlement_date"] = _to_iso_series(df["settlement_date"])
         if "merchant_id" not in df.columns:
             df["merchant_id"] = "UNKNOWN"
         df["merchant_id"] = df["merchant_id"].fillna("UNKNOWN").replace("", "UNKNOWN")
@@ -216,17 +261,17 @@ class RazorpayAdapter(BaseSettlementAdapter):
         out["bank_ref_id"] = col("settlement utr").astype(str).str.strip().replace("nan", pd.NA)
         out["utr"] = out["bank_ref_id"]
         # Settlement Amount is INR decimal -> paise
-        out["settled_amount_paise"] = col("settlement amount").apply(_to_paise_inr)
+        out["settled_amount_paise"] = _paise_inr_series(col("settlement amount"))
         # Fallback to Amount - Fee - Tax if settlement amount missing
         # gross
-        out["gross_amount_paise"] = col("amount").apply(_to_paise_inr)
-        out["fee_paise"] = col("fee").apply(_to_paise_inr)
-        out["gst_paise"] = col("tax").apply(_to_paise_inr)
+        out["gross_amount_paise"] = _paise_inr_series(col("amount"))
+        out["fee_paise"] = _paise_inr_series(col("fee"))
+        out["gst_paise"] = _paise_inr_series(col("tax"))
         # Dates: prefer Settlement Date, fallback Created At
-        sd = col("settlement date").apply(_to_iso_date)
-        ca = col("created at").apply(_to_iso_date)
+        sd = _to_iso_series(col("settlement date"))
+        ca = _to_iso_series(col("created at"))
         out["settlement_date"] = sd.fillna(ca)
-        out["instrument_type"] = col("payment method").apply(_map_instrument)
+        out["instrument_type"] = _map_instrument_series(col("payment method"))
         # Merchant: Razorpay files are per-account; column may not exist
         mid_col = None
         for cand in ("merchant id", "merchant_id", "account id"):
@@ -275,16 +320,16 @@ class CashfreeAdapter(BaseSettlementAdapter):
             else col("settlement_id").astype(str)
         )
         out["utr"] = out["bank_ref_id"]
-        out["settled_amount_paise"] = col("settlement_amount").apply(_to_paise_inr)
+        out["settled_amount_paise"] = _paise_inr_series(col("settlement_amount"))
         out["gross_amount_paise"] = (
-            col("amount").apply(_to_paise_inr) if "amount" in lc else pd.Series([pd.NA] * len(df))
+            _paise_inr_series(col("amount")) if "amount" in lc else pd.Series([pd.NA] * len(df))
         )
-        out["fee_paise"] = col("fee").apply(_to_paise_inr)
-        out["gst_paise"] = col("tax").apply(_to_paise_inr)
-        out["settlement_date"] = col("settlement_date").apply(_to_iso_date)
+        out["fee_paise"] = _paise_inr_series(col("fee"))
+        out["gst_paise"] = _paise_inr_series(col("tax"))
+        out["settlement_date"] = _to_iso_series(col("settlement_date"))
         if out["settlement_date"].isna().all() and "created_at" in lc:
-            out["settlement_date"] = col("created_at").apply(_to_iso_date)
-        out["instrument_type"] = col("payment_method").apply(_map_instrument)
+            out["settlement_date"] = _to_iso_series(col("created_at"))
+        out["instrument_type"] = _map_instrument_series(col("payment_method"))
         out["merchant_id"] = (
             col("merchant_id").astype(str).str.strip() if "merchant_id" in lc else "UNKNOWN"
         )
@@ -342,20 +387,20 @@ class PayUAdapter(BaseSettlementAdapter):
             else ("settlement_amount" if "settlement_amount" in lc else None)
         )
         out["settled_amount_paise"] = (
-            col(amt_col).apply(_to_paise_inr) if amt_col else pd.Series([pd.NA] * len(df))
+            _paise_inr_series(col(amt_col)) if amt_col else pd.Series([pd.NA] * len(df))
         )
         # Fee: surcharge or fee
         fee_col = "surcharge" if "surcharge" in lc else ("fee" if "fee" in lc else None)
         out["fee_paise"] = (
-            col(fee_col).apply(_to_paise_inr) if fee_col else pd.Series([pd.NA] * len(df))
+            _paise_inr_series(col(fee_col)) if fee_col else pd.Series([pd.NA] * len(df))
         )
-        out["gst_paise"] = col("tax").apply(_to_paise_inr)
+        out["gst_paise"] = _paise_inr_series(col("tax"))
         # Gross: amount
         gross_col = (
             "amount" if "amount" in lc else ("gross_amount" if "gross_amount" in lc else None)
         )
         out["gross_amount_paise"] = (
-            col(gross_col).apply(_to_paise_inr) if gross_col else pd.Series([pd.NA] * len(df))
+            _paise_inr_series(col(gross_col)) if gross_col else pd.Series([pd.NA] * len(df))
         )
         # Date
         date_col = (
@@ -364,17 +409,17 @@ class PayUAdapter(BaseSettlementAdapter):
             else ("settlement_date" if "settlement_date" in lc else None)
         )
         out["settlement_date"] = (
-            col(date_col).apply(_to_iso_date) if date_col else pd.Series([pd.NA] * len(df))
+            _to_iso_series(col(date_col)) if date_col else pd.Series([pd.NA] * len(df))
         )
         if out["settlement_date"].isna().all() and "created_at" in lc:
-            out["settlement_date"] = col("created_at").apply(_to_iso_date)
+            out["settlement_date"] = _to_iso_series(col("created_at"))
         # paymentMode variations
         pm = None
         for cand in ("paymentmode", "payment_mode", "paymentmethod", "payment_method"):
             if cand in lc:
                 pm = lc[cand]
                 break
-        out["instrument_type"] = df[pm].apply(_map_instrument) if pm else "CREDIT_CARD"
+        out["instrument_type"] = _map_instrument_series(df[pm]) if pm else "CREDIT_CARD"
         out["merchant_id"] = (
             col("merchant_id").astype(str).str.strip() if "merchant_id" in lc else "UNKNOWN"
         )

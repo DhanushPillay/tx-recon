@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     # Spark
     spark_mode: str = "local"
     load_csv_on_driver: bool = False
-    spark_shuffle_partitions: int = 8
+    spark_shuffle_partitions: int = 200
     spark_master: str = "local[*]"
     spark_driver_memory: str = "2g"
     spark_executor_memory: str = "2g"
@@ -99,9 +99,9 @@ class Settings(BaseSettings):
                 "kafka_broker": "redpanda:9092",
                 "schema_registry_url": "http://redpanda:8081",
                 "spark_master": "spark://spark-master:7077",
-                "spark_shuffle_partitions": 400,
-                "spark_executor_cores": 5,
-                "load_csv_on_driver": True,
+                "spark_shuffle_partitions": 200,
+                "spark_executor_cores": 2,
+                "load_csv_on_driver": False,
             }
         )
 

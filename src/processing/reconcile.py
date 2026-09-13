@@ -237,7 +237,7 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
         .filter(F.col("row_num") == 1)
         .drop("row_num")
     )
-
+    bank_df_dedup.cache()
     bank_df_dedup.createOrReplaceTempView("bank_settlements")
 
     fee_engine = get_fee_engine()
@@ -319,6 +319,11 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
             counts[f"batch_{row['st']}"] = row["n"]
     except Exception as exc:  # metrics must never fail the job
         logger.warning(f"Could not fetch reconciliation counts: {exc}")
+    finally:
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            bank_df_dedup.unpersist()
     logger.info(f"Reconciliation batch complete: {counts}")
     return counts
 
