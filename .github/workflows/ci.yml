@@ -92,6 +92,83 @@ jobs:
         run: |
           pytest tests/ -m "integration"
 
+  cluster-smoke:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "apache-airflow==2.11.2" --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.11.2/constraints-3.10.txt"
+          pip install -e ".[dev]"
+
+      - name: Create CI .env
+        run: |
+          cp .env.example .env
+          sed -i 's/^MINIO_ROOT_PASSWORD=.*/MINIO_ROOT_PASSWORD=password/' .env
+
+      - name: Start base services
+        run: docker compose up -d redpanda minio minio-createbucket nessie
+
+      - name: Wait for base services
+        run: |
+          for i in $(seq 1 30); do
+            docker compose exec -T redpanda rpk cluster health 2>/dev/null && break
+            sleep 2
+          done
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9000/lakehouse/)
+            [ "$code" = "403" ] && break
+            sleep 2
+          done
+
+      - name: Build and start Spark cluster
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.spark.yml up -d --build spark-master spark-worker-1 spark-worker-2
+
+      - name: Wait for Spark cluster
+        run: |
+          for i in $(seq 1 30); do
+            bash -c '</dev/tcp/localhost/7077' 2>/dev/null && break
+            sleep 2
+          done
+          for i in $(seq 1 30); do
+            docker compose -f docker-compose.yml -f docker-compose.spark.yml ps | grep -q "healthy" && break
+            sleep 2
+          done
+          curl -sf http://localhost:8082/ | grep -qi "alive.*worker" || true
+          docker compose -f docker-compose.yml -f docker-compose.spark.yml ps
+
+      - name: Run reconciliation smoke with SPARK_MODE=cluster
+        env:
+          PYTHONPATH: .
+          PROJECT_ROOT: ${{ github.workspace }}
+          SPARK_MODE: cluster
+          MINIO_ACCESS_KEY: admin
+          MINIO_SECRET_KEY: password
+        run: |
+          pytest tests/ -m "integration" -k "not pyspark" -- -q
+
+      - name: Dump Spark logs on failure
+        if: failure()
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.spark.yml logs spark-master spark-worker-1 spark-worker-2 | tail -n 200
+
   cloud-dry-run:
     runs-on: ubuntu-latest
     steps:

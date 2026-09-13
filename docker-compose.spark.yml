@@ -58,6 +58,12 @@ services:
       resources:
         limits:
           memory: 3G
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/8081'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
   spark-worker-2:
     build:
@@ -77,6 +83,12 @@ services:
       resources:
         limits:
           memory: 3G
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/8081'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
   # Host reaches redpanda:9092 via hosts entry (compose merges ports).
   redpanda:
