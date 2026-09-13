@@ -1,3 +1,4 @@
+import pandas as pd
 import pandera.pandas as pa
 from pandera import Check
 
@@ -28,6 +29,17 @@ settlement_schema = pa.DataFrameSchema(
             nullable=False,
             checks=Check.isin(INSTRUMENT_TYPES),
         ),
+        # Optional canonical columns — nullable, allow PG adapters to populate.
+        "merchant_id": pa.Column(str, nullable=True, required=False),
+        "fee_paise": pa.Column(pd.Int64Dtype(), nullable=True, required=False, coerce=True),
+        "gst_paise": pa.Column(pd.Int64Dtype(), nullable=True, required=False, coerce=True),
+        "settlement_id": pa.Column(str, nullable=True, required=False),
+        "utr": pa.Column(str, nullable=True, required=False),
+        "currency": pa.Column(str, nullable=True, required=False),
+        "gross_amount_paise": pa.Column(
+            pd.Int64Dtype(), nullable=True, required=False, coerce=True
+        ),
     },
-    strict=True,
+    strict=False,
+    coerce=True,
 )
