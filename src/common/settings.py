@@ -35,18 +35,26 @@ class Settings(BaseSettings):
     spark_executor_memory: str = "2g"
     spark_executor_cores: int = 2
     spark_jar_packages: str = (
-        "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0,"
+        "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.11.0,"
         "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.5,"
         "org.apache.spark:spark-avro_2.12:3.5.5,"
         "org.projectnessie.nessie-integrations:nessie-spark-extensions-3.5_2.12:0.107.9,"
+        "org.apache.iceberg:iceberg-aws-bundle:1.11.0,"
         "org.apache.hadoop:hadoop-aws:3.3.4,"
         "com.amazonaws:aws-java-sdk-bundle:1.12.262"
     )
 
     # Iceberg
     iceberg_warehouse: str = "s3a://lakehouse/warehouse"
+    iceberg_warehouse_hdfs: str = "hdfs://namenode:8020/warehouse"
+    nessie_api_version: str = "v2"
+    hadoop_conf_dir: str = ""
+    yarn_resourcemanager_address: str = "resourcemanager:8032"
+    spark_yarn_staging_dir: str = "hdfs://namenode:8020/tmp/spark-staging"
     webhook_table: str = "nessie.db.webhooks"
+    webhook_table_hdfs: str = "nessie_hdfs.db.webhooks"
     dlq_table: str = "nessie.db.webhooks_dlq"
+    dlq_table_hdfs: str = "nessie_hdfs.db.webhooks_dlq"
     # Cloud targeting without fork: TABLE_PREFIX=glue rewrites nessie.db.* to
     # glue.db.* (Glue catalog), so run_reconciliation() runs unchanged on AWS.
     table_prefix: str = ""
@@ -69,18 +77,20 @@ class Settings(BaseSettings):
         return self
 
     @classmethod
+    def _docker_common(cls, base: dict) -> dict:
+        base.update(
+            nessie_host="nessie",
+            minio_endpoint="http://minio:9000",
+            redpanda_host="redpanda",
+            kafka_broker="redpanda:9092",
+            schema_registry_url="http://redpanda:8081",
+        )
+        return base
+
+    @classmethod
     def for_airflow(cls, _base: "Settings | None" = None) -> "Settings":
         base = _base.model_dump() if _base else {}
-        return cls(
-            **{
-                **base,
-                "nessie_host": "nessie",
-                "minio_endpoint": "http://minio:9000",
-                "redpanda_host": "redpanda",
-                "kafka_broker": "redpanda:9092",
-                "schema_registry_url": "http://redpanda:8081",
-            }
-        )
+        return cls(**cls._docker_common(base))
 
     @classmethod
     def for_cluster(cls, _base: "Settings | None" = None) -> "Settings":
@@ -90,20 +100,32 @@ class Settings(BaseSettings):
         and SPARK_MODE=cluster. See docker-compose.spark.yml header.
         """
         base = _base.model_dump() if _base else {}
-        return cls(
-            **{
-                **base,
-                "nessie_host": "nessie",
-                "minio_endpoint": "http://minio:9000",
-                "redpanda_host": "redpanda",
-                "kafka_broker": "redpanda:9092",
-                "schema_registry_url": "http://redpanda:8081",
-                "spark_master": "spark://spark-master:7077",
-                "spark_shuffle_partitions": 200,
-                "spark_executor_cores": 2,
-                "load_csv_on_driver": False,
-            }
+        base = cls._docker_common(base)
+        base.update(
+            spark_master="spark://spark-master:7077",
+            spark_shuffle_partitions=200,
+            spark_executor_cores=2,
+            load_csv_on_driver=False,
         )
+        return cls(**base)
+
+    @classmethod
+    def for_yarn(cls, _base: "Settings | None" = None) -> "Settings":
+        """Hadoop YARN mode: Spark --master yarn, s3a primary + HDFS secondary.
+
+        Requires docker-compose.hadoop.yml up, hosts entries for namenode/resourcemanager,
+        and HADOOP_CONF_DIR on driver. See docker-compose.hadoop.yml header.
+        Keeps s3a://lakehouse as primary warehouse (nessie), adds hdfs:// secondary (nessie_hdfs).
+        """
+        base = _base.model_dump() if _base else {}
+        base = cls._docker_common(base)
+        base.update(
+            spark_master="yarn",
+            spark_shuffle_partitions=200,
+            spark_executor_cores=2,
+            load_csv_on_driver=False,
+        )
+        return cls(**base)
 
 
 _settings: Settings | None = None
@@ -114,7 +136,9 @@ def get_settings() -> Settings:
     if _settings is None:
         base = Settings()
         is_airflow = os.environ.get("AIRFLOW_HOME") is not None
-        if base.spark_mode == "cluster":
+        if base.spark_mode == "yarn":
+            _settings = Settings.for_yarn(base)
+        elif base.spark_mode == "cluster":
             _settings = Settings.for_cluster(base)
         else:
             _settings = Settings.for_airflow(base) if is_airflow else base

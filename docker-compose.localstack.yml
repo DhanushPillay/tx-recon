@@ -1,0 +1,23 @@
+# LocalStack S3 mock for zero-cost terraform local — pairs with infra/terraform/local
+# up: docker compose -f docker-compose.yml -f docker-compose.localstack.yml up -d
+services:
+  localstack:
+    image: localstack/localstack:3.8
+    container_name: localstack
+    ports:
+      - "4566:4566"
+      - "4510-4559:4510-4559"
+    environment:
+      - SERVICES=s3,iam,sts,glue
+      - PERSISTENCE=0
+      - AWS_DEFAULT_REGION=ap-south-1
+    volumes:
+      - localstack_data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:4566/_localstack/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  localstack_data:

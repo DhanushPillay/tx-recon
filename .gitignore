@@ -28,7 +28,10 @@ tests/performance/results_pandera.json
 logs.txt
 .omo/
 .opencode/
-.env
 results*.json
 .serena
+.tmp/
+tmp/
+~/
+merge_results.py
 

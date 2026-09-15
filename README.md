@@ -45,6 +45,16 @@ flowchart LR
     I --> T[Trino / Metabase]
 ```
 
+Run modes (0$): `SPARK_MODE=local` (default, single node) · `SPARK_MODE=cluster` (spark:// 1+2) · `SPARK_MODE=yarn` (Hadoop YARN+HDFS, see `docs/HADOOP.md` + `docker-compose.hadoop.yml`). Terraform `infra/terraform/local` (LocalStack) proves cloud IaC without bill; same code deploys to `infra/terraform` (S3+Glue).
+
+3-way overlay examples:
+```
+docker compose up -d                                   # base (MinIO/Nessie/Redpanda/Trino)
+docker compose -f docker-compose.yml -f docker-compose.spark.yml up -d   # + standalone 2 workers
+docker compose -f docker-compose.yml -f docker-compose.hadoop.yml up -d  # + Hadoop YARN 2 NMs (yarn mode)
+SPARK_MODE=yarn bash scripts/spark_submit_yarn.sh client src/pipeline.py
+```
+
 Two paths converge on one table. The streaming path ingests webhooks continuously. The batch path merges settlements daily. Both use idempotent MERGE so re-runs are safe.
 
 Full architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -63,14 +73,15 @@ Full architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Benchmarks
 
-Single-node local numbers. Full method and repro commands: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+Single-node vs multi-node (Hadoop YARN+HDFS). Full method, hardware fingerprints, and repro commands: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 | Suite | Result |
 | :--- | :--- |
 | Accuracy (sealed key) | `min_f1=1.0, FP=0` @ 2000 rows x 3 seeds |
 | Kafka producer | **131,887 msgs/sec** async; serial flush p99 1.31ms (acks=all, lz4, 1KB) |
 | Validation (Pandera) | **2.66M rows/sec** @ 1M rows (in-memory) |
-| Iceberg MERGE | **30,886 rows/sec** @ 100k rows, 50% update (4 repeats, median) |
+| Iceberg MERGE (single-node, `SPARK_MODE=local` 28 cores) | **30,886 rows/sec** @ 100k 50% (0.84s), **162k rows/sec** @ 1M 50% (3.07s) — `tests/performance/results_iceberg.json` |
+| Iceberg MERGE (multi-node, `SPARK_MODE=yarn` 14 cores, `hdfs://namenode:8020/warehouse`) | **23,710 rows/sec** @ 100k 50% (2.11s), **71k rows/sec** @ 1M 50% (7.02s) via `tx-recon-driver:bench` inside `tx-recon_default` — `tests/performance/results_iceberg_yarn_hdfs.json`; YARN +76–191% slower at ≤1M from staging/4096MB NM, wins at 5M+ |
 
 ## Project structure
 

@@ -7,7 +7,13 @@ import sys
 import time
 import uuid
 
-os.environ["PYSPARK_PYTHON"] = sys.executable
+# YARN executors run in Linux containers; Windows venv path with spaces fails there.
+# Use python3 for YARN (containers must have python3), venv python for local.
+if os.environ.get("SPARK_MODE") == "yarn" or os.environ.get("SPARK_MASTER") == "yarn":
+    os.environ["PYSPARK_PYTHON"] = "python3"
+    os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
+else:
+    os.environ["PYSPARK_PYTHON"] = sys.executable
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
@@ -224,7 +230,7 @@ def measure_merge(spark, table_name, update_fraction, repeats=3):
     }
 
 
-def run_benchmark(scale=None):
+def run_benchmark(scale=None, catalog="nessie"):
     from hardware import fingerprint
 
     hw = {**get_hardware_info(), "fingerprint": fingerprint()}
@@ -239,13 +245,13 @@ def run_benchmark(scale=None):
     spark.conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
     spark.conf.set("spark.sql.shuffle.partitions", "400")
 
-    spark.sql("CREATE NAMESPACE IF NOT EXISTS nessie.db")
+    spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {catalog}.db")
 
     row_counts = [scale] if scale else SCALE_OPTIONS
     results = {}
 
     for num_rows in row_counts:
-        table_name = f"nessie.db.webhooks_bench_{num_rows // 1000}k"
+        table_name = f"{catalog}.db.webhooks_bench_{num_rows // 1000}k"
         create_table(spark, table_name, num_rows)
 
         for update_pct in [10, 50]:
@@ -271,17 +277,21 @@ def run_benchmark(scale=None):
             )
 
     for num_rows in row_counts:
-        table_name = f"nessie.db.webhooks_bench_{num_rows // 1000}k"
+        table_name = f"{catalog}.db.webhooks_bench_{num_rows // 1000}k"
         spark.sql(f"DROP TABLE IF EXISTS {table_name}")
 
     spark.stop()
 
-    output = {"hardware": hw, "benchmarks": results}
+    output = {"hardware": hw, "benchmarks": results, "catalog": catalog}
 
-    out_path = os.path.join(os.path.dirname(__file__), "results_iceberg.json")
+    # Dual-catalog: nessie -> results_iceberg.json (s3a), nessie_hdfs -> results_iceberg_yarn_hdfs.json (hdfs)
+    out_name = (
+        "results_iceberg_yarn_hdfs.json" if catalog == "nessie_hdfs" else "results_iceberg.json"
+    )
+    out_path = os.path.join(os.path.dirname(__file__), out_name)
     with open(out_path, "w") as f:
         json.dump(output, f, indent=2)
-    logger.info(f"\nResults written to {out_path}")
+    logger.info(f"\nResults written to {out_path} (catalog={catalog})")
 
     return output
 
@@ -289,8 +299,9 @@ def run_benchmark(scale=None):
 def main():
     parser = argparse.ArgumentParser(description="Reconciliation Benchmark")
     parser.add_argument("--scale", type=int, default=None, choices=SCALE_OPTIONS)
+    parser.add_argument("--catalog", type=str, default="nessie", choices=["nessie", "nessie_hdfs"])
     args = parser.parse_args()
-    run_benchmark(args.scale)
+    run_benchmark(args.scale, args.catalog)
 
 
 if __name__ == "__main__":

@@ -62,7 +62,7 @@ def get_spark_session(app_name: str = "TxRecon") -> SparkSession:
         .config("spark.sql.catalog.nessie", "org.apache.iceberg.spark.SparkCatalog")
         .config(
             "spark.sql.catalog.nessie.uri",
-            f"http://{settings.nessie_host}:{settings.nessie_port}/api/v1",
+            f"http://{settings.nessie_host}:{settings.nessie_port}/api/{settings.nessie_api_version}",
         )
         .config("spark.sql.catalog.nessie.ref", settings.nessie_ref)
         .config("spark.sql.catalog.nessie.authentication.type", "NONE")
@@ -70,19 +70,88 @@ def get_spark_session(app_name: str = "TxRecon") -> SparkSession:
             "spark.sql.catalog.nessie.catalog-impl",
             "org.apache.iceberg.nessie.NessieCatalog",
         )
-        .config("spark.sql.catalog.nessie.warehouse", settings.iceberg_warehouse)
+        .config(
+            "spark.sql.catalog.nessie.warehouse",
+            settings.iceberg_warehouse.replace("s3a://", "s3://"),
+        )
+        .config("spark.sql.catalog.nessie.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
         .config("spark.sql.catalog.nessie.s3.endpoint", settings.minio_endpoint)
+        .config("spark.sql.catalog.nessie.s3.path-style-access", "true")
+        .config("spark.sql.catalog.nessie.s3.region", "us-east-1")
+        .config("spark.sql.catalog.nessie.s3.access-key-id", settings.minio_access_key)
+        .config("spark.sql.catalog.nessie.s3.secret-access-key", settings.minio_secret_key)
+        .config("spark.sql.catalog.nessie.client.region", "us-east-1")
         .config("spark.hadoop.fs.s3a.endpoint", settings.minio_endpoint)
         .config("spark.hadoop.fs.s3a.access.key", settings.minio_access_key)
         .config("spark.hadoop.fs.s3a.secret.key", settings.minio_secret_key)
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        .config("spark.hadoop.fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .config("spark.sql.shuffle.partitions", str(settings.spark_shuffle_partitions))
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
         .config("spark.hadoop.fs.s3a.committer.name", "directory")
         .config("spark.sql.streaming.checkpoint.compress", "true")
+        # HDFS secondary catalog (yarn proof, 0$). Always registered; primary stays s3a.
+        .config("spark.sql.catalog.nessie_hdfs", "org.apache.iceberg.spark.SparkCatalog")
+        .config(
+            "spark.sql.catalog.nessie_hdfs.catalog-impl",
+            "org.apache.iceberg.nessie.NessieCatalog",
+        )
+        .config(
+            "spark.sql.catalog.nessie_hdfs.uri",
+            f"http://{settings.nessie_host}:{settings.nessie_port}/api/{settings.nessie_api_version}",
+        )
+        .config("spark.sql.catalog.nessie_hdfs.ref", settings.nessie_ref)
+        .config("spark.sql.catalog.nessie_hdfs.authentication.type", "NONE")
+        .config("spark.sql.catalog.nessie_hdfs.warehouse", settings.iceberg_warehouse_hdfs)
+        .config(
+            "spark.sql.catalog.nessie_hdfs.io-impl",
+            "org.apache.iceberg.hadoop.HadoopFileIO",
+        )
     )
+
+    # YARN wiring (HADOOP_CONF_DIR must exist for --master yarn)
+    if settings.spark_master == "yarn":
+        hadoop_conf = settings.hadoop_conf_dir or os.environ.get("HADOOP_CONF_DIR", "")
+        if hadoop_conf:
+            os.environ["HADOOP_CONF_DIR"] = hadoop_conf
+        spark = (
+            spark.config("spark.hadoop.fs.defaultFS", "hdfs://namenode:8020")
+            .config("spark.hadoop.fs.hdfs.impl", "org.apache.hadoop.hdfs.DistributedFileSystem")
+            .config("spark.hadoop.dfs.client.use.datanode.hostname", "true")
+            .config("spark.hadoop.dfs.datanode.use.datanode.hostname", "true")
+            .config("spark.yarn.stagingDir", settings.spark_yarn_staging_dir)
+            .config(
+                "spark.yarn.access.hadoopFileSystems",
+                "hdfs://namenode:8020,s3a://lakehouse/",
+            )
+            .config("spark.hadoop.yarn.resourcemanager.hostname", "resourcemanager")
+            .config(
+                "spark.hadoop.yarn.resourcemanager.address", settings.yarn_resourcemanager_address
+            )
+        )
+        deploy_mode = os.environ.get("SPARK_YARN_DEPLOY_MODE", "client")
+        spark = spark.config("spark.submit.deployMode", deploy_mode)
+        if deploy_mode == "client":
+            # inside Docker (/.dockerenv) driver must be reachable container IP, not host gateway
+            try:
+                in_docker = os.path.exists("/.dockerenv")
+            except Exception:
+                in_docker = False
+            if in_docker:
+                import socket
+
+                try:
+                    driver_host = socket.gethostbyname(socket.gethostname())
+                except Exception:
+                    driver_host = "0.0.0.0"
+            else:
+                driver_host = "host.docker.internal"
+            spark = spark.config("spark.driver.host", driver_host).config(
+                "spark.driver.bindAddress", "0.0.0.0"
+            )
+        return spark.config("spark.pyspark.python", "python3").getOrCreate()
 
     if settings.spark_master.startswith("spark://"):
         # ponytail: host driver + Docker workers only; local[*] must not force a host.

@@ -1,4 +1,6 @@
 FROM apache/spark:3.5.1
+ENV HADOOP_CONF_DIR=/opt/spark/conf
+ENV YARN_CONF_DIR=/opt/spark/conf
 USER root
 
 # Install uv

@@ -3,13 +3,8 @@
 from __future__ import annotations
 
 import re
-from decimal import Decimal, InvalidOperation
-from typing import TYPE_CHECKING
 
 import pandas as pd
-
-if TYPE_CHECKING:
-    pass
 
 CANONICAL_COLS = [
     "transaction_id",
@@ -60,41 +55,6 @@ def _map_instrument(raw: str | None) -> str:
         if alias in key:
             return canonical
     return "CREDIT_CARD"
-
-
-def _to_paise(value) -> int | None:
-    """Parse INR amount (int paise, decimal string, '₹1,000.00') -> paise int."""
-    if pd.isna(value):
-        return None
-    if isinstance(value, int) and not isinstance(value, bool):
-        # Heuristic: if value > 1e7 assume already paise? No — PG files are INR.
-        # Generic adapter passes paise through; PG adapters pass INR decimal.
-        # We treat int as paise only when called from Generic path (handled separately).
-        return value
-    s = str(value).strip().replace("₹", "").replace(",", "").replace(" ", "")
-    if not s:
-        return None
-    try:
-        # Use Decimal to avoid float drift: "976.40" -> 97640 exactly
-        d = Decimal(s)
-        # If value looks like paise already (no decimal point and > 100000 and from generic)
-        # caller handles this; here we always treat as INR decimal.
-        return int((d * 100).to_integral_value())
-    except (InvalidOperation, ValueError, AttributeError):
-        return None
-
-
-def _to_paise_inr(value) -> int | None:
-    """PG files: INR decimal -> paise. Always treat as INR."""
-    if pd.isna(value):
-        return None
-    s = str(value).strip().replace("₹", "").replace(",", "").strip()
-    if not s:
-        return None
-    try:
-        return int((Decimal(s) * 100).to_integral_value())
-    except (InvalidOperation, ValueError):
-        return None
 
 
 def _to_iso_date(value) -> str | None:

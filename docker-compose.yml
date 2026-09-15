@@ -57,14 +57,14 @@ services:
       "
 
   nessie:
-    image: ghcr.io/projectnessie/nessie:0.107.1-java
+    image: ghcr.io/projectnessie/nessie:0.107.9-java
     container_name: nessie
     ports:
       - "19120:19120"
     environment:
       - QUARKUS_HTTP_PORT=19120
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:19120/api/v1/config || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:19120/api/v2/config || curl -f http://localhost:19120/api/v1/config || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5

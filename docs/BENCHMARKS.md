@@ -4,14 +4,13 @@ Method and measured results for the reconciliation pipeline. The summary table a
 
 ## Environment
 
-Measured September 2026.
+Measured 15 Sep 2026. Two modes, same Iceberg 1.11.0 / Nessie 0.107.9 / Spark 3.5.1 JDK 17:
 
 ```
-Hardware: Windows-10-10.0.26200-SP0, 28 cores, 15.8GB RAM
-Python: 3.11.14
-Fingerprint: d2e5f67d5861 (sha1 of platform + cores + RAM, see tests/performance/hardware.py)
-Services: Redpanda, MinIO, Nessie via Docker Compose
-Spark: 3.5.1, JDK 17
+Single-node: Windows-10-10.0.26200-SP0, 28 cores, 15.8GB RAM, Python 3.11.14, Fingerprint d2e5f67d5861
+YARN/HDFS:   Linux-5.15.153.1-microsoft-standard-WSL2-x86_64-with-glibc2.31, 14 cores, 11.7GB RAM, Python 3.11.16, Fingerprint 7af266c58991
+Services: Redpanda, MinIO, Nessie via Docker Compose; Hadoop 3.3.6 (namenode+2NMs 4GB/4vcores) for YARN
+Spark: 3.5.1, JDK 17 (host 17.0.13 Temurin, NMs 17.0.15 openjdk)
 ```
 
 Each suite writes a per-suite file (`results_accuracy.json`, `results_pandera.json`, `results_iceberg.json`). The orchestrator `tests/performance/run_benchmarks.py` aggregates them into `tests/performance/results.json`. Treat the per-suite files as the cited source; `results.json` is a convenience copy.
@@ -70,26 +69,64 @@ Compares validation paths at the batch boundary on the same in-memory DataFrame.
 
 ## Iceberg MERGE
 
-Measures the `MERGE INTO nessie.db.webhooks` at 100k rows. Larger scales are not published until remeasured with repeats.
+Measures the `MERGE INTO nessie.db.webhooks` (and `nessie_hdfs.db.webhooks` for YARN) across 100k/500k/1M. Iceberg 1.11.0 / Nessie 0.107.9 / Spark 3.5.1 JDK 17 / py 3.11, median of 4 repeats. See `HADOOP.md` for YARN wiring.
 
-- **Script:** `tests/performance/reconciliation_benchmark.py`, orchestrated by `run_benchmarks.py --suite iceberg`
-- **Method:** seeded synthetic webhooks and settlements, dedup via `WINDOW row_number()`, fee CASE generated from live `FeeEngine.get_rate`, `MERGE` with tolerance `ABS((amount - fee - gst) - settled) <= 1`. Each scale runs 4 repeats; reported write time is the median. `rows_per_sec = (matched + mismatched) / median_write_sec`, `healthy = rows_per_sec > 0 and matched > 0`.
-- **Scales:** `--scale` selects rows; default `100k` with 10% and 50% update. No warmup; file counts via `files_before/files_after`.
-- **Repro:**
+- **Script:** `tests/performance/reconciliation_benchmark.py --catalog nessie|nessie_hdfs`, orchestrated by `run_benchmarks.py --suite iceberg`
+- **Method:** seeded synthetic webhooks and settlements, dedup via `WINDOW row_number()`, fee CASE from live `FeeEngine.get_rate`, `MERGE ... ABS((amount - fee - gst) - settled) <= 1`. `rows_per_sec = (matched + mismatched) / median_write_sec`, `healthy = rows_per_sec > 0 and matched > 0`. Files via `files_before/files_after`. `--catalog` selects `s3://lakehouse/warehouse` (S3FileIO) vs `hdfs://namenode:8020/warehouse` (HadoopFileIO).
+- **Repro (single-node):**
   ```bash
   docker compose up -d minio nessie
-  python tests/performance/run_benchmarks.py --suite iceberg --scale 100000
-  # or directly
-  SPARK_MODE=local python -m tests.performance.reconciliation_benchmark
+  SPARK_MODE=local .venv/Scripts/python tests/performance/reconciliation_benchmark.py --scale 100000 --catalog nessie
+  SPARK_MODE=local .venv/Scripts/python tests/performance/reconciliation_benchmark.py --scale 500000 --catalog nessie
+  SPARK_MODE=local .venv/Scripts/python tests/performance/reconciliation_benchmark.py --scale 1000000 --catalog nessie
   ```
-- **Measured result (`results_iceberg.json`, SPARK_MODE=local, 4 repeats, median):**
+- **Measured result single-node (`results_iceberg.json`, SPARK_MODE=local, 28 cores, d2e5f67d5861):**
 
   | Scale | Update | Median write | rows/sec | matched | mismatched | files | healthy |
   | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-  | 100k | 10% | 1.39s | 7,210 | 10,000 | 0 | 8 -> 1 | true |
-  | 100k | 50% | 1.62s | 30,886 | 50,000 | 0 | 1 -> 1 | true |
+  | 100k | 10% | 0.95s | 10,498 | 10,000 | 0 | 8 -> 1 | true |
+  | 100k | 50% | 0.84s | 59,381 | 50,000 | 0 | 1 -> 1 | true |
+  | 500k | 10% | 2.04s | 24,510 | 50,000 | 0 | 40 -> 1 | true |
+  | 500k | 50% | 1.96s | 127,551 | 250,000 | 0 | 1 -> 20 | true |
+  | 1M | 10% | 2.66s | 37,647 | 100,000 | 0 | 80 -> 28 | true |
+  | 1M | 50% | 3.07s | 162,856 | 500,000 | 0 | 13 -> 28 | true |
 
-  `SPARK_MODE=local` was required on this host; a multi-node Spark run is not yet measured.
+## YARN (Hadoop) bench — measured
+
+Same suite on `hdfs://namenode:8020/warehouse` via `nessie_hdfs` (HDFS proof). Driver runs inside `tx-recon_default` (`tx-recon-driver:bench`, Python 3.11.16 Linux, JDK 17) because Windows host driver cannot fetch executor blocks over Docker Desktop bridge (host.docker.internal callback).
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.hadoop.yml up -d --wait
+bash scripts/hdfs_init.sh
+# single command per scale (driver inside network):
+docker run --rm --platform linux/amd64 --network tx-recon_default -v "E:\Personal Projects\tx-recon:/opt/tx-recon" tx-recon-driver:bench bash -c 'export PYTHONPATH=/opt/tx-recon; export SPARK_MODE=yarn; python /opt/tx-recon/tests/performance/reconciliation_benchmark.py --scale 100000 --catalog nessie_hdfs'
+# or helpers: bash scripts/driver_bench.sh       # 100k
+#            bash scripts/driver_bench_scale.sh  # 500k 1M (same, pip baked)
+```
+
+- **Measured result YARN (`results_iceberg_yarn_hdfs.json`, SPARK_MODE=yarn, 14 cores, 7af266c58991, 7-service Hadoop 4096MB/4vcores per NM):**
+
+  | Scale | Update | Median write | rows/sec | matched | mismatched | files | healthy |
+  | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+  | 100k | 10% | 2.09s | 4,776 | 10,000 | 0 | 8 -> 1 | true |
+  | 100k | 50% | 2.11s | 23,710 | 50,000 | 0 | 1 -> 1 | true |
+  | 500k | 10% | 3.59s | 13,911 | 50,000 | 0 | 40 -> 1 | true |
+  | 500k | 50% | 5.71s | 43,810 | 250,000 | 0 | 1 -> 4 | true |
+  | 1M | 10% | 4.74s | 21,114 | 100,000 | 0 | 80 -> 1 | true |
+  | 1M | 50% | 7.02s | 71,207 | 500,000 | 0 | 1 -> 4 | true |
+
+- **Comparison single vs YARN (median write, same 4 repeats, same code):**
+
+  | Scale | Update | Single (s) | YARN (s) | Δ | Single rows/s | YARN rows/s |
+  | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+  | 100k | 10% | 0.95 | 2.09 | +120% YARN slower | 10,498 | 4,776 |
+  | 100k | 50% | 0.84 | 2.11 | +151% | 59,381 | 23,710 |
+  | 500k | 10% | 2.04 | 3.59 | +76% | 24,510 | 13,911 |
+  | 500k | 50% | 1.96 | 5.71 | +191% | 127,551 | 43,810 |
+  | 1M | 10% | 2.66 | 4.74 | +78% | 37,647 | 21,114 |
+  | 1M | 50% | 3.07 | 7.02 | +129% | 162,856 | 71,207 |
+
+  YARN slower on small scales due to staging/YARN AM startup (~1s) and constrained NM (4096MB/4vcores, driver 5.61GB image vs 15.8GB host, files `1->4` vs `1->20/13->28` due to fewer tasks). Proves true distributed scheduling on `hdfs://` (2 NMs, HDFS Live 1/2 DNs, YARN UI :8088, History :19888) — not raw speed. Source JSONs are `results_iceberg.json` and `results_iceberg_yarn_hdfs.json`.
 
 ## PySpark streaming ingestion
 
