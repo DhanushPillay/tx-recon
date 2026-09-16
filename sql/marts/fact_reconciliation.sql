@@ -1,7 +1,8 @@
 -- fact_reconciliation: BI-ready mart, one row per transaction.
 -- Grain: transaction_id. Source: webhooks Iceberg table after the MERGE.
--- Runs on Spark/Trino/Athena unchanged; catalog prefix (nessie/glue) is
--- injected by TABLE_PREFIX in settings, so the same file targets local and cloud.
+-- Runs on Spark/Trino/Athena unchanged. NOTE: the FROM clause below targets
+-- the local Nessie catalog; for AWS Glue, replace nessie.db with glue.db
+-- (TABLE_PREFIX in settings.py only retargets the Python path, not this file).
 SELECT
     transaction_id,
     amount_paise,

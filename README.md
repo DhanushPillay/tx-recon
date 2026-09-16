@@ -7,7 +7,9 @@
 Local lakehouse pipeline that matches payment gateway webhooks against bank settlement files.
 
 [![CI](https://github.com/DhanushPillay/tx-recon/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DhanushPillay/tx-recon/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/DhanushPillay/tx-recon/branch/main/graph/badge.svg)](https://codecov.io/gh/DhanushPillay/tx-recon)
 [![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)](https://www.python.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 </div>
 
@@ -30,6 +32,19 @@ net_paise      = 100000 - 2360                     = 97640  (Rs.976.40)
 ```
 
 If the settlement file says Rs.976.40, the transaction is `MATCHED`. If it says Rs.970.00, it is `EXCEPTION_FEE_MISMATCH`. If there is no webhook for that transaction, it is `EXCEPTION_MISSING_WEBHOOK`.
+
+## Quickstart
+
+```bash
+cp .env.example .env          # set MINIO_ROOT_PASSWORD
+docker compose up -d          # redpanda, minio, nessie, trino, metabase
+pip install -e ".[dev]"
+python -m src.pipeline --date 2026-09-04
+```
+
+Then query the reconciled table via Trino (`http://localhost:8080`) or
+Metabase (`http://localhost:3001`, add Trino: host `trino`, port `8080`,
+catalog `nessie`, schema `db`). Full setup: [docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md).
 
 ## Architecture
 
@@ -71,6 +86,19 @@ Full architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - Downgrade-only residual scorer with a formal proof that false positives never increase (`docs/PROOF.md`)
 - Sealed accuracy harness that injects 7 break classes and asserts F1=1.0 with zero false positives (`tests/performance/recon_accuracy.py`)
 
+## Dashboard
+
+Trino serves the reconciled Iceberg tables; Metabase visualizes them.
+BI-ready mart: [sql/marts/fact_reconciliation.sql](sql/marts/fact_reconciliation.sql).
+
+```sql
+SELECT status, COUNT(*), SUM(amount_paise) / 100.0 AS rupees
+FROM nessie.db.webhooks
+GROUP BY status;
+```
+
+<!-- Dashboard screenshot lands here with the Phase 2 BI milestone: assets/dashboard.png -->
+
 ## Benchmarks
 
 Single-node vs multi-node (Hadoop YARN+HDFS). Full method, hardware fingerprints, and repro commands: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
@@ -98,11 +126,15 @@ src/
 
 ## Contributing
 
-Keep changes small and add a test for new behavior.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Security policy: [SECURITY.md](SECURITY.md).
+PR checklist: `.github/PULL_REQUEST_TEMPLATE.md`.
 
-```bash
-ruff format src/ tests/ dags/ && ruff check src/ tests/ dags/
-pytest tests/ -m "not integration" --cov=src --cov-fail-under=70
-```
+## Roadmap
 
-See `.github/PULL_REQUEST_TEMPLATE.md` for the PR checklist.
+- BI milestone: persisted Metabase, materialized `fact_reconciliation` view, checked-in dashboard.
+- DLQ/quarantine replay path and match-rate alerting.
+- Production Kubernetes manifest (the `k8s/` stub was removed; compose is the supported path).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
