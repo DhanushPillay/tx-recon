@@ -36,6 +36,14 @@ def test_no_table_prefix_keeps_local_tables(monkeypatch):
     assert s.webhook_table == "nessie.db.webhooks"
 
 
+def test_empty_jar_packages_falls_back_to_default(monkeypatch):
+    # Regression: an empty SPARK_JAR_PACKAGES= override once wiped the jar
+    # list and broke the Spark catalog with ClassNotFoundException.
+    monkeypatch.setenv("SPARK_JAR_PACKAGES", "")
+    s = Settings()
+    assert "org.apache.iceberg" in s.spark_jar_packages
+
+
 @patch("src.common.config.SparkSession")
 def test_get_spark_session_clears_spark_home(mock_spark_cls, monkeypatch):
     from src.common import config

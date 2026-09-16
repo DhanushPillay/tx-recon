@@ -67,6 +67,14 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _apply_table_prefix(self) -> "Settings":
+        # An empty env override (e.g. SPARK_JAR_PACKAGES=) must not wipe the
+        # default jar list — that silently breaks the Spark catalog at runtime.
+        if not self.spark_jar_packages.strip():
+            object.__setattr__(
+                self,
+                "spark_jar_packages",
+                Settings.model_fields["spark_jar_packages"].default,
+            )
         if self.table_prefix:
             prefix = self.table_prefix.rstrip(".")
             for attr in ("webhook_table", "dlq_table"):
