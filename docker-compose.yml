@@ -76,6 +76,7 @@ services:
       - "8080:8080"
     volumes:
       - ./trino/catalog:/etc/trino/catalog
+      - trino_data:/data/trino
     # Trino resolves ${ENV:...} inside the container (no :-, :? defaults),
     # so the raw values must be present in its environment.
     environment:
@@ -98,4 +99,5 @@ services:
 volumes:
   redpanda_data:
   minio_data:
+  trino_data:
   metabase_data:
