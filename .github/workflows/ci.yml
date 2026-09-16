@@ -113,7 +113,7 @@ jobs:
           MINIO_ACCESS_KEY: admin
           MINIO_SECRET_KEY: password
         run: |
-          pytest tests/ -m "integration"
+          pytest tests/ -m "integration" --no-cov --benchmark-disable
 
   cluster-smoke:
     runs-on: ubuntu-latest
@@ -190,7 +190,7 @@ jobs:
           MINIO_ACCESS_KEY: admin
           MINIO_SECRET_KEY: password
         run: |
-          pytest tests/ -m "integration" -k "not pyspark" -q
+          pytest tests/ -m "integration" -k "not pyspark" -q --no-cov --benchmark-disable
 
       - name: Dump Spark logs on failure
         if: failure()
