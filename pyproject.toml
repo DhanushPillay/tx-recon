@@ -85,3 +85,8 @@ exclude_also = [
 [tool.mypy]
 python_version = "3.11"
 ignore_missing_imports = true
+
+[tool.mutmut]
+source_paths = ["src/processing/fee_engine.py"]
+pytest_add_cli_args_test_selection = ["tests/processing/test_fee_engine.py"]
+pytest_add_cli_args = ["-o", "addopts=--no-cov --benchmark-disable -p no:cacheprovider -q"]

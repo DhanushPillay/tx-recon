@@ -84,6 +84,7 @@ jobs:
         with:
           files: coverage.xml
           fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Create CI .env
         run: |
@@ -215,7 +216,7 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Mutation test fee engine
-        run: mutmut run --paths-to-mutate src/processing/fee_engine.py --tests tests/processing/test_fee_engine.py -q || true
+        run: mutmut run || true
 
   cloud-dry-run:
     runs-on: ubuntu-latest
