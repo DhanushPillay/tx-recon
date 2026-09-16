@@ -4,7 +4,7 @@ Method and measured results for the reconciliation pipeline. The summary table a
 
 ## Environment
 
-Measured 15 Sep 2026. Two modes, same Iceberg 1.11.0 / Nessie 0.107.9 / Spark 3.5.1 JDK 17:
+Two single-node runs on the same machine, same Iceberg 1.11.0 / Nessie 0.107.9 / Spark 3.5.1 JDK 17. The 15-Sep run is the pre-tuning baseline; the 16-Sep run measures the tuning in `761c37c` plus a partition-count fix found during that re-run (see below).
 
 ```
 Single-node: Windows-10-10.0.26200-SP0, 28 cores, 15.8GB RAM, Python 3.11.14, Fingerprint d2e5f67d5861
@@ -80,7 +80,7 @@ Measures the `MERGE INTO nessie.db.webhooks` (and `nessie_hdfs.db.webhooks` for 
   SPARK_MODE=local .venv/Scripts/python tests/performance/reconciliation_benchmark.py --scale 500000 --catalog nessie
   SPARK_MODE=local .venv/Scripts/python tests/performance/reconciliation_benchmark.py --scale 1000000 --catalog nessie
   ```
-- **Measured result single-node (`results_iceberg.json`, SPARK_MODE=local, 28 cores, d2e5f67d5861):**
+- **Measured result single-node, baseline (`results_iceberg.json`, SPARK_MODE=local, 28 cores, d2e5f67d5861, 15 Sep 2026, pre-tuning):**
 
   | Scale | Update | Median write | rows/sec | matched | mismatched | files | healthy |
   | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -90,6 +90,24 @@ Measures the `MERGE INTO nessie.db.webhooks` (and `nessie_hdfs.db.webhooks` for 
   | 500k | 50% | 1.96s | 127,551 | 250,000 | 0 | 1 -> 20 | true |
   | 1M | 10% | 2.66s | 37,647 | 100,000 | 0 | 80 -> 28 | true |
   | 1M | 50% | 3.07s | 162,856 | 500,000 | 0 | 13 -> 28 | true |
+
+- **Measured result single-node, tuned (same machine/commit `9b61903` tree, 16 Sep 2026, includes `761c37c` + partition fix):**
+
+  | Scale | Update | Median write | rows/sec | matched | mismatched | files | healthy |
+  | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+  | 100k | 10% | 0.81s | 12,337 | 10,000 | 0 | 8 -> 4 | true |
+  | 100k | 50% | 0.87s | 57,582 | 50,000 | 0 | 2 -> 5 | true |
+  | 500k | 10% | 1.19s | 42,074 | 50,000 | 0 | 40 -> 9 | true |
+  | 500k | 50% | 1.93s | 129,766 | 250,000 | 0 | 6 -> 4 | true |
+  | 1M | 10% | 1.66s | 60,268 | 100,000 | 0 | 80 -> 12 | true |
+  | 1M | 50% | 3.05s | 163,747 | 500,000 | 0 | 9 -> 5 | true |
+
+### What changed between the two single-node runs, and why
+
+1. **Single-pass fee `CASE` (`src/processing/reconcile.py`, mirrored in the harness).** Two `WHEN MATCHED` arms each evaluating `ABS(...)` became one arm with a `CASE` — one `ABS` eval per row instead of two. Pure CPU saving on the match path.
+2. **Write tuning:** `merge-on-read` for data and deletes (rewrites become delete files instead of full rewrites), `snappy` instead of `zstd` (cheaper encode on this host), 64MB target files, `hash` distribution, shuffle partitions 400 -> 32, AQE partition coalescing, settlement side persisted + warmed so the 4 repeats don't recompute the LIMIT + fee math.
+3. **Partition-count fix (found by the re-run, not assumed).** `761c37c` raised table-build partitions 4 -> 8 for scales >= 500k, intending bigger files — but tables are built in 50k-row batches, so it doubled file count instead (500k: 40 -> 80 files). The fresh 500k run regressed 20-46% vs baseline, which caught it. Reverted to 4 partitions; with file layout held equal the real optimizations show. Lesson recorded: partition count and batch size multiply — tune total files, not partitions alone.
+4. **Read the pattern honestly:** 10%-update MERGEs gained 17-71% (scan-dominated: they read the whole table but rewrite little, so MoR + cheaper CPU wins big). 50%-update MERGEs are flat (write-dominated: rewriting half the table costs what it costs). The tuning moved the bottleneck, it didn't remove writes.
 
 ## YARN (Hadoop) bench — measured
 

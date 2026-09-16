@@ -108,9 +108,11 @@ def create_table(spark, table_name, num_rows, seed=7):
             for _ in range(current_batch)
         ]
         df = spark.createDataFrame(data, schema)
-        # 8 partitions targets 64MB files on 28c host; was 4 (tiny 500KB files)
-        parts = 8 if num_rows >= 500_000 else 4
-        df.repartition(parts).writeTo(table_name).append()
+        # 4 partitions: 500k in 50k batches -> 40 files, the Sep-15 baseline
+        # layout. 8 partitions doubled it to 80 small files and the MERGE scan
+        # regressed ~20-45% (measured 16 Sep). File size is tuned via the
+        # 64MB TBLPROPERTY, not partition count.
+        df.repartition(4).writeTo(table_name).append()
 
     count = spark.sql(f"SELECT COUNT(*) FROM {table_name}").collect()[0][0]
     logger.info(f"Table {table_name} created with {count:,} rows")
