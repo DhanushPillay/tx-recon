@@ -61,3 +61,27 @@ def test_apply_residual_demotes_and_updates():
 def test_apply_residual_rejects_bad_table():
     with pytest.raises(ValueError):
         apply_residual(MagicMock(), "bad; DROP")
+
+
+def test_apply_residual_escapes_quotes_in_tx_ids():
+    spark = MagicMock()
+    row = {
+        "transaction_id": "tx_o'brien",
+        "amount_paise": 100000,
+        "settled_amount_paise": 100000,
+        "instrument_type": "UPI",
+        "merchant_id": None,
+        "settlement_date": None,
+    }
+    spark.sql.return_value.collect.return_value = [row]
+    import src.processing.residual as res
+
+    orig = res.should_downgrade
+    try:
+        res.should_downgrade = lambda *a, **k: True
+        assert apply_residual(spark, "nessie.db.webhooks") == 1
+        update_sql = spark.sql.call_args_list[1][0][0]
+        assert "'tx_o''brien'" in update_sql
+        assert "'tx_o'brien'" not in update_sql.replace("''", "")
+    finally:
+        res.should_downgrade = orig

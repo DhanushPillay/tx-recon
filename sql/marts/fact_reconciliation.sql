@@ -1,8 +1,11 @@
 -- fact_reconciliation: BI-ready mart, one row per transaction.
 -- Grain: transaction_id. Source: webhooks Iceberg table after the MERGE.
--- Runs on Spark/Trino/Athena unchanged. NOTE: the FROM clause below targets
--- the local Nessie catalog; for AWS Glue, replace nessie.db with glue.db
--- (TABLE_PREFIX in settings.py only retargets the Python path, not this file).
+-- Materialized by run_reconciliation() (src/processing/reconcile.py) as
+-- {namespace}.fact_reconciliation on every batch; this file is the checked-in
+-- copy of that same SELECT for hand-runs on Spark/Trino/Athena. Replace
+-- nessie.db with glue.db for the AWS Glue catalog (TABLE_PREFIX in
+-- settings.py only retargets the Python path, not this file).
+CREATE OR REPLACE VIEW nessie.db.fact_reconciliation AS
 SELECT
     transaction_id,
     amount_paise,

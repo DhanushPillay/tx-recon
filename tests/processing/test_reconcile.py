@@ -95,3 +95,10 @@ def test_run_reconciliation_wiring(
     assert counts["settlement_rows_deduped"] == 4
     assert counts["MATCHED"] == 3
     assert counts["EXCEPTION_FEE_MISMATCH"] == 1
+    # Mart view must be refreshed on the same namespace as the target table.
+    view_sqls = [
+        c[0][0] for c in mock_spark.sql.call_args_list if "CREATE OR REPLACE VIEW" in c[0][0]
+    ]
+    assert len(view_sqls) == 1
+    assert "nessie.db.fact_reconciliation" in view_sqls[0]
+    assert "FROM nessie.db.webhooks" in view_sqls[0]

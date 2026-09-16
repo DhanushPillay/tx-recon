@@ -140,7 +140,8 @@ def apply_residual(
     if not to_demote:
         return 0
 
-    in_list = ", ".join(f"'{tx}'" for tx in to_demote)
+    # Escape single quotes: tx ids are external input, never trust them raw.
+    in_list = ", ".join(f"'{tx.replace(chr(39), chr(39) * 2)}'" for tx in to_demote)
     spark.sql(
         f"UPDATE {table} SET reconciliation_status = '{EXCEPTION_FEE_MISMATCH}' "
         f"WHERE transaction_id IN ({in_list})"

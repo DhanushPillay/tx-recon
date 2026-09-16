@@ -297,6 +297,22 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
     except Exception as exc:
         raise RuntimeError(f"Reconciliation MERGE failed: {exc}") from exc
 
+    # Mart: refresh the BI-ready view over the reconciled table so Trino/Metabase
+    # never query a stale or missing object. Same SELECT as sql/marts/fact_reconciliation.sql.
+    namespace = table.rsplit(".", 1)[0]
+    try:
+        spark.sql(
+            f"CREATE OR REPLACE VIEW {namespace}.fact_reconciliation AS "
+            "SELECT transaction_id, amount_paise, merchant_id, gateway_status, "
+            "reconciliation_status AS status, bank_ref_id, "
+            "CAST(timestamp_utc AS TIMESTAMP) AS transacted_at, "
+            "CASE WHEN reconciliation_status = 'MATCHED' THEN amount_paise "
+            "ELSE NULL END AS matched_amount_paise "
+            f"FROM {table}"
+        )
+    except Exception as exc:  # mart must never fail the job
+        logger.warning(f"Could not refresh fact_reconciliation view: {exc}")
+
     # Observability: report outcome distribution (FAANG expects match-rate metrics).
     # NOTE: status counts below are table-level (cumulative); settlement_rows_deduped
     # scopes the batch so MATCHED can be judged per-run.
