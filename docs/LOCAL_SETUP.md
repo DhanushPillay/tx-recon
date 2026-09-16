@@ -14,13 +14,16 @@ How to run tx-recon on your machine.
 cp .env.example .env
 ```
 
-Edit `.env` and set `MINIO_ROOT_PASSWORD`. Docker Compose will refuse to start without it (the `:?` syntax in `docker-compose.yml` fails fast).
+Edit `.env` and set these three values (S3 writes fail without the access keys):
 
 ```bash
 MINIO_ROOT_PASSWORD=password
+MINIO_ACCESS_KEY=admin
+MINIO_SECRET_KEY=password
 ```
 
-All other variables have sensible defaults for local development. See `src/common/settings.py` for the full list.
+`MINIO_ACCESS_KEY/SECRET_KEY` must match `MINIO_ROOT_USER/PASSWORD` on a fresh
+stack. All other variables have sensible defaults for local development. See `src/common/settings.py` for the full list.
 
 ## 2. Start infrastructure
 
@@ -58,8 +61,13 @@ This runs the sealed accuracy harness (2000 rows x 3 seeds) and writes `tests/pe
 ## 5. Run the full pipeline
 
 ```bash
-python -m src.pipeline --date 2026-09-04
+python -m src.pipeline --date 2026-09-04 --demo
 ```
+
+`--demo` seeds the webhooks table from the same plan as the settlement CSV so
+the MERGE matches. Without it, a fresh stack has no webhooks table and every
+row lands in `EXCEPTION_MISSING_WEBHOOK`. (Production path: stream webhooks via
+`src/ingestion/ingest_webhooks.py`, then run without `--demo`.)
 
 This generates synthetic webhooks and a settlement file, validates the settlement, and runs the Iceberg MERGE reconciliation.
 

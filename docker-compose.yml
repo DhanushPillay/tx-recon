@@ -76,6 +76,11 @@ services:
       - "8080:8080"
     volumes:
       - ./trino/catalog:/etc/trino/catalog
+    # Trino resolves ${ENV:...} inside the container (no :-, :? defaults),
+    # so the raw values must be present in its environment.
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
     depends_on:
       - minio
       - nessie
@@ -85,9 +90,12 @@ services:
     container_name: metabase
     ports:
       - "3001:3000"
+    volumes:
+      - metabase_data:/metabase.db
     depends_on:
       - trino
 
 volumes:
   redpanda_data:
   minio_data:
+  metabase_data:

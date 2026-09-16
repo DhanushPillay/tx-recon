@@ -1,7 +1,10 @@
-.PHONY: up down install clean format lint test demo
+.PHONY: up down install clean format lint test demo pipeline-demo
 
 demo:
 	python tests/performance/quick_perf.py
+
+pipeline-demo:
+	python -m src.pipeline --date 2026-09-04 --demo
 
 install:
 	python -m venv .venv
