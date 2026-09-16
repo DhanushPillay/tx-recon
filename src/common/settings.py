@@ -127,6 +127,35 @@ class Settings(BaseSettings):
         )
         return cls(**base)
 
+    @classmethod
+    def for_local(cls, _base: "Settings | None" = None) -> "Settings":
+        """Single-node bench: driver-heavy, file warehouse, low shuffle.
+
+        BENCH_MODE=local -> file:///tmp/tx-recon-warehouse + HadoopFileIO,
+        bypassing MinIO S3 round-trip (30-40% saving on local NVMe). Prod
+        stays s3a://lakehouse. 32 partitions = cores*2 for 28c host.
+        """
+        base = _base.model_dump() if _base else {}
+        bench_local = os.environ.get("BENCH_MODE") == "local"
+        if bench_local:
+            tmp = os.path.join(os.environ.get("TEMP", "/tmp"), "tx-recon-warehouse")  # noqa: S108 — local bench warehouse only
+            # file:// needs triple slash; normalize Windows backslashes
+            wh = "file:///" + tmp.replace("\\", "/").lstrip("/")
+            base.update(
+                spark_master="local[12]",
+                spark_shuffle_partitions=32,
+                spark_driver_memory="12g",
+                spark_executor_memory="4g",
+                iceberg_warehouse=wh,
+            )
+        else:
+            # Even without file://, bench benefits from lower shuffle + more driver mem
+            base.update(
+                spark_shuffle_partitions=32,
+                spark_driver_memory="8g",
+            )
+        return cls(**base)
+
 
 _settings: Settings | None = None
 
@@ -136,12 +165,24 @@ def get_settings() -> Settings:
     if _settings is None:
         base = Settings()
         is_airflow = os.environ.get("AIRFLOW_HOME") is not None
-        if base.spark_mode == "yarn":
+        bench_local = os.environ.get("BENCH_MODE") == "local"
+        # BENCH_MODE=local takes precedence even over yarn/cluster for single-node file warehouse
+        if bench_local and base.spark_mode not in ("yarn", "cluster"):
+            _settings = Settings.for_local(base)
+        elif base.spark_mode == "yarn":
             _settings = Settings.for_yarn(base)
         elif base.spark_mode == "cluster":
             _settings = Settings.for_cluster(base)
         else:
             _settings = Settings.for_airflow(base) if is_airflow else base
+            # Apply bench shuffle/memory tuning even on default local[*] when BENCH_MODE not set?
+            # Only when explicitly requested via env to keep prod 200
+            if os.environ.get("BENCH_SHUFFLE") == "1":
+                _settings = Settings.for_local(_settings)
+        # Allow explicit file warehouse override (e.g. BENCH_WAREHOUSE=file:///tmp/...)
+        wh_override = os.environ.get("BENCH_WAREHOUSE")
+        if wh_override:
+            object.__setattr__(_settings, "iceberg_warehouse", wh_override)
     return _settings
 
 

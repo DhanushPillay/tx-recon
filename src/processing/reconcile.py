@@ -259,6 +259,8 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
     # their amount_paise equals the settled amount, so fee math would
     # misread them as FEE_MISMATCH on rerun and break idempotency.
     table = _qualified_table(settings.webhook_table)
+    # Single-pass fee evaluation: one ABS(...) + CASE per row (was 2x).
+    # First two guards preserve idempotency (MISSING placeholder + null amount).
     merge_sql = f"""
     MERGE INTO {table} t
     USING (
@@ -280,13 +282,9 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
         UPDATE SET
             t.reconciliation_status = '{EXCEPTION_FEE_MISMATCH}',
             t.bank_ref_id = s.bank_ref_id
-    WHEN MATCHED AND ABS((t.amount_paise - ({fee_case_sql}) - ({gst_case_sql})) - s.settled_amount_paise) <= ({tolerance_sql}) THEN
+    WHEN MATCHED THEN
         UPDATE SET
-            t.reconciliation_status = '{MATCHED}',
-            t.bank_ref_id = s.bank_ref_id
-    WHEN MATCHED AND ABS((t.amount_paise - ({fee_case_sql}) - ({gst_case_sql})) - s.settled_amount_paise) > ({tolerance_sql}) THEN
-        UPDATE SET
-            t.reconciliation_status = '{EXCEPTION_FEE_MISMATCH}',
+            t.reconciliation_status = CASE WHEN ABS((t.amount_paise - ({fee_case_sql}) - ({gst_case_sql})) - s.settled_amount_paise) <= ({tolerance_sql}) THEN '{MATCHED}' ELSE '{EXCEPTION_FEE_MISMATCH}' END,
             t.bank_ref_id = s.bank_ref_id
     WHEN NOT MATCHED THEN
         INSERT (transaction_id, amount_paise, gateway_status, timestamp_utc, merchant_id, reconciliation_status, bank_ref_id)

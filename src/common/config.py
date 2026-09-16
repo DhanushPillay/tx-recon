@@ -74,7 +74,12 @@ def get_spark_session(app_name: str = "TxRecon") -> SparkSession:
             "spark.sql.catalog.nessie.warehouse",
             settings.iceberg_warehouse.replace("s3a://", "s3://"),
         )
-        .config("spark.sql.catalog.nessie.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
+        .config(
+            "spark.sql.catalog.nessie.io-impl",
+            "org.apache.iceberg.hadoop.HadoopFileIO"
+            if settings.iceberg_warehouse.startswith("file:")
+            else "org.apache.iceberg.aws.s3.S3FileIO",
+        )
         .config("spark.sql.catalog.nessie.s3.endpoint", settings.minio_endpoint)
         .config("spark.sql.catalog.nessie.s3.path-style-access", "true")
         .config("spark.sql.catalog.nessie.s3.region", "us-east-1")
@@ -90,6 +95,11 @@ def get_spark_session(app_name: str = "TxRecon") -> SparkSession:
         .config("spark.sql.shuffle.partitions", str(settings.spark_shuffle_partitions))
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
+        .config("spark.sql.adaptive.advisoryPartitionSizeInBytes", "64MB")
+        .config("spark.sql.adaptive.coalescePartitions.initialPartitionNum", "32")
+        .config("spark.sql.adaptive.optimizeSkewsInReorderedPartitions.enabled", "true")
+        .config("spark.sql.autoBroadcastJoinThreshold", "52428800")
+        .config("spark.default.parallelism", str(settings.spark_shuffle_partitions))
         .config("spark.hadoop.fs.s3a.committer.name", "directory")
         .config("spark.sql.streaming.checkpoint.compress", "true")
         # HDFS secondary catalog (yarn proof, 0$). Always registered; primary stays s3a.
@@ -145,11 +155,12 @@ def get_spark_session(app_name: str = "TxRecon") -> SparkSession:
                 try:
                     driver_host = socket.gethostbyname(socket.gethostname())
                 except Exception:
-                    driver_host = "0.0.0.0"
+                    driver_host = "0.0.0.0"  # noqa: S104 — Spark driver bind fallback in Docker
             else:
                 driver_host = "host.docker.internal"
             spark = spark.config("spark.driver.host", driver_host).config(
-                "spark.driver.bindAddress", "0.0.0.0"
+                "spark.driver.bindAddress",
+                "0.0.0.0",  # noqa: S104 — required for Docker workers to reach host driver
             )
         return spark.config("spark.pyspark.python", "python3").getOrCreate()
 
@@ -157,7 +168,7 @@ def get_spark_session(app_name: str = "TxRecon") -> SparkSession:
         # ponytail: host driver + Docker workers only; local[*] must not force a host.
         builder = (
             spark.config("spark.driver.host", "host.docker.internal")
-            .config("spark.driver.bindAddress", "0.0.0.0")
+            .config("spark.driver.bindAddress", "0.0.0.0")  # noqa: S104 — required for Docker workers
             .config("spark.pyspark.python", "python3")
         )
         return builder.getOrCreate()
