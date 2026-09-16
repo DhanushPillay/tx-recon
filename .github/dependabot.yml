@@ -4,6 +4,12 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # AF3 is a migration (sdk imports, constraints-3.x, image bump), not a
+    # pin bump: the 3.x meta-package breaks all DAG imports. Re-allow when
+    # the migration branch lands.
+    ignore:
+      - dependency-name: apache-airflow
+        versions: [">=3"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
