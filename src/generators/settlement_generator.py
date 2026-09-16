@@ -36,7 +36,7 @@ def generate_settlement_file(
     out = output_dir or os.path.join(settings.project_root, "data")
     os.makedirs(out, exist_ok=True)
 
-    rnd = random.Random(seed) if seed is not None else random
+    rnd = random.Random(seed) if seed is not None else random  # noqa: S311 — deterministic test data, not crypto
 
     headers = [
         "bank_ref_id",

@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 def generate_webhook_event():
-    amount_paise = random.randint(1000, 1000000)
+    amount_paise = random.randint(1000, 1000000)  # noqa: S311 — synthetic test traffic, not crypto
     tx_id = f"tx_{uuid.uuid4().hex[:12]}"
 
     return {
@@ -110,7 +110,7 @@ def main():
                 on_delivery=delivery_report,
             )
             producer.poll(0.001)
-            time.sleep(random.uniform(0.1, 1.5))
+            time.sleep(random.uniform(0.1, 1.5))  # noqa: S311 — pacing jitter, not crypto
     except KeyboardInterrupt:
         logger.info("Stopping producer...")
     finally:

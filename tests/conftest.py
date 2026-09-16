@@ -7,6 +7,37 @@ import pytest
 skip_pyspark = platform.system() == "Windows"
 
 
+@pytest.fixture(autouse=True)
+def _reset_singletons(monkeypatch):
+    """Prevent Settings/FeeEngine singletons leaking between tests (order independence)."""
+    import src.common.settings as settings_mod
+    import src.processing.fee_engine as fee_mod
+
+    monkeypatch.setattr(settings_mod, "_settings", None)
+    monkeypatch.setattr(fee_mod, "_fee_engine", None)
+    yield
+    settings_mod._settings = None
+    fee_mod._fee_engine = None
+
+
+@pytest.fixture()
+def canonical_df():
+    import pandas as pd
+
+    return pd.DataFrame(
+        [
+            {
+                "transaction_id": "tx_abcdef123456",
+                "bank_ref_id": "bnk_001",
+                "settled_amount_paise": 97640,
+                "settlement_date": "2025-04-02",
+                "instrument_type": "CREDIT_CARD",
+                "merchant_id": "UNKNOWN",
+            }
+        ]
+    )
+
+
 @pytest.fixture(scope="session")
 def spark():
     if skip_pyspark:

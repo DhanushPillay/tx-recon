@@ -65,7 +65,7 @@ def _seed_demo_webhooks(
 def _build_demo_plan(num_records: int, seed: int = 42) -> list[tuple[str, int, str, str]]:
     from src.common.schemas import INSTRUMENT_TYPES
 
-    rnd = random.Random(seed)
+    rnd = random.Random(seed)  # noqa: S311 — deterministic demo data, not crypto
     planned: list[tuple[str, int, str, str]] = []
     seen: set[str] = set()
     while len(planned) < num_records:
