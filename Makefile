@@ -24,4 +24,4 @@ lint:
 	ruff check src/ tests/ dags/
 
 test:
-	pytest tests/ -v
+	pytest tests/ -m "not integration" -n auto --benchmark-disable
