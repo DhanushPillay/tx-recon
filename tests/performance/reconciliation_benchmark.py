@@ -51,11 +51,41 @@ WHEN MATCHED THEN
 SCALE_OPTIONS = [100_000, 500_000, 1_000_000, 2_000_000, 5_000_000]
 
 
-def create_table(spark, table_name, num_rows, seed=7):
+def _latest_snapshot_summary(spark, table_name):
+    """Latest snapshot id + summary map (Iceberg snapshots metadata table).
+
+    Each MERGE commit's own summary carries that commit's added-data-files,
+    added-delete-files, added-records etc — the per-MERGE diagnostics that
+    rows/sec alone cannot show (LST-Bench rule: report physical cost).
+    """
+    rows = spark.sql(
+        f"SELECT snapshot_id, summary FROM {table_name}.snapshots "
+        "ORDER BY committed_at DESC LIMIT 1"
+    ).collect()
+    if not rows:
+        return None, {}
+    return rows[0][0], dict(rows[0][1] or {})
+
+
+def _hygiene(spark, catalog, table_name):
+    """Binpack + expire between repeats (untimed).
+
+    Without this, MoR delete-debt accumulates across repeats and the median
+    measures degrading runs. With it, each timed MERGE starts from a
+    maintained steady state — labeled 'maintained' in results.
+    """
+    spark.sql(
+        f"CALL {catalog}.system.rewrite_data_files(table => '{table_name}', strategy => 'binpack')"
+    )
+    spark.sql(f"CALL {catalog}.system.expire_snapshots(table => '{table_name}', retain_last => 1)")
+
+
+def create_table(spark, table_name, num_rows, seed=7, merge_mode="mor"):
     logger.info(f"Creating {table_name} with {num_rows:,} rows...")
     rnd = random.Random(seed)
 
     spark.sql(f"DROP TABLE IF EXISTS {table_name}")
+    mode = "merge-on-read" if merge_mode == "mor" else "copy-on-write"
     spark.sql(
         f"""
         CREATE TABLE {table_name} (
@@ -72,9 +102,14 @@ def create_table(spark, table_name, num_rows, seed=7):
             'write.target-file-size-bytes' = '67108864',
             'write.parquet.compression-codec' = 'snappy',
             'write.distribution-mode' = 'hash',
-            'write.merge.mode' = 'merge-on-read',
-            'write.delete.mode' = 'merge-on-read',
-            'write.fanout.enabled' = 'false'
+            'write.merge.mode' = '{mode}',
+            'write.delete.mode' = '{mode}',
+            'write.update.mode' = '{mode}',
+            'write.fanout.enabled' = 'false',
+            -- Scratch table: dropped at run end, no branches/tags reference old
+            -- snapshots, so GC is safe. Required: Nessie disables GC by
+            -- default and expire_snapshots is refused without it.
+            'gc.enabled' = 'true'
         )
     """
     )
@@ -126,8 +161,11 @@ def create_settlement_data(spark, table_name, update_fraction):
         f"Creating settlement data: {settlement_count:,} rows ({update_fraction * 100:.0f}% of {count:,})"
     )
 
+    # ORDER BY makes sampling deterministic for the seeded table (bare LIMIT
+    # is nondeterministic across runs); setup is untimed so sort cost is free.
     ids_df = spark.sql(
-        f"SELECT transaction_id, amount_paise, merchant_id FROM {table_name} LIMIT {settlement_count}"
+        f"SELECT transaction_id, amount_paise, merchant_id FROM {table_name} "
+        f"ORDER BY transaction_id LIMIT {settlement_count}"
     )
 
     from pyspark.sql.functions import col, lit
@@ -173,7 +211,7 @@ def create_settlement_data(spark, table_name, update_fraction):
     return settlement_count
 
 
-def measure_merge(spark, table_name, update_fraction, repeats=3):
+def measure_merge(spark, catalog, table_name, update_fraction, merge_mode, repeats=3):
     import statistics
 
     create_settlement_data(spark, table_name, update_fraction)
@@ -193,23 +231,55 @@ def measure_merge(spark, table_name, update_fraction, repeats=3):
     tol_case_sql = build_tolerance_case_sql(fee_engine)
     merge_sql = _build_merge_sql(table_name, fee_case_sql, gst_case_sql, tol_case_sql)
 
-    writes = []
-    for _ in range(repeats):
-        start = time.time()
-        spark.sql(merge_sql)
-        writes.append(time.time() - start)
-        # Reset state between repeats so each timing measures the same work.
-        spark.sql(
-            f"""UPDATE {table_name}
+    # Join strategy from the plan: broadcast (no target shuffle) vs sort-merge.
+    plan = "\n".join(r[0] for r in spark.sql(f"EXPLAIN {merge_sql}").collect())
+    if "BroadcastHashJoin" in plan:
+        join_type = "broadcast"
+    elif "SortMergeJoin" in plan:
+        join_type = "sortmerge"
+    else:
+        join_type = "unknown"
+
+    merge_runs = []
+    reset_sql = f"""UPDATE {table_name}
                 SET reconciliation_status = 'PENDING_SETTLEMENT',
                     bank_ref_id = NULL"""
+    # Warmup (untimed): cold JVM/S3/JIT inflates the first MERGE 2-3x, which
+    # would drag the median. One throwaway MERGE + reset before timing.
+    spark.sql(merge_sql)
+    spark.sql(reset_sql)
+    for _ in range(repeats):
+        _hygiene(spark, catalog, table_name)  # untimed steady-state reset
+        start = time.time()
+        spark.sql(merge_sql)
+        elapsed = time.time() - start
+        _, summary = _latest_snapshot_summary(spark, table_name)
+        merge_runs.append(
+            {
+                "time_sec": round(elapsed, 2),
+                "added_data_files": int(summary.get("added-data-files", 0) or 0),
+                "added_delete_files": int(summary.get("added-delete-files", 0) or 0),
+                "added_records": int(summary.get("added-records", 0) or 0),
+                "added_data_files_size": int(summary.get("added-files-size", 0) or 0),
+            }
         )
+        # Reset state between repeats so each timing measures the same work.
+        spark.sql(reset_sql)
     # One final MERGE leaves the table matched for the count queries below.
     start = time.time()
     spark.sql(merge_sql)
     write_time = time.time() - start
-    writes.append(write_time)
-    write_time = statistics.median(writes)
+    merge_runs.append(
+        {
+            "time_sec": round(write_time, 2),
+            "added_data_files": 0,
+            "added_delete_files": 0,
+            "added_records": 0,
+            "added_data_files_size": 0,
+            "note": "final state-setting MERGE, no diagnostics",
+        }
+    )
+    write_time = statistics.median(r["time_sec"] for r in merge_runs)
 
     files_after = spark.sql(f"SELECT COUNT(*) FROM {table_name}.files").collect()[0][0]
 
@@ -235,9 +305,13 @@ def measure_merge(spark, table_name, update_fraction, repeats=3):
         pass
 
     return {
+        "merge_mode": merge_mode,
+        "join_type": join_type,
+        "state": "maintained (binpack+expire between repeats)",
         "write_time_sec": round(write_time, 2),
         "write_time_median_sec": round(write_time, 2),
         "write_time_repeats": repeats + 1,
+        "merge_runs": merge_runs,
         "read_time_sec": round(read_time, 2),
         "rows_per_sec": round((matched + mismatched) / write_time, 1) if write_time > 0 else 0,
         "files_before": files_before,
@@ -248,7 +322,7 @@ def measure_merge(spark, table_name, update_fraction, repeats=3):
     }
 
 
-def run_benchmark(scale=None, catalog="nessie"):
+def run_benchmark(scale=None, catalog="nessie", merge_mode="mor", cluster=False):
     from hardware import fingerprint
 
     hw = {**get_hardware_info(), "fingerprint": fingerprint()}
@@ -275,14 +349,24 @@ def run_benchmark(scale=None, catalog="nessie"):
 
     for num_rows in row_counts:
         table_name = f"{catalog}.db.webhooks_bench_{num_rows // 1000}k"
-        create_table(spark, table_name, num_rows)
+        create_table(spark, table_name, num_rows, merge_mode=merge_mode)
+        if cluster:
+            # One-variable experiment: sort on the join key. Untimed setup.
+            logger.info("Clustering table on transaction_id (sort rewrite)...")
+            spark.sql(
+                f"CALL {catalog}.system.rewrite_data_files("
+                f"table => '{table_name}', strategy => 'sort', "
+                f"sort_order => 'transaction_id ASC')"
+            )
 
         for update_pct in [10, 50]:
             update_frac = update_pct / 100
-            label = f"{num_rows // 1000}k_rows_{update_pct}pct_update"
+            label = f"{num_rows // 1000}k_rows_{update_pct}pct_update_{merge_mode}"
+            if cluster:
+                label += "_clustered"
             logger.info(f"\n=== Benchmark: {label} ===")
 
-            result = measure_merge(spark, table_name, update_frac)
+            result = measure_merge(spark, catalog, table_name, update_frac, merge_mode)
             results[label] = result
 
             logger.info(
@@ -292,6 +376,7 @@ def run_benchmark(scale=None, catalog="nessie"):
                 f"mismatched: {result['mismatched']:,}"
             )
             logger.info(f"  Files: {result['files_before']} -> {result['files_after']}")
+            logger.info(f"  Join: {result['join_type']}, mode: {merge_mode}")
 
             spark.sql(
                 f"""UPDATE {table_name}
@@ -307,10 +392,14 @@ def run_benchmark(scale=None, catalog="nessie"):
 
     output = {"hardware": hw, "benchmarks": results, "catalog": catalog}
 
-    # Dual-catalog: nessie -> results_iceberg.json (s3a), nessie_hdfs -> results_iceberg_yarn_hdfs.json (hdfs)
-    out_name = (
-        "results_iceberg_yarn_hdfs.json" if catalog == "nessie_hdfs" else "results_iceberg.json"
-    )
+    # Dual-catalog: nessie -> results_iceberg.json (s3a), nessie_hdfs -> results_iceberg_yarn_hdfs.json (hdfs).
+    # CoW runs get their own file so they never overwrite the cited MoR record.
+    if catalog == "nessie_hdfs":
+        out_name = "results_iceberg_yarn_hdfs.json"
+    elif merge_mode == "cow":
+        out_name = "results_iceberg_cow.json"
+    else:
+        out_name = "results_iceberg.json"
     out_path = os.path.join(os.path.dirname(__file__), out_name)
     with open(out_path, "w") as f:
         json.dump(output, f, indent=2)
@@ -323,8 +412,12 @@ def main():
     parser = argparse.ArgumentParser(description="Reconciliation Benchmark")
     parser.add_argument("--scale", type=int, default=None, choices=SCALE_OPTIONS)
     parser.add_argument("--catalog", type=str, default="nessie", choices=["nessie", "nessie_hdfs"])
+    parser.add_argument("--merge-mode", type=str, default="mor", choices=["mor", "cow"])
+    parser.add_argument(
+        "--cluster", action="store_true", help="sort-rewrite on join key before measuring"
+    )
     args = parser.parse_args()
-    run_benchmark(args.scale, args.catalog)
+    run_benchmark(args.scale, args.catalog, args.merge_mode, args.cluster)
 
 
 if __name__ == "__main__":
