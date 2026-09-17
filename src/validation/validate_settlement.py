@@ -36,7 +36,12 @@ def validate_and_quarantine(
 
 def validate_latest_settlement(
     project_root: str | None = None, date_str: str | None = None
-) -> None:
+) -> str | None:
+    """Validate latest settlement file, persist normalized valid rows.
+
+    Returns path to curated CSV (normalized, canonical) for reconcile to read,
+    so PG INR->paise / date / instrument normalization is not lost.
+    """
     root = project_root or os.environ.get("PROJECT_ROOT", os.getcwd())
     data_dir = os.path.join(root, "data")
     if date_str:
@@ -64,6 +69,14 @@ def validate_latest_settlement(
         raise SettlementValidationError(f"Settlement file is empty: {latest_file}")
 
     _, invalid = validate_and_quarantine(df, settlement_schema)
+    valid = df.drop(invalid.index) if not invalid.empty else df
+
+    # Persist normalized valid rows for reconcile (PG normalization survives).
+    # curated_ prefix avoids matching settlement_*.csv glob on next run.
+    curated_path = os.path.join(data_dir, "curated_" + os.path.basename(latest_file))
+    if not valid.empty:
+        valid.to_csv(curated_path, index=False)
+        logger.info(f"Wrote {len(valid)} normalized rows to {curated_path}")
 
     quarantine_rate = len(invalid) / len(df) * 100 if len(df) > 0 else 0
     logger.info(f"Quarantine rate: {quarantine_rate:.1f}% ({len(invalid)}/{len(df)} rows)")
@@ -81,6 +94,7 @@ def validate_latest_settlement(
         )
 
     logger.info("SUCCESS: Data Contract Validated successfully!")
+    return curated_path
 
 
 if __name__ == "__main__":
