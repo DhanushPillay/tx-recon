@@ -158,8 +158,9 @@ class FeeEngine:
         d = _parse_iso_date(str(settlement_date))
         if d is None:
             return self.rate_cards[-1]
-        # Find latest card where effective_from <= d and (effective_to is None or d <= effective_to)
-        chosen = self.rate_cards[0]
+        # Latest card whose [effective_from, effective_to] contains d;
+        # gap dates fall back to last-prior card (max from <= d).
+        chosen = None
         for card in self.rate_cards:
             eff_from = _parse_iso_date(str(card.get("effective_from", "1970-01-01")))
             eff_to = (
@@ -167,19 +168,23 @@ class FeeEngine:
             )
             if eff_from and d >= eff_from and (eff_to is None or d <= eff_to):
                 chosen = card
-            elif eff_from and d >= eff_from and eff_to is None:
-                # No effective_to — ongoing
-                chosen = card
-        # If date before all cards, use earliest
-        earliest = _parse_iso_date(str(self.rate_cards[0].get("effective_from", "1970-01-01")))
-        if earliest and d < earliest:
-            return self.rate_cards[0]
-        return chosen
+        if chosen is not None:
+            return chosen
+        # Before all cards -> earliest; in a gap -> last-prior (never earliest-by-default).
+        prior = None
+        for card in self.rate_cards:
+            eff_from = _parse_iso_date(str(card.get("effective_from", "1970-01-01")))
+            if eff_from and eff_from <= d:
+                prior = card
+        if prior is not None:
+            return prior
+        return self.rate_cards[0]
 
     def get_rate(self, instrument_type: str, merchant_id: str | None = None) -> dict:
         card = self.rate_cards[-1]
         merchants = card.get("merchants", {}) or {}
-        # Fallback to top-level merchants for tests that mutate config directly
+        # Top-level merchants apply to all cards unless a card overrides them
+        # (matches _build_rate_cards setdefault inheritance + SQL builder merge).
         if merchant_id and merchant_id not in merchants:
             merchants = {**merchants, **(self.config.get("merchants", {}) or {})}
         if merchant_id and merchant_id in merchants:
