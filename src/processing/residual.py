@@ -68,10 +68,10 @@ def score_match(
     merch_match = diff_merch <= tol_merch
     if default_match and not merch_match:
         return 0.95
-    excess = diff_default - tol_default
+    excess = max(diff_default - tol_default, diff_merch - tol_merch)
     if excess <= 0:
         return 0.05 + 0.1 * _sigmoid(excess / 10.0)
-    return 0.2 + 0.7 * _sigmoid((excess - 10) / 20.0)
+    return 0.2 + 0.75 * _sigmoid((excess - 10) / 20.0)
 
 
 def should_downgrade(
@@ -84,7 +84,7 @@ def should_downgrade(
     tau: float = DEFAULT_TAU,
     fee_engine=None,
 ) -> bool:
-    """True iff score > tau. Caller must only call on MATCHED rows."""
+    """True iff score >= tau. Caller must only call on MATCHED rows."""
     return (
         score_match(
             amount_paise,
@@ -94,7 +94,56 @@ def should_downgrade(
             settlement_date,
             fee_engine=fee_engine,
         )
-        > tau
+        >= tau
+    )
+
+
+def score_match_sql(
+    fee_engine,
+    w_amount="t2.amount_paise",
+    s_settled="s.settled_amount_paise",
+    s_inst="s.instrument_type",
+    s_merch="s.merchant_id",
+    s_date="s.settlement_date",
+) -> str:
+    """SQL port of score_match(): same curve, set-based (no driver collect).
+
+    Reuses build_fee_case_sql/build_tolerance_case_sql so fee math stays
+    single-sourced. The default leg passes CAST(NULL AS STRING) as the
+    merchant column so merchant WHENs never match (merchant-agnostic rates).
+    """
+    from src.processing.reconcile import build_fee_case_sql, build_tolerance_case_sql
+
+    null_merch = "CAST(NULL AS STRING)"
+    fee_d, gst_d = build_fee_case_sql(
+        fee_engine,
+        amount_col=w_amount,
+        inst_col=s_inst,
+        merchant_col=null_merch,
+        settlement_date_col=s_date,
+    )
+    tol_d = build_tolerance_case_sql(
+        fee_engine, inst_col=s_inst, merchant_col=null_merch, settlement_date_col=s_date
+    )
+    fee_m, gst_m = build_fee_case_sql(
+        fee_engine,
+        amount_col=w_amount,
+        inst_col=s_inst,
+        merchant_col=s_merch,
+        settlement_date_col=s_date,
+    )
+    tol_m = build_tolerance_case_sql(
+        fee_engine, inst_col=s_inst, merchant_col=s_merch, settlement_date_col=s_date
+    )
+    exp_d = f"({w_amount} - ({fee_d}) - ({gst_d}))"
+    exp_m = f"({w_amount} - ({fee_m}) - ({gst_m}))"
+    diff_d = f"ABS({exp_d} - {s_settled})"
+    diff_m = f"ABS({exp_m} - {s_settled})"
+    excess = f"GREATEST(({diff_d} - ({tol_d})), ({diff_m} - ({tol_m})))"
+    return (
+        f"CASE WHEN ({diff_d} <= ({tol_d})) AND ({diff_m} > ({tol_m})) THEN 0.95 "
+        f"WHEN ({excess}) <= 0 THEN 0.05 + 0.1 * (1.0 / (1.0 + EXP(-(({excess}) / 10.0)))) "
+        f"ELSE 0.2 + 0.75 * (1.0 / (1.0 + EXP(-((({excess}) - 10.0) / 20.0)))) END"
     )
 
 
@@ -103,47 +152,44 @@ def apply_residual(
     table: str,
     *,
     tau: float = DEFAULT_TAU,
+    fee_engine=None,
 ) -> int:
     """Batch post-pass: demote scored MATCHED rows. Returns rows demoted.
 
+    Set-based MERGE (no driver collect): scores every MATCHED row in Spark
+    via score_match_sql and demotes those >= tau. Never promotes.
     Requires a temp view bank_settlements with
     (transaction_id, settled_amount_paise, instrument_type, merchant_id,
-    settlement_date). Never promotes MISMATCH -> MATCHED.
+    settlement_date).
     """
     from src.processing.reconcile import _qualified_table
 
     _qualified_table(table)
+    table = _qualified_table(table)
 
-    rows = spark.sql(
-        f"""
-        SELECT
-            t.transaction_id, t.amount_paise,
-            s.settled_amount_paise, s.instrument_type, s.merchant_id, s.settlement_date
-        FROM {table} t
-        JOIN bank_settlements s ON t.transaction_id = s.transaction_id
-        WHERE t.reconciliation_status = '{MATCHED}'
-        """
-    ).collect()
+    if fee_engine is None:
+        from src.processing.fee_engine import get_fee_engine
 
-    to_demote: list[str] = []
-    for r in rows:
-        if should_downgrade(
-            r["amount_paise"],
-            r["settled_amount_paise"],
-            r["instrument_type"],
-            r["merchant_id"],
-            r["settlement_date"],
-            tau=tau,
-        ):
-            to_demote.append(r["transaction_id"])
+        fee_engine = get_fee_engine()
 
+    score_expr = score_match_sql(fee_engine)
+    scored_source = (
+        "SELECT s.transaction_id AS tid FROM bank_settlements s "
+        f"JOIN {table} t2 ON t2.transaction_id = s.transaction_id "
+        f"WHERE t2.reconciliation_status = '{MATCHED}' "
+        "AND t2.amount_paise IS NOT NULL AND s.settled_amount_paise IS NOT NULL "
+        f"AND ({score_expr}) >= {float(tau)}"
+    )
+    try:
+        to_demote = spark.sql(f"SELECT COUNT(*) AS n FROM ({scored_source})").collect()[0]["n"]
+    except Exception:
+        return 0
     if not to_demote:
         return 0
 
-    # Escape single quotes: tx ids are external input, never trust them raw.
-    in_list = ", ".join(f"'{tx.replace(chr(39), chr(39) * 2)}'" for tx in to_demote)
     spark.sql(
-        f"UPDATE {table} SET reconciliation_status = '{EXCEPTION_FEE_MISMATCH}' "
-        f"WHERE transaction_id IN ({in_list})"
+        f"MERGE INTO {table} t USING ({scored_source}) scored "
+        "ON t.transaction_id = scored.tid "
+        f"WHEN MATCHED THEN UPDATE SET t.reconciliation_status = '{EXCEPTION_FEE_MISMATCH}'"
     )
-    return len(to_demote)
+    return int(to_demote)
