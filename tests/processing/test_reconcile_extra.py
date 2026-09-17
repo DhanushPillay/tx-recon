@@ -72,6 +72,24 @@ def test_build_fee_sql_single_element_cards():
     assert rec.build_tolerance_case_sql(StubEngine()).strip() != ""
 
 
+def test_maintain_tables_rewrites_and_expires():
+    spark = MagicMock()
+    spark.sql.return_value.collect.return_value = [{"n": 10}]
+    out = rec.maintain_tables(spark=spark, tables=["nessie.db.webhooks"], retain_last=7)
+    stmts = [c[0][0] for c in spark.sql.call_args_list]
+    assert any("rewrite_data_files" in s and "'db.webhooks'" in s for s in stmts)
+    assert any("expire_snapshots" in s and "retain_last => 7" in s for s in stmts)
+    assert out["nessie.db.webhooks"]["files_before"] == 10
+
+
+def test_maintain_tables_never_raises():
+    spark = MagicMock()
+    spark.sql.side_effect = RuntimeError("nessie down")
+    assert rec.maintain_tables(spark=spark, tables=["nessie.db.webhooks"]) == {
+        "nessie.db.webhooks": {}
+    }
+
+
 def test_run_reconciliation_missing_file_raises():
     with patch("src.processing.reconcile.get_spark_session") as gs:
         gs.return_value.read.format.return_value.option.return_value.schema.return_value.load.side_effect = Exception(
