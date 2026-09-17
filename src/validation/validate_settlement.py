@@ -83,10 +83,12 @@ def validate_latest_settlement(
 
     if not invalid.empty:
         base, ext = os.path.splitext(latest_file)
-        if "settlement_" in os.path.basename(base):
-            invalid_path = base.replace("settlement_", "quarantine_") + ext
-        else:
-            invalid_path = base + "_quarantine" + ext
+        stem = os.path.basename(base)
+        invalid_path = (
+            base.replace("settlement_", "quarantine_") + ext
+            if "settlement_" in stem
+            else base + "_quarantine" + ext
+        )
         invalid.to_csv(invalid_path, index=False)
         logger.warning(f"Wrote {len(invalid)} quarantined rows to {invalid_path}")
         raise SettlementValidationError(
