@@ -28,6 +28,14 @@ def _check_java_home() -> None:
         os.environ.pop("JAVA_HOME", None)
 
 
+def _driver_conf(spark, host: str):
+    """Driver reachable from Docker workers: routable host + wildcard bind."""
+    return spark.config("spark.driver.host", host).config(
+        "spark.driver.bindAddress",
+        "0.0.0.0",  # noqa: S104 — required for Docker workers to reach host driver
+    )
+
+
 def get_spark_session(app_name: str = "TxRecon") -> SparkSession:
     """Build the Iceberg+Nessie+S3A Spark session. Reads all config from Settings."""
     settings = get_settings()
@@ -158,18 +166,13 @@ def get_spark_session(app_name: str = "TxRecon") -> SparkSession:
                     driver_host = "0.0.0.0"  # noqa: S104 — Spark driver bind fallback in Docker
             else:
                 driver_host = "host.docker.internal"
-            spark = spark.config("spark.driver.host", driver_host).config(
-                "spark.driver.bindAddress",
-                "0.0.0.0",  # noqa: S104 — required for Docker workers to reach host driver
-            )
+            spark = _driver_conf(spark, driver_host)
         return spark.config("spark.pyspark.python", "python3").getOrCreate()
 
     if settings.spark_master.startswith("spark://"):
         # ponytail: host driver + Docker workers only; local[*] must not force a host.
-        builder = (
-            spark.config("spark.driver.host", "host.docker.internal")
-            .config("spark.driver.bindAddress", "0.0.0.0")  # noqa: S104 — required for Docker workers
-            .config("spark.pyspark.python", "python3")
+        builder = _driver_conf(spark, "host.docker.internal").config(
+            "spark.pyspark.python", "python3"
         )
         return builder.getOrCreate()
 
