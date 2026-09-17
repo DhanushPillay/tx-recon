@@ -43,9 +43,13 @@ def validate_settlement_task(ds, **kwargs):
 
 
 def run_reconciliation_task(ds, **kwargs):
-    from src.processing.reconcile import run_reconciliation
+    from src.pipeline import check_batch_drift
+    from src.processing.reconcile import maintain_tables, run_reconciliation
 
-    run_reconciliation(date_str=ds)
+    counts = run_reconciliation(date_str=ds)
+    check_batch_drift(counts, ds=ds)
+    counts["maintenance"] = maintain_tables()
+    return counts
 
 
 with DAG(
