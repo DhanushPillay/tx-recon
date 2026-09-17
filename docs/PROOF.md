@@ -2,7 +2,7 @@
 
 ## Claim
 
-Let `M` be the base MERGE matcher (rule-based, instrument and merchant aware) and `R_tau` the residual post-pass that may demote `MATCHED -> EXCEPTION_FEE_MISMATCH` when `score_match > tau`, never the reverse. Then for any ledger `L` and threshold `tau`:
+Let `M` be the base MERGE matcher (rule-based, instrument and merchant aware) and `R_tau` the residual post-pass that may demote `MATCHED -> EXCEPTION_FEE_MISMATCH` when `score_match >= tau`, never the reverse. Then for any ledger `L` and threshold `tau`:
 
 ```
 FP(R_tau(M(L))) <= FP(M(L))
