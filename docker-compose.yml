@@ -76,6 +76,7 @@ services:
       - "8080:8080"
     volumes:
       - ./trino/catalog:/etc/trino/catalog
+      - ./trino/config.properties:/etc/trino/config.properties:ro
       - trino_data:/data/trino
     # Trino resolves ${ENV:...} inside the container (no :-, :? defaults),
     # so the raw values must be present in its environment.
