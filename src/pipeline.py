@@ -124,7 +124,7 @@ def run_daily(
     logger.info("Step 2/3: validating settlement file")
     validate_latest_settlement(date_str=date_str)
     logger.info("Step 3/3: running reconciliation MERGE")
-    counts = run_reconciliation(date_str=date_str)
+    counts: dict = run_reconciliation(date_str=date_str)
     logger.info(f"Pipeline done: {counts}")
     check_batch_drift(counts, ds=date_str)
     batch_n = counts.get("settlement_rows_deduped", 0)
