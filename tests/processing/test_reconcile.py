@@ -59,10 +59,21 @@ def test_run_reconciliation_wiring(
     mock_bank_df = MagicMock()
     mock_spark.read.format.return_value.option.return_value.schema.return_value.load.return_value = mock_bank_df
     # counts path: 4 deduped settlement rows; table holds 3 MATCHED + 1 FEE_MISMATCH
+    mock_bank_df.filter.return_value.count.return_value = 4
     mock_bank_df.filter.return_value.withColumn.return_value.filter.return_value.drop.return_value.count.return_value = 4
-    mock_spark.sql.return_value.collect.return_value = [
+    table_collect = [
         {"reconciliation_status": "MATCHED", "n": 3},
         {"reconciliation_status": "EXCEPTION_FEE_MISMATCH", "n": 1},
+    ]
+    batch_collect = [
+        {"st": "MATCHED", "n": 3},
+        {"st": "EXCEPTION_FEE_MISMATCH", "n": 1},
+    ]
+    mock_spark.sql.side_effect = [
+        MagicMock(),  # MERGE
+        MagicMock(),  # mart view (runs before counts)
+        MagicMock(collect=MagicMock(return_value=table_collect)),  # table-level
+        MagicMock(collect=MagicMock(return_value=batch_collect)),  # batch-scoped
     ]
 
     counts = run_reconciliation()
@@ -95,6 +106,8 @@ def test_run_reconciliation_wiring(
     assert counts["settlement_rows_deduped"] == 4
     assert counts["MATCHED"] == 3
     assert counts["EXCEPTION_FEE_MISMATCH"] == 1
+    assert counts["batch_MATCHED"] == 3
+    assert counts["batch_EXCEPTION_FEE_MISMATCH"] == 1
     # Mart view must be refreshed on the same namespace as the target table.
     view_sqls = [
         c[0][0] for c in mock_spark.sql.call_args_list if "CREATE OR REPLACE VIEW" in c[0][0]
