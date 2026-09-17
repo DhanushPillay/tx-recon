@@ -7,8 +7,11 @@ import re
 import pandas as pd
 
 CANONICAL_COLS = [
-    "transaction_id",
+    # Order matches bank_schema in src/processing/reconcile.py: Spark's CSV
+    # reader maps positionally under an explicit schema, so curated files
+    # must be bank_ref-first or tx/bank_ref silently swap on read.
     "bank_ref_id",
+    "transaction_id",
     "settled_amount_paise",
     "settlement_date",
     "instrument_type",
