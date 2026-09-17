@@ -130,6 +130,63 @@ def _map_instrument_series(s: pd.Series) -> pd.Series:
     return mapped.fillna("CREDIT_CARD")
 
 
+def _lc(df: pd.DataFrame) -> dict[str, str]:
+    return {c.strip().lower(): c for c in df.columns}
+
+
+def _col(df: pd.DataFrame, lc: dict[str, str], name: str) -> pd.Series:
+    return df[lc[name]] if name in lc else pd.Series([pd.NA] * len(df), index=df.index)
+
+
+def _paise_col(df: pd.DataFrame, lc: dict[str, str], *names: str) -> pd.Series:
+    for n in names:
+        if n in lc:
+            return _paise_inr_series(df[lc[n]])
+    return pd.Series([pd.NA] * len(df), index=df.index)
+
+
+def _iso_col(df: pd.DataFrame, lc: dict[str, str], *names: str) -> pd.Series:
+    for n in names:
+        if n in lc:
+            return _to_iso_series(df[lc[n]])
+    return pd.Series([pd.NA] * len(df), index=df.index)
+
+
+def _date_with_fallback(
+    df: pd.DataFrame, lc: dict[str, str], primary: tuple[str, ...], fallbacks: tuple[str, ...]
+) -> pd.Series:
+    out = _iso_col(df, lc, *primary)
+    for fb in fallbacks:
+        if fb in lc and out.isna().all():
+            out = out.fillna(_iso_col(df, lc, fb))
+    return out
+
+
+def _merchant(df: pd.DataFrame, lc: dict[str, str]) -> pd.Series:
+    for cand in ("merchant_id", "merchant id", "account id"):
+        if cand in lc:
+            s = df[lc[cand]].astype(str).str.strip()
+            break
+    else:
+        return pd.Series(["UNKNOWN"] * len(df), index=df.index)
+    return s.fillna("UNKNOWN").replace("nan", "UNKNOWN").replace("", "UNKNOWN")
+
+
+def _currency(df: pd.DataFrame, lc: dict[str, str]) -> pd.Series:
+    # fillna before str cast: pd.NA astype(str) is "<NA>", not NaN, and would dodge fillna
+    cur = _col(df, lc, "currency").fillna("INR").astype(str).str.strip().str.upper()
+    return cur.replace("NAN", "INR").replace("", "INR")
+
+
+def _bank_ref(
+    df: pd.DataFrame, lc: dict[str, str], candidates: tuple[str, ...], fallback: pd.Series
+) -> pd.Series:
+    for cand in candidates:
+        if cand in lc:
+            return df[lc[cand]].astype(str).str.strip().replace("nan", pd.NA)
+    return fallback
+
+
 class BaseSettlementAdapter:
     pg_name: str = "base"
 
@@ -167,22 +224,19 @@ class GenericAdapter(BaseSettlementAdapter):
         # Column names are canonical; just normalize aliases and fill optional cols
         df = df.copy()
         # lower -> canonical for case-insensitive files
-        lower_map = {c.lower(): c for c in df.columns}
+        lc = _lc(df)
         # Ensure canonical names (if file used Transaction_ID etc.)
         rename = {}
         for want in CANONICAL_COLS:
-            if want not in df.columns and want.lower() in lower_map:
-                rename[lower_map[want.lower()]] = want
+            if want not in df.columns and want.lower() in lc:
+                rename[lc[want.lower()]] = want
         if rename:
             df = df.rename(columns=rename)
+            lc = _lc(df)
         df["instrument_type"] = _map_instrument_series(df["instrument_type"])
         df["settlement_date"] = _to_iso_series(df["settlement_date"])
-        if "merchant_id" not in df.columns:
-            df["merchant_id"] = "UNKNOWN"
-        df["merchant_id"] = df["merchant_id"].fillna("UNKNOWN").replace("", "UNKNOWN")
-        df["currency"] = (
-            df.get("currency", pd.Series([pd.NA] * len(df))).fillna("INR").replace("", "INR")
-        )
+        df["merchant_id"] = _merchant(df, lc)
+        df["currency"] = _currency(df, lc)
         # settled_amount_paise is already paise in generic
         df["settled_amount_paise"] = pd.to_numeric(df["settled_amount_paise"], errors="coerce")
         if "utr" not in df.columns and "bank_ref_id" in df.columns:
@@ -210,40 +264,28 @@ class RazorpayAdapter(BaseSettlementAdapter):
         return self._SIGNATURE.issubset(cols)
 
     def normalize(self, df: pd.DataFrame) -> pd.DataFrame:
-        lc = {c.strip().lower(): c for c in df.columns}
-
-        def col(name: str) -> pd.Series:
-            return df[lc[name]] if name in lc else pd.Series([pd.NA] * len(df))
+        lc = _lc(df)
 
         out = pd.DataFrame()
-        out["transaction_id"] = col("payment id").astype(str).str.strip()
-        out["settlement_id"] = col("settlement id").astype(str).str.strip()
-        out["bank_ref_id"] = col("settlement utr").astype(str).str.strip().replace("nan", pd.NA)
+        out["transaction_id"] = _col(df, lc, "payment id").astype(str).str.strip()
+        out["settlement_id"] = _col(df, lc, "settlement id").astype(str).str.strip()
+        out["bank_ref_id"] = (
+            _col(df, lc, "settlement utr").astype(str).str.strip().replace("nan", pd.NA)
+        )
         out["utr"] = out["bank_ref_id"]
         # Settlement Amount is INR decimal -> paise
-        out["settled_amount_paise"] = _paise_inr_series(col("settlement amount"))
+        out["settled_amount_paise"] = _paise_col(df, lc, "settlement amount")
         # Fallback to Amount - Fee - Tax if settlement amount missing
         # gross
-        out["gross_amount_paise"] = _paise_inr_series(col("amount"))
-        out["fee_paise"] = _paise_inr_series(col("fee"))
-        out["gst_paise"] = _paise_inr_series(col("tax"))
+        out["gross_amount_paise"] = _paise_col(df, lc, "amount")
+        out["fee_paise"] = _paise_col(df, lc, "fee")
+        out["gst_paise"] = _paise_col(df, lc, "tax")
         # Dates: prefer Settlement Date, fallback Created At
-        sd = _to_iso_series(col("settlement date"))
-        ca = _to_iso_series(col("created at"))
-        out["settlement_date"] = sd.fillna(ca)
-        out["instrument_type"] = _map_instrument_series(col("payment method"))
+        out["settlement_date"] = _date_with_fallback(df, lc, ("settlement date",), ("created at",))
+        out["instrument_type"] = _map_instrument_series(_col(df, lc, "payment method"))
         # Merchant: Razorpay files are per-account; column may not exist
-        mid_col = None
-        for cand in ("merchant id", "merchant_id", "account id"):
-            if cand in lc:
-                mid_col = lc[cand]
-                break
-        out["merchant_id"] = df[mid_col].astype(str).str.strip() if mid_col else "UNKNOWN"
-        out["merchant_id"] = (
-            out["merchant_id"].fillna("UNKNOWN").replace("nan", "UNKNOWN").replace("", "UNKNOWN")
-        )
-        cur = col("currency").astype(str).str.strip().str.upper()
-        out["currency"] = cur.replace("NAN", pd.NA).fillna("INR").replace("", "INR")
+        out["merchant_id"] = _merchant(df, lc)
+        out["currency"] = _currency(df, lc)
         return self._finalize(out)
 
 
@@ -264,41 +306,24 @@ class CashfreeAdapter(BaseSettlementAdapter):
         ) and "settlement utr" not in cols
 
     def normalize(self, df: pd.DataFrame) -> pd.DataFrame:
-        lc = {c.strip().lower(): c for c in df.columns}
-
-        def col(name: str) -> pd.Series:
-            return df[lc[name]] if name in lc else pd.Series([pd.NA] * len(df))
+        lc = _lc(df)
 
         out = pd.DataFrame()
-        out["transaction_id"] = col("payment_id").astype(str).str.strip()
-        out["settlement_id"] = col("settlement_id").astype(str).str.strip()
+        out["transaction_id"] = _col(df, lc, "payment_id").astype(str).str.strip()
+        out["settlement_id"] = _col(df, lc, "settlement_id").astype(str).str.strip()
         # UTR may be 'utr' or 'settlement_utr'
-        utr_col = "utr" if "utr" in lc else ("settlement_utr" if "settlement_utr" in lc else None)
-        out["bank_ref_id"] = (
-            col(utr_col).astype(str).str.strip().replace("nan", pd.NA)
-            if utr_col
-            else col("settlement_id").astype(str)
+        out["bank_ref_id"] = _bank_ref(
+            df, lc, ("utr", "settlement_utr"), _col(df, lc, "settlement_id").astype(str)
         )
         out["utr"] = out["bank_ref_id"]
-        out["settled_amount_paise"] = _paise_inr_series(col("settlement_amount"))
-        out["gross_amount_paise"] = (
-            _paise_inr_series(col("amount")) if "amount" in lc else pd.Series([pd.NA] * len(df))
-        )
-        out["fee_paise"] = _paise_inr_series(col("fee"))
-        out["gst_paise"] = _paise_inr_series(col("tax"))
-        out["settlement_date"] = _to_iso_series(col("settlement_date"))
-        if out["settlement_date"].isna().all() and "created_at" in lc:
-            out["settlement_date"] = _to_iso_series(col("created_at"))
-        out["instrument_type"] = _map_instrument_series(col("payment_method"))
-        out["merchant_id"] = (
-            col("merchant_id").astype(str).str.strip() if "merchant_id" in lc else "UNKNOWN"
-        )
-        out["merchant_id"] = (
-            out["merchant_id"].fillna("UNKNOWN").replace("nan", "UNKNOWN").replace("", "UNKNOWN")
-        )
-        out["currency"] = (
-            col("currency").astype(str).str.strip().str.upper().replace("NAN", pd.NA).fillna("INR")
-        )
+        out["settled_amount_paise"] = _paise_col(df, lc, "settlement_amount")
+        out["gross_amount_paise"] = _paise_col(df, lc, "amount")
+        out["fee_paise"] = _paise_col(df, lc, "fee")
+        out["gst_paise"] = _paise_col(df, lc, "tax")
+        out["settlement_date"] = _date_with_fallback(df, lc, ("settlement_date",), ("created_at",))
+        out["instrument_type"] = _map_instrument_series(_col(df, lc, "payment_method"))
+        out["merchant_id"] = _merchant(df, lc)
+        out["currency"] = _currency(df, lc)
         return self._finalize(out)
 
 
@@ -315,14 +340,11 @@ class PayUAdapter(BaseSettlementAdapter):
         return "mihpayid" in cols
 
     def normalize(self, df: pd.DataFrame) -> pd.DataFrame:
-        lc = {c.strip().lower(): c for c in df.columns}
-
-        def col(name: str) -> pd.Series:
-            return df[lc[name]] if name in lc else pd.Series([pd.NA] * len(df))
+        lc = _lc(df)
 
         out = pd.DataFrame()
         # PayU primary id is mihpayid
-        tx = col("mihpayid").astype(str).str.strip()
+        tx = _col(df, lc, "mihpayid").astype(str).str.strip()
         # txnid alias fallback
         if tx.isna().all() or (tx == "nan").all():
             for cand in ("transaction_id", "txnid", "txnid_"):
@@ -330,65 +352,34 @@ class PayUAdapter(BaseSettlementAdapter):
                     tx = df[lc[cand]].astype(str).str.strip()
                     break
         out["transaction_id"] = tx
-        sid = (
-            col("settlementid").astype(str).str.strip()
-            if "settlementid" in lc
-            else col("settlement_id").astype(str).str.strip()
-        )
+        sid = _col(df, lc, "settlementid").astype(str).str.strip()
+        if ("settlementid" not in lc) or sid.isna().all() or (sid == "nan").all():
+            sid = _col(df, lc, "settlement_id").astype(str).str.strip()
         out["settlement_id"] = sid
-        utr_col = "utr" if "utr" in lc else ("settlement_utr" if "settlement_utr" in lc else None)
-        out["bank_ref_id"] = (
-            col(utr_col).astype(str).str.strip().replace("nan", pd.NA) if utr_col else sid
-        )
+        out["bank_ref_id"] = _bank_ref(df, lc, ("utr", "settlement_utr"), sid)
         out["utr"] = out["bank_ref_id"]
-        amt_col = (
-            "settlementamount"
-            if "settlementamount" in lc
-            else ("settlement_amount" if "settlement_amount" in lc else None)
-        )
-        out["settled_amount_paise"] = (
-            _paise_inr_series(col(amt_col)) if amt_col else pd.Series([pd.NA] * len(df))
-        )
+        out["settled_amount_paise"] = _paise_col(df, lc, "settlementamount", "settlement_amount")
         # Fee: surcharge or fee
-        fee_col = "surcharge" if "surcharge" in lc else ("fee" if "fee" in lc else None)
-        out["fee_paise"] = (
-            _paise_inr_series(col(fee_col)) if fee_col else pd.Series([pd.NA] * len(df))
-        )
-        out["gst_paise"] = _paise_inr_series(col("tax"))
+        out["fee_paise"] = _paise_col(df, lc, "surcharge", "fee")
+        out["gst_paise"] = _paise_col(df, lc, "tax")
         # Gross: amount
-        gross_col = (
-            "amount" if "amount" in lc else ("gross_amount" if "gross_amount" in lc else None)
-        )
-        out["gross_amount_paise"] = (
-            _paise_inr_series(col(gross_col)) if gross_col else pd.Series([pd.NA] * len(df))
-        )
+        out["gross_amount_paise"] = _paise_col(df, lc, "amount", "gross_amount")
         # Date
-        date_col = (
-            "settlementdate"
-            if "settlementdate" in lc
-            else ("settlement_date" if "settlement_date" in lc else None)
+        out["settlement_date"] = _date_with_fallback(
+            df, lc, ("settlementdate", "settlement_date"), ("created_at",)
         )
-        out["settlement_date"] = (
-            _to_iso_series(col(date_col)) if date_col else pd.Series([pd.NA] * len(df))
-        )
-        if out["settlement_date"].isna().all() and "created_at" in lc:
-            out["settlement_date"] = _to_iso_series(col("created_at"))
         # paymentMode variations
-        pm = None
-        for cand in ("paymentmode", "payment_mode", "paymentmethod", "payment_method"):
-            if cand in lc:
-                pm = lc[cand]
-                break
+        pm = next(
+            (
+                lc[cand]
+                for cand in ("paymentmode", "payment_mode", "paymentmethod", "payment_method")
+                if cand in lc
+            ),
+            None,
+        )
         out["instrument_type"] = _map_instrument_series(df[pm]) if pm else "CREDIT_CARD"
-        out["merchant_id"] = (
-            col("merchant_id").astype(str).str.strip() if "merchant_id" in lc else "UNKNOWN"
-        )
-        out["merchant_id"] = (
-            out["merchant_id"].fillna("UNKNOWN").replace("nan", "UNKNOWN").replace("", "UNKNOWN")
-        )
-        out["currency"] = (
-            col("currency").astype(str).str.strip().str.upper().replace("NAN", pd.NA).fillna("INR")
-        )
+        out["merchant_id"] = _merchant(df, lc)
+        out["currency"] = _currency(df, lc)
         return self._finalize(out)
 
 
@@ -427,15 +418,16 @@ def normalize_settlement_df(
 
 def load_settlement_csv(path: str, pg_hint: str | None = None) -> tuple[pd.DataFrame, str]:
     """Read CSV at path and normalize. Returns (canonical_df, pg_name)."""
-    # Detect delimiter: PG files may be comma or semicolon; pandas handles comma default.
-    # Try reading; if single column, try semicolon.
-    df = pd.read_csv(path, dtype=str, keep_default_na=False, na_values=["", "NA", "null", "NULL"])
-    # Re-read with na handling if needed — keep_default_na True for empty strings
+    # sep=None sniffs comma vs semicolon PG dialects in one read.
+    df = pd.read_csv(
+        path,
+        dtype=str,
+        sep=None,
+        engine="python",
+        keep_default_na=False,
+        na_values=["", "NA", "null", "NULL"],
+    )
     # Replace empty strings with NA for normalization
     df = df.replace(r"^\s*$", pd.NA, regex=True)
-    # If reading produced single column with commas, already handled; if semicolon, retry
-    if len(df.columns) == 1 and ";" in str(df.columns[0]):
-        df = pd.read_csv(path, sep=";", dtype=str, keep_default_na=False, na_values=["", "NA"])
-        df = df.replace(r"^\s*$", pd.NA, regex=True)
     canonical, pg_name = normalize_settlement_df(df, pg_hint=pg_hint)
     return canonical, pg_name
