@@ -44,15 +44,28 @@ export SPARK_YARN_DEPLOY_MODE="$MODE"
 export SPARK_MODE=yarn
 export SPARK_MASTER=yarn
 
-PACKAGES="org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.11.0,org.projectnessie.nessie-integrations:nessie-spark-extensions-3.5_2.12:0.107.5,org.apache.iceberg:iceberg-aws-bundle:1.11.0,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262"
+PACKAGES="org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.11.0,org.projectnessie.nessie-integrations:nessie-spark-extensions-3.5_2.12:0.107.9,org.apache.iceberg:iceberg-aws-bundle:1.11.0,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.5,org.apache.spark:spark-avro_2.12:3.5.5"
 
-echo "== HADOOP_CONF_DIR=$HADOOP_CONF_DIR MODE=$MODE APP=$APP PACKAGES=1.11.0/0.107.5 =="
+echo "== HADOOP_CONF_DIR=$HADOOP_CONF_DIR MODE=$MODE APP=$APP PACKAGES=1.11.0/0.107.9 =="
 
 # Run via python (PySpark) honoring SPARK_MODE=yarn in settings.py
 # For pure spark-submit jar path, use commented block below.
 if [[ "$APP" == *.py ]]; then
-  # Pass through remaining args to the app
-  python "$APP" "$@"
+  if [[ "$MODE" == "cluster" ]]; then
+    echo "NOTE: cluster mode via spark-submit (driver inside YARN AM needs src/ + deps shipped)." >&2
+    spark-submit \
+      --master yarn --deploy-mode cluster \
+      --packages "$PACKAGES" \
+      --py-files src.zip \
+      --conf spark.hadoop.fs.defaultFS=hdfs://namenode:8020 \
+      --conf spark.yarn.stagingDir=hdfs://namenode:8020/tmp/spark-staging \
+      --conf spark.sql.catalog.nessie.warehouse=s3a://lakehouse/warehouse \
+      --conf spark.sql.catalog.nessie_hdfs.warehouse=hdfs://namenode:8020/warehouse \
+      "$APP" "$@"
+  else
+    # Pass through remaining args to the app
+    python "$APP" "$@"
+  fi
 else
   spark-submit \
     --master yarn --deploy-mode "$MODE" \
