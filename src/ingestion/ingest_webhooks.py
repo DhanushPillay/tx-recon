@@ -1,5 +1,4 @@
 import logging
-import re
 
 import pyspark.sql.functions as F
 from pyspark.sql.avro.functions import from_avro
@@ -9,10 +8,9 @@ from pyspark.sql.streaming.listener import StreamingQueryListener
 from src.common.config import get_spark_session
 from src.common.schemas import EXCEPTION_MISSING_WEBHOOK, WEBHOOK_AVRO_SCHEMA
 from src.common.settings import get_settings
+from src.processing.reconcile import _qualified_table
 
 logger = logging.getLogger(__name__)
-
-_TABLE_RE = re.compile(r"^[A-Za-z0-9_.]+$")
 
 
 class _BatchProgressLogger(StreamingQueryListener):
@@ -28,12 +26,6 @@ class _BatchProgressLogger(StreamingQueryListener):
 
     def onQueryTerminated(self, event):
         pass
-
-
-def _qualified_table(name: str) -> str:
-    if not _TABLE_RE.match(name):
-        raise ValueError(f"Unsafe table identifier: {name!r}")
-    return name
 
 
 def run_ingestion():
