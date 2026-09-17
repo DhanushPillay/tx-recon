@@ -97,7 +97,10 @@ FROM nessie.db.webhooks
 GROUP BY status;
 ```
 
-<!-- Dashboard screenshot lands here with the Phase 2 BI milestone: assets/dashboard.png -->
+![Dashboard KPI row](docs/img/dash-kpi-row.png)
+![Match rate by status](docs/img/dash-pie.png)
+
+Full tour of all 11 cards: [docs/DASHBOARD.md](docs/DASHBOARD.md).
 
 ## Benchmarks
 
