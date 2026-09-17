@@ -82,6 +82,12 @@ After the rule-based MERGE, a downgrade-only residual scorer (`src/processing/re
 
 The scorer uses a sigmoid on the difference between default-rate expected and actual settled amount. Threshold `tau` (default 0.9) controls sensitivity. On the sealed harness (F1=1.0, FP=0), the residual is identity: no rows are demoted.
 
+Production scoring runs in SQL: `score_match_sql()` ports the exact curve (merchant-disagreement branch plus sigmoid on the worst excess) reusing the fee/tolerance builders, and `apply_residual` demotes via a single set-based `MERGE` — no driver `collect()`. The pure-Python `score_match` remains the auditable oracle; a golden test pins SQL ≈ Python.
+
+## Iceberg maintenance
+
+After each successful MERGE, `maintain_tables()` runs `rewrite_data_files(binpack)` plus `expire_snapshots` (default `retain_last=7`, via `MAINTAIN_RETAIN_LAST`) on the webhooks and DLQ tables, reporting `files_before/after` in the counts dict. Maintenance never fails the batch. Seven snapshots preserve roughly a week of time-travel for audit while bounding delete-file debt that otherwise slows every MERGE.
+
 ## Write-Audit-Publish
 
 The batch boundary enforces a Write-Audit-Publish pattern:
