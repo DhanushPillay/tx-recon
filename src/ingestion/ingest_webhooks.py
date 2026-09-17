@@ -7,7 +7,7 @@ from pyspark.sql.functions import col, current_timestamp, expr, lit
 from pyspark.sql.streaming.listener import StreamingQueryListener
 
 from src.common.config import get_spark_session
-from src.common.schemas import WEBHOOK_AVRO_SCHEMA
+from src.common.schemas import EXCEPTION_MISSING_WEBHOOK, WEBHOOK_AVRO_SCHEMA
 from src.common.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -81,9 +81,18 @@ def run_ingestion():
         spark.sql(
             f"MERGE INTO {webhook_table} t USING batch_valid s "
             "ON t.transaction_id = s.transaction_id "
+            f"WHEN MATCHED AND t.reconciliation_status = '{EXCEPTION_MISSING_WEBHOOK}' THEN "
+            "UPDATE SET t.amount_paise = s.amount_paise, t.gateway_status = s.gateway_status, "
+            "t.timestamp_utc = s.timestamp_utc, t.merchant_id = s.merchant_id, "
+            "t.processing_run_id = s.processing_run_id, "
+            "t.reconciliation_status = s.gateway_status, t.ingested_at = s.ingested_at "
             "WHEN NOT MATCHED THEN INSERT *"
         )
-        inv = batch_df.filter(~F.coalesce(valid_cond, F.lit(False)))
+        inv = batch_df.filter(~F.coalesce(valid_cond, F.lit(False))).dropDuplicates(
+            ["transaction_id"]
+        )
+        if not inv.isEmpty():
+            logger.warning(f"DLQ batch: {inv.count()} invalid rows -> {dlq_table}")
         inv.writeTo(dlq_table).append()
 
     spark.streams.addListener(_BatchProgressLogger())
