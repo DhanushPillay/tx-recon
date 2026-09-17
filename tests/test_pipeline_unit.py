@@ -30,16 +30,27 @@ def test_seed_demo_webhooks_3_and_4_tuple():
 
 
 def test_main_drift_and_demo_warnings():
-    counts = {"settlement_rows_deduped": 10, "batch_MATCHED": 5, "batch_EXCEPTION_FEE_MISMATCH": 4}
+    counts = {"settlement_rows_deduped": 10, "batch_MATCHED": 6, "batch_EXCEPTION_FEE_MISMATCH": 4}
     with (
         patch("src.pipeline._build_demo_plan", return_value=[]),
         patch("src.generators.settlement_generator.generate_settlement_file", return_value="f"),
         patch("src.validation.validate_settlement.validate_latest_settlement"),
         patch("src.processing.reconcile.run_reconciliation", return_value=counts),
+        patch("src.processing.reconcile.maintain_tables", return_value={"m": {}}),
     ):
         with patch("sys.argv", ["pipeline", "--date", "2025-04-02"]):
             out = main()
-        assert out == counts
+        assert out["settlement_rows_deduped"] == 10
+        assert out["maintenance"] == {"m": {}}
+
+
+def test_main_drift_raises():
+    from src.pipeline import check_batch_drift
+
+    with pytest.raises(RuntimeError):
+        check_batch_drift(
+            {"settlement_rows_deduped": 10, "batch_MATCHED": 5, "batch_EXCEPTION_FEE_MISMATCH": 4}
+        )
 
 
 def test_main_demo_zero_match_warns_but_returns():
@@ -51,6 +62,8 @@ def test_main_demo_zero_match_warns_but_returns():
         patch("src.generators.settlement_generator.generate_settlement_file", return_value="f"),
         patch("src.validation.validate_settlement.validate_latest_settlement"),
         patch("src.processing.reconcile.run_reconciliation", return_value=counts),
+        patch("src.processing.reconcile.maintain_tables", return_value={}),
         patch("sys.argv", ["pipeline", "--demo"]),
+        pytest.raises(RuntimeError),
     ):
-        assert main()["settlement_rows_deduped"] == 5
+        main()
