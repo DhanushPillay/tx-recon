@@ -29,59 +29,42 @@ def test_excess_zero_vs_positive():
 
 def test_apply_residual_no_rows_returns_zero():
     spark = MagicMock()
-    spark.sql.return_value.collect.return_value = []
+    spark.sql.return_value.collect.return_value = [{"n": 0}]
+    assert apply_residual(spark, "nessie.db.webhooks") == 0
+    assert spark.sql.call_count == 1  # count only, no MERGE
+
+
+def test_apply_residual_demotes_via_merge():
+    from src.processing.fee_engine import FeeEngine
+
+    spark = MagicMock()
+    spark.sql.return_value.collect.return_value = [{"n": 2}]
+    assert apply_residual(spark, "nessie.db.webhooks", fee_engine=FeeEngine()) == 2
+    assert spark.sql.call_count == 2
+    merge_sql = spark.sql.call_args_list[1][0][0]
+    assert "MERGE INTO nessie.db.webhooks" in merge_sql
+    assert "bank_settlements" in merge_sql
+    assert ">= 0.9" in merge_sql
+    assert "IN (" not in merge_sql  # set-based: no tx-id literals
+
+
+def test_apply_residual_count_failure_returns_zero():
+    spark = MagicMock()
+    spark.sql.return_value.collect.side_effect = RuntimeError("boom")
     assert apply_residual(spark, "nessie.db.webhooks") == 0
 
 
-def test_apply_residual_demotes_and_updates():
-    spark = MagicMock()
-    row = {
-        "transaction_id": "tx_abcdef123456",
-        "amount_paise": 100000,
-        "settled_amount_paise": 100000,
-        "instrument_type": "UPI",
-        "merchant_id": None,
-        "settlement_date": None,
-    }
-    spark.sql.return_value.collect.return_value = [row]
-    eng = MagicMock()
-    eng.compute_expected_settled.side_effect = [100000, 999000]
-    eng.get_rate_for_date.side_effect = [{"tolerance_paise": 1}, {"tolerance_paise": 1}]
-    import src.processing.residual as res
+def test_score_match_sql_reuses_builders():
+    from src.processing.fee_engine import FeeEngine
+    from src.processing.residual import score_match_sql
 
-    orig = res.should_downgrade
-    try:
-        res.should_downgrade = lambda *a, **k: True
-        assert apply_residual(spark, "nessie.db.webhooks") == 1
-        assert spark.sql.call_count == 2
-    finally:
-        res.should_downgrade = orig
+    sql = score_match_sql(FeeEngine())
+    assert "CAST(NULL AS STRING)" in sql  # default leg ignores merchant
+    assert "s.merchant_id" in sql  # merchant leg
+    assert "GREATEST" in sql and "EXP(" in sql
+    assert "0.95" in sql and "0.75" in sql
 
 
 def test_apply_residual_rejects_bad_table():
     with pytest.raises(ValueError):
         apply_residual(MagicMock(), "bad; DROP")
-
-
-def test_apply_residual_escapes_quotes_in_tx_ids():
-    spark = MagicMock()
-    row = {
-        "transaction_id": "tx_o'brien",
-        "amount_paise": 100000,
-        "settled_amount_paise": 100000,
-        "instrument_type": "UPI",
-        "merchant_id": None,
-        "settlement_date": None,
-    }
-    spark.sql.return_value.collect.return_value = [row]
-    import src.processing.residual as res
-
-    orig = res.should_downgrade
-    try:
-        res.should_downgrade = lambda *a, **k: True
-        assert apply_residual(spark, "nessie.db.webhooks") == 1
-        update_sql = spark.sql.call_args_list[1][0][0]
-        assert "'tx_o''brien'" in update_sql
-        assert "'tx_o'brien'" not in update_sql.replace("''", "")
-    finally:
-        res.should_downgrade = orig
