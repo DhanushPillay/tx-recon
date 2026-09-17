@@ -13,7 +13,8 @@ settlement_schema = pa.DataFrameSchema(
     {
         "transaction_id": pa.Column(
             str,
-            unique=True,
+            # ponytail: dup detection lives in reconcile dedup (counted), not here — unique=True would quarantine whole files.
+            unique=False,
             nullable=False,
             checks=[Check.str_matches(r"^[A-Za-z0-9_]{4,64}$")],
         ),

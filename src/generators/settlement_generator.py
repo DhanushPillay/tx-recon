@@ -20,6 +20,7 @@ def generate_settlement_file(
     date_str: str | None = None,
     planned: list[tuple[str, int, str]] | list[tuple[str, int, str, str]] | None = None,
     merchant_id: str | None = None,
+    row_opts: dict[str, list[dict]] | None = None,
 ) -> str:
     """Generate a synthetic bank settlement CSV. Fee-accurate: net comes from FeeEngine.
 
@@ -28,6 +29,9 @@ def generate_settlement_file(
     first, then builds settlements from the same triples so the demo matches.
     (webhook_ids alone can't match: amounts stay random and unknown to webhooks.)
     When planned tuples have 4 elements, the 4th is merchant_id.
+    row_opts: optional tx_id -> per-occurrence [{"delta": paise, "date": "YYYY-MM-DD"}]
+    overrides for messy-mix seeding (pipeline _assign_mix); dup rows are extra
+    planned entries, the nth occurrence takes row_opts[tx][min(n, len-1)].
     """
     if planned is None and num_records <= 0:
         raise ValueError(f"num_records must be positive, got {num_records}")
@@ -56,6 +60,7 @@ def generate_settlement_file(
         writer.writerow(headers)
 
         items = planned if planned is not None else [None] * num_records
+        seen_n: dict[str, int] = {}
         for item in items:
             if item is not None:
                 # Support 3-tuple (legacy) or 4-tuple (with merchant_id)
@@ -79,11 +84,16 @@ def generate_settlement_file(
                 instrument_type=instrument,
                 merchant_id=merch if merch != "UNKNOWN" else None,
             )
-            net_amount = fee_result.net_paise
+            n = seen_n.get(tx_id, 0)
+            seen_n[tx_id] = n + 1
+            opts = row_opts.get(tx_id, []) if row_opts else []
+            opt = opts[min(n, len(opts) - 1)] if opts else {}
+            net_amount = fee_result.net_paise + opt.get("delta", 0)
+            sdate = opt.get("date", settlement_date)
 
             bank_ref = f"bnk_{uuid.UUID(int=rnd.getrandbits(128)).hex[:12]}"
 
-            writer.writerow([bank_ref, tx_id, net_amount, settlement_date, instrument, merch])
+            writer.writerow([bank_ref, tx_id, net_amount, sdate, instrument, merch])
 
     logger.info(f"Generated {num_records} settlement records in {output_file}")
     return output_file

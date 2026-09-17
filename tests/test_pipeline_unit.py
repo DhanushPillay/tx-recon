@@ -29,6 +29,32 @@ def test_seed_demo_webhooks_3_and_4_tuple():
     assert spark.createDataFrame.call_count == 1
 
 
+def test_assign_mix_tiles_and_generates(tmp_path):
+    import csv
+
+    from src.generators.settlement_generator import generate_settlement_file
+    from src.pipeline import _assign_mix
+
+    planned = _build_demo_plan(1000, seed=7)
+    items, row_opts, orphans = _assign_mix(planned, seed=7, batch_date="2026-09-10")
+    assert len(row_opts) == 1000 and set(row_opts) == {t[0] for t in planned}
+    assert len(items) == 1000 + sum(len(o) - 1 for o in row_opts.values())
+    assert 20 <= len(orphans) <= 80  # ~5% with seed tolerance
+    assert _assign_mix(planned, seed=7, batch_date="2026-09-10")[1] == row_opts
+
+    out = generate_settlement_file(
+        seed=7, date_str="2026-09-10", planned=items, row_opts=row_opts, output_dir=str(tmp_path)
+    )
+    with open(out) as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == len(items)
+    by_tx: dict[str, list] = {}
+    for r in rows:
+        by_tx.setdefault(r["transaction_id"], []).append(r)
+    assert any(len(v) == 2 for v in by_tx.values())  # dup/late extras written
+    assert all(r["settlement_date"] >= "2026-09-07" for r in rows)  # ooo backdate bounded
+
+
 def test_main_drift_and_demo_warnings():
     counts = {"settlement_rows_deduped": 10, "batch_MATCHED": 6, "batch_EXCEPTION_FEE_MISMATCH": 4}
     with (

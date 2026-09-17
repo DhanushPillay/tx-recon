@@ -344,18 +344,21 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
     ON t.transaction_id = s.transaction_id
     WHEN MATCHED AND t.reconciliation_status = '{EXCEPTION_MISSING_WEBHOOK}' THEN
         UPDATE SET
-            t.bank_ref_id = s.bank_ref_id
+            t.bank_ref_id = s.bank_ref_id,
+            t.instrument_type = s.instrument_type
     WHEN MATCHED AND t.amount_paise IS NULL THEN
         UPDATE SET
             t.reconciliation_status = '{EXCEPTION_FEE_MISMATCH}',
-            t.bank_ref_id = s.bank_ref_id
+            t.bank_ref_id = s.bank_ref_id,
+            t.instrument_type = s.instrument_type
     WHEN MATCHED THEN
         UPDATE SET
             t.reconciliation_status = CASE WHEN ABS((t.amount_paise - ({fee_case_sql}) - ({gst_case_sql})) - s.settled_amount_paise) <= ({tolerance_sql}) THEN '{MATCHED}' ELSE '{EXCEPTION_FEE_MISMATCH}' END,
-            t.bank_ref_id = s.bank_ref_id
+            t.bank_ref_id = s.bank_ref_id,
+            t.instrument_type = s.instrument_type
     WHEN NOT MATCHED THEN
-        INSERT (transaction_id, amount_paise, gateway_status, timestamp_utc, merchant_id, reconciliation_status, bank_ref_id)
-        VALUES (s.transaction_id, s.settled_amount_paise, 'UNKNOWN', current_timestamp(), COALESCE(s.merchant_id, 'UNKNOWN'), '{EXCEPTION_MISSING_WEBHOOK}', s.bank_ref_id)
+        INSERT (transaction_id, amount_paise, gateway_status, timestamp_utc, merchant_id, reconciliation_status, bank_ref_id, instrument_type)
+        VALUES (s.transaction_id, s.settled_amount_paise, 'UNKNOWN', s.settlement_date, COALESCE(s.merchant_id, 'UNKNOWN'), '{EXCEPTION_MISSING_WEBHOOK}', s.bank_ref_id, s.instrument_type)
     """
 
     logger.info("Executing MERGE INTO operation")
@@ -374,7 +377,7 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
     try:
         spark.sql(
             f"CREATE OR REPLACE VIEW {namespace}.fact_reconciliation AS "
-            "SELECT transaction_id, amount_paise, merchant_id, gateway_status, "
+            "SELECT transaction_id, amount_paise, merchant_id, instrument_type, gateway_status, "
             "reconciliation_status AS status, bank_ref_id, "
             "CAST(timestamp_utc AS TIMESTAMP) AS transacted_at, "
             "CASE WHEN reconciliation_status = 'MATCHED' THEN amount_paise "

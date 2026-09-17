@@ -95,10 +95,10 @@ def test_schema_validates_correct_data():
     settlement_schema.validate(df, lazy=True)
 
 
-def test_schema_rejects_duplicate_ids(invalid_csv_duplicate_ids):
+def test_schema_allows_duplicate_ids(invalid_csv_duplicate_ids):
+    # Dup detection lives in reconcile dedup (counted), not validation.
     df = pd.read_csv(invalid_csv_duplicate_ids / "data" / "settlement_dupes.csv")
-    with pytest.raises(SchemaErrors):
-        settlement_schema.validate(df, lazy=True)
+    settlement_schema.validate(df, lazy=True)
 
 
 def test_schema_rejects_negative_amount(invalid_csv_negative_amount):
@@ -117,9 +117,9 @@ def test_validate_latest_settlement_success(valid_csv):
     validate_latest_settlement(project_root=str(valid_csv))
 
 
-def test_validate_latest_settlement_failure(invalid_csv_duplicate_ids):
+def test_validate_latest_settlement_failure(invalid_csv_negative_amount):
     with pytest.raises(SettlementValidationError):
-        validate_latest_settlement(project_root=str(invalid_csv_duplicate_ids))
+        validate_latest_settlement(project_root=str(invalid_csv_negative_amount))
 
 
 def test_validate_latest_settlement_no_file(tmp_path):

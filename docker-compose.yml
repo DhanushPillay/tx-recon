@@ -90,6 +90,10 @@ services:
   metabase:
     image: metabase/metabase:v0.55.5
     container_name: metabase
+    restart: unless-stopped
+    environment:
+      # 11-card dashboard queries Trino concurrently; 2g still OOMs (exit 139).
+      - JAVA_OPTS=-Xmx4g
     ports:
       - "3001:3000"
     volumes:

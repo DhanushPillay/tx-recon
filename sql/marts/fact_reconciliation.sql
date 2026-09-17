@@ -10,6 +10,7 @@ SELECT
     transaction_id,
     amount_paise,
     merchant_id,
+    instrument_type,
     gateway_status,
     reconciliation_status AS status,
     bank_ref_id,
