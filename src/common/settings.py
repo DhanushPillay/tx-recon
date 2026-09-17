@@ -101,21 +101,25 @@ class Settings(BaseSettings):
         return cls(**cls._docker_common(base))
 
     @classmethod
+    def _docker_mode(cls, _base: "Settings | None", master: str) -> "Settings":
+        base = _base.model_dump() if _base else {}
+        base = cls._docker_common(base)
+        base.update(
+            spark_master=master,
+            spark_shuffle_partitions=200,
+            spark_executor_cores=2,
+            load_csv_on_driver=False,
+        )
+        return cls(**base)
+
+    @classmethod
     def for_cluster(cls, _base: "Settings | None" = None) -> "Settings":
         """Free local multinode: driver on host, 1 master + 2 workers in compose.
 
         Requires hosts entries (minio/nessie/redpanda/spark-master -> 127.0.0.1)
         and SPARK_MODE=cluster. See docker-compose.spark.yml header.
         """
-        base = _base.model_dump() if _base else {}
-        base = cls._docker_common(base)
-        base.update(
-            spark_master="spark://spark-master:7077",
-            spark_shuffle_partitions=200,
-            spark_executor_cores=2,
-            load_csv_on_driver=False,
-        )
-        return cls(**base)
+        return cls._docker_mode(_base, "spark://spark-master:7077")
 
     @classmethod
     def for_yarn(cls, _base: "Settings | None" = None) -> "Settings":
@@ -125,15 +129,7 @@ class Settings(BaseSettings):
         and HADOOP_CONF_DIR on driver. See docker-compose.hadoop.yml header.
         Keeps s3a://lakehouse as primary warehouse (nessie), adds hdfs:// secondary (nessie_hdfs).
         """
-        base = _base.model_dump() if _base else {}
-        base = cls._docker_common(base)
-        base.update(
-            spark_master="yarn",
-            spark_shuffle_partitions=200,
-            spark_executor_cores=2,
-            load_csv_on_driver=False,
-        )
-        return cls(**base)
+        return cls._docker_mode(_base, "yarn")
 
     @classmethod
     def for_local(cls, _base: "Settings | None" = None) -> "Settings":
