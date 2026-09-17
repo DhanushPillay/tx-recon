@@ -24,6 +24,23 @@ def _parse_iso_date(s: str) -> date | None:
         return None
 
 
+_HISTORY_KEYS = ("history", "rate_card_history", "rate_cards")
+
+
+def _history_of(config: dict):
+    for key in _HISTORY_KEYS:
+        if config.get(key):
+            return config[key]
+    return None
+
+
+def _check_bps(bps, label: str) -> int:
+    bps = int(bps)
+    if not (0 <= bps <= 10000):
+        raise ValueError(f"invalid mdr_rate_bps {label}: {bps!r}")
+    return bps
+
+
 class FeeEngine:
     def __init__(self, config_path: str | None = None):
         settings = get_settings()
@@ -65,24 +82,19 @@ class FeeEngine:
                     f"invalid {label} default tolerance_paise: {default['tolerance_paise']!r}"
                 )
             for inst, rate in (card.get("instruments", {}) or {}).items():
-                bps = int(rate.get("mdr_rate_bps", default["mdr_rate_bps"]))
-                if not (0 <= bps <= 10000):
-                    raise ValueError(f"invalid mdr_rate_bps for {inst} in {label}: {bps!r}")
+                _check_bps(
+                    rate.get("mdr_rate_bps", default["mdr_rate_bps"]), f"for {inst} in {label}"
+                )
             for merch, inst_map in (card.get("merchants", {}) or {}).items():
                 if not isinstance(inst_map, dict):
                     raise ValueError(f"invalid merchants.{merch} in {label}: must be dict")
                 for inst, rate in inst_map.items():
-                    bps = int(rate.get("mdr_rate_bps", default["mdr_rate_bps"]))
-                    if not (0 <= bps <= 10000):
-                        raise ValueError(
-                            f"invalid mdr_rate_bps for merchants.{merch}.{inst} in {label}: {bps!r}"
-                        )
+                    _check_bps(
+                        rate.get("mdr_rate_bps", default["mdr_rate_bps"]),
+                        f"for merchants.{merch}.{inst} in {label}",
+                    )
 
-        history = (
-            self.config.get("history")
-            or self.config.get("rate_card_history")
-            or self.config.get("rate_cards")
-        )
+        history = _history_of(self.config)
         if history:
             if not isinstance(history, list) or not history:
                 raise ValueError("fee config history must be a non-empty list")
@@ -102,11 +114,7 @@ class FeeEngine:
             validate_card(self.config, "default")
 
     def _build_rate_cards(self) -> None:
-        history = (
-            self.config.get("history")
-            or self.config.get("rate_card_history")
-            or self.config.get("rate_cards")
-        )
+        history = _history_of(self.config)
         if history:
             cards = []
             for card in history:
@@ -159,34 +167,28 @@ class FeeEngine:
         if d is None:
             return self.rate_cards[-1]
         # Latest card whose [effective_from, effective_to] contains d;
-        # gap dates fall back to last-prior card (max from <= d).
-        chosen = None
+        # gap dates fall back to last-prior card (max from <= d), pre-first -> earliest.
+        chosen = prior = None
         for card in self.rate_cards:
             eff_from = _parse_iso_date(str(card.get("effective_from", "1970-01-01")))
+            if not eff_from or eff_from > d:
+                continue
+            prior = card
             eff_to = (
                 _parse_iso_date(str(card["effective_to"])) if card.get("effective_to") else None
             )
-            if eff_from and d >= eff_from and (eff_to is None or d <= eff_to):
+            if eff_to is None or d <= eff_to:
                 chosen = card
-        if chosen is not None:
-            return chosen
-        # Before all cards -> earliest; in a gap -> last-prior (never earliest-by-default).
-        prior = None
-        for card in self.rate_cards:
-            eff_from = _parse_iso_date(str(card.get("effective_from", "1970-01-01")))
-            if eff_from and eff_from <= d:
-                prior = card
-        if prior is not None:
-            return prior
-        return self.rate_cards[0]
+        return chosen or prior or self.rate_cards[0]
 
-    def get_rate(self, instrument_type: str, merchant_id: str | None = None) -> dict:
-        card = self.rate_cards[-1]
+    @staticmethod
+    def _lookup(
+        card: dict, instrument_type: str, merchant_id: str | None, top_merchants: dict
+    ) -> dict:
+        """Merchant -> instrument -> default rate lookup on one card."""
         merchants = card.get("merchants", {}) or {}
-        # Top-level merchants apply to all cards unless a card overrides them
-        # (matches _build_rate_cards setdefault inheritance + SQL builder merge).
         if merchant_id and merchant_id not in merchants:
-            merchants = {**merchants, **(self.config.get("merchants", {}) or {})}
+            merchants = {**merchants, **top_merchants}
         if merchant_id and merchant_id in merchants:
             merchant_rates = merchants[merchant_id]
             if instrument_type in merchant_rates:
@@ -195,8 +197,15 @@ class FeeEngine:
         instruments = card.get("instruments", {})
         if instrument_type in instruments:
             return {**card.get("default", {}), **instruments[instrument_type]}
-
         return card.get("default", {})
+
+    def get_rate(self, instrument_type: str, merchant_id: str | None = None) -> dict:
+        card = self.rate_cards[-1]
+        # Top-level merchants apply to all cards unless a card overrides them
+        # (matches _build_rate_cards setdefault inheritance + SQL builder merge).
+        return self._lookup(
+            card, instrument_type, merchant_id, self.config.get("merchants", {}) or {}
+        )
 
     def get_rate_for_date(
         self,
@@ -205,17 +214,9 @@ class FeeEngine:
         settlement_date: str | None = None,
     ) -> dict:
         card = self._card_for_date(settlement_date)
-        merchants = card.get("merchants", {}) or {}
-        if merchant_id and merchant_id not in merchants:
-            merchants = {**merchants, **(self.config.get("merchants", {}) or {})}
-        if merchant_id and merchant_id in merchants:
-            merchant_rates = merchants[merchant_id]
-            if instrument_type in merchant_rates:
-                return {**card.get("default", {}), **merchant_rates[instrument_type]}
-        instruments = card.get("instruments", {})
-        if instrument_type in instruments:
-            return {**card.get("default", {}), **instruments[instrument_type]}
-        return card.get("default", {})
+        return self._lookup(
+            card, instrument_type, merchant_id, self.config.get("merchants", {}) or {}
+        )
 
     def compute_fee(
         self,
