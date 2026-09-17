@@ -71,7 +71,9 @@ def _build_single_card_fee_sql(
     card: dict, amount_col: str, inst_col: str, merchant_col: str | None
 ):
     """Build fee/gst/tolerance CASE for a single rate card (merchant-aware)."""
-    fee_cases, gst_cases, tol_cases = [], [], []
+    fee_cases: list[str] = []
+    gst_cases: list[str] = []
+    tol_cases: list[str] = []
     default = card.get("default", {})
     default_mdr = int(default.get("mdr_rate_bps", 150))
     default_gst_bps = int(round(float(default.get("gst_on_mdr", 18.0)) * 100))
