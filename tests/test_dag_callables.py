@@ -26,6 +26,9 @@ def test_task_callables():
     with patch("src.validation.validate_settlement.validate_latest_settlement") as v:
         validate_settlement_task("2025-04-02")
         v.assert_called_once()
-    with patch("src.processing.reconcile.run_reconciliation") as r:
+    with (
+        patch("src.processing.reconcile.run_reconciliation") as r,
+        patch("src.processing.reconcile.maintain_tables", return_value={}),
+    ):
         run_reconciliation_task("2025-04-02")
         r.assert_called_once()
