@@ -48,11 +48,16 @@ def _build_single_card_fee_sql(
             inst_esc = inst.replace("'", "''")
             if merchant_col:
                 fee_cases.append(
-                    f"WHEN {merchant_col} = '{merch_esc}' AND {inst_col} = '{inst_esc}' THEN ({amount_col} * {mdr_bps} + 5000) DIV 10000"
+                    f"WHEN {merchant_col} = '{merch_esc}' AND {inst_col} = '{inst_esc}' THEN (({amount_col} * {mdr_bps} + 5000) DIV 10000)"
                 )
-                gst_cases.append(
-                    f"WHEN {merchant_col} = '{merch_esc}' AND {inst_col} = '{inst_esc}' THEN ((({amount_col} * {mdr_bps} + 5000) DIV 10000 * {gst_bps} + 5000) DIV 10000)"
-                )
+                if gst_bps > 0:
+                    gst_cases.append(
+                        f"WHEN {merchant_col} = '{merch_esc}' AND {inst_col} = '{inst_esc}' THEN ((((({amount_col} * {mdr_bps} + 5000) DIV 10000) * {gst_bps} + 5000) DIV 10000))"
+                    )
+                else:
+                    gst_cases.append(
+                        f"WHEN {merchant_col} = '{merch_esc}' AND {inst_col} = '{inst_esc}' THEN 0"
+                    )
                 tol_cases.append(
                     f"WHEN {merchant_col} = '{merch_esc}' AND {inst_col} = '{inst_esc}' THEN {tol}"
                 )
@@ -66,21 +71,29 @@ def _build_single_card_fee_sql(
         tol = int(rate.get("tolerance_paise", default_tol))
         inst_esc = inst.replace("'", "''")
         fee_cases.append(
-            f"WHEN {inst_col} = '{inst_esc}' THEN ({amount_col} * {mdr_bps} + 5000) DIV 10000"
+            f"WHEN {inst_col} = '{inst_esc}' THEN (({amount_col} * {mdr_bps} + 5000) DIV 10000)"
         )
-        gst_cases.append(
-            f"WHEN {inst_col} = '{inst_esc}' THEN ((({amount_col} * {mdr_bps} + 5000) DIV 10000 * {gst_bps} + 5000) DIV 10000)"
-        )
+        if gst_bps > 0:
+            gst_cases.append(
+                f"WHEN {inst_col} = '{inst_esc}' THEN ((((({amount_col} * {mdr_bps} + 5000) DIV 10000) * {gst_bps} + 5000) DIV 10000))"
+            )
+        else:
+            gst_cases.append(f"WHEN {inst_col} = '{inst_esc}' THEN 0")
         tol_cases.append(f"WHEN {inst_col} = '{inst_esc}' THEN {tol}")
 
     fee_sql = (
-        "CASE " + " ".join(fee_cases) + f" ELSE ({amount_col} * {default_mdr} + 5000) DIV 10000 END"
-    )
-    gst_sql = (
         "CASE "
-        + " ".join(gst_cases)
-        + f" ELSE ((({amount_col} * {default_mdr} + 5000) DIV 10000 * {default_gst_bps} + 5000) DIV 10000) END"
+        + " ".join(fee_cases)
+        + f" ELSE (({amount_col} * {default_mdr} + 5000) DIV 10000) END"
     )
+    if default_gst_bps > 0:
+        gst_sql = (
+            "CASE "
+            + " ".join(gst_cases)
+            + f" ELSE ((((({amount_col} * {default_mdr} + 5000) DIV 10000) * {default_gst_bps} + 5000) DIV 10000)) END"
+        )
+    else:
+        gst_sql = "CASE " + " ".join(gst_cases) + " ELSE 0 END"
     tol_sql = "CASE " + " ".join(tol_cases) + f" ELSE {default_tol} END"
     return fee_sql, gst_sql, tol_sql
 
@@ -100,18 +113,37 @@ def build_fee_case_sql(
     """
     cards = getattr(fee_engine, "rate_cards", None)
     if cards and len(cards) > 1:
-        # Versioned: CASE on settlement_date (use caller-provided column, so golden test can use t.*)
+        # Versioned: CASE on settlement_date range [effective_from, effective_to].
+        # NULL/malformed dates match nothing -> ELSE latest (mirrors FeeEngine._card_for_date).
+        # Top-level merchants inherit into every card (mirrors FeeEngine get_rate_for_date).
+        top_merchants = (getattr(fee_engine, "config", {}) or {}).get("merchants", {}) or {}
         fee_parts, gst_parts = [], []
         # Latest first so WHEN matches most recent applicable
         for card in reversed(cards):
             eff_from = card.get("effective_from", "1970-01-01")
             eff_from_esc = str(eff_from).replace("'", "''")
-            f_sql, g_sql, _ = _build_single_card_fee_sql(card, amount_col, inst_col, merchant_col)
-            fee_parts.append(f"WHEN {settlement_date_col} >= '{eff_from_esc}' THEN {f_sql}")
-            gst_parts.append(f"WHEN {settlement_date_col} >= '{eff_from_esc}' THEN {g_sql}")
-        # Fallback to earliest card's inner CASE
-        earliest = cards[0]
-        f0, g0, _ = _build_single_card_fee_sql(earliest, amount_col, inst_col, merchant_col)
+            eff_to = card.get("effective_to")
+            card_eff = dict(card)
+            card_eff["merchants"] = {**top_merchants, **(card.get("merchants", {}) or {})}
+            f_sql, g_sql, _ = _build_single_card_fee_sql(
+                card_eff, amount_col, inst_col, merchant_col
+            )
+            if eff_to:
+                eff_to_esc = str(eff_to).replace("'", "''")
+                fee_parts.append(
+                    f"WHEN {settlement_date_col} >= '{eff_from_esc}' AND {settlement_date_col} <= '{eff_to_esc}' THEN {f_sql}"
+                )
+                gst_parts.append(
+                    f"WHEN {settlement_date_col} >= '{eff_from_esc}' AND {settlement_date_col} <= '{eff_to_esc}' THEN {g_sql}"
+                )
+            else:
+                fee_parts.append(f"WHEN {settlement_date_col} >= '{eff_from_esc}' THEN {f_sql}")
+                gst_parts.append(f"WHEN {settlement_date_col} >= '{eff_from_esc}' THEN {g_sql}")
+        # Fallback to latest card's inner CASE (invalid/NULL date -> latest, like Python)
+        latest = cards[-1]
+        latest_eff = dict(latest)
+        latest_eff["merchants"] = {**top_merchants, **(latest.get("merchants", {}) or {})}
+        f0, g0, _ = _build_single_card_fee_sql(latest_eff, amount_col, inst_col, merchant_col)
         fee_sql = "CASE " + " ".join(fee_parts) + f" ELSE {f0} END"
         gst_sql = "CASE " + " ".join(gst_parts) + f" ELSE {g0} END"
         return fee_sql, gst_sql
@@ -139,15 +171,30 @@ def build_tolerance_case_sql(
     """Build CASE that yields per-row tolerance_paise (merchant + instrument + version aware)."""
     cards = getattr(fee_engine, "rate_cards", None)
     if cards and len(cards) > 1:
+        top_merchants = (getattr(fee_engine, "config", {}) or {}).get("merchants", {}) or {}
         parts = []
         for card in reversed(cards):
             eff_from = card.get("effective_from", "1970-01-01")
             eff_from_esc = str(eff_from).replace("'", "''")
+            eff_to = card.get("effective_to")
+            card_eff = dict(card)
+            card_eff["merchants"] = {**top_merchants, **(card.get("merchants", {}) or {})}
             _, _, tol_sql = _build_single_card_fee_sql(
-                card, "t.amount_paise", inst_col, merchant_col
+                card_eff, "t.amount_paise", inst_col, merchant_col
             )
-            parts.append(f"WHEN {settlement_date_col} >= '{eff_from_esc}' THEN {tol_sql}")
-        _, _, tol0 = _build_single_card_fee_sql(cards[0], "t.amount_paise", inst_col, merchant_col)
+            if eff_to:
+                eff_to_esc = str(eff_to).replace("'", "''")
+                parts.append(
+                    f"WHEN {settlement_date_col} >= '{eff_from_esc}' AND {settlement_date_col} <= '{eff_to_esc}' THEN {tol_sql}"
+                )
+            else:
+                parts.append(f"WHEN {settlement_date_col} >= '{eff_from_esc}' THEN {tol_sql}")
+        _, _, tol0 = _build_single_card_fee_sql(
+            {**cards[-1], "merchants": {**top_merchants, **(cards[-1].get("merchants", {}) or {})}},
+            "t.amount_paise",
+            inst_col,
+            merchant_col,
+        )
         return "CASE " + " ".join(parts) + f" ELSE {tol0} END"
     card = (
         cards[0]
@@ -160,6 +207,31 @@ def build_tolerance_case_sql(
     )
     _, _, tol_sql = _build_single_card_fee_sql(card, "t.amount_paise", inst_col, merchant_col)
     return tol_sql
+
+
+def _settlement_source(data_dir: str, date_str: str | None) -> tuple[str, list[str]]:
+    """Prefer curated (normalized) files from validate; fall back to raw.
+
+    Curated files are written by validate_latest_settlement as
+    curated_settlement_*.csv so PG INR->paise/date/instrument normalization
+    survives into the MERGE. Uses settlement_*.csv (never *.csv) so
+    quarantine_*.csv is never merged.
+    """
+    import glob as _glob
+
+    if date_str:
+        stem = date_str.replace("-", "")
+        curated = os.path.join(data_dir, f"curated_settlement_{stem}.csv")
+        if os.path.exists(curated):
+            return curated.replace("\\", "/"), [curated]
+        raw = os.path.join(data_dir, f"settlement_{stem}.csv")
+        return raw.replace("\\", "/"), [raw]
+    curated_files = sorted(_glob.glob(os.path.join(data_dir, "curated_settlement_*.csv")))
+    if curated_files:
+        pattern = os.path.join(data_dir, "curated_settlement_*.csv")
+        return pattern.replace("\\", "/"), curated_files
+    pattern = os.path.join(data_dir, "settlement_*.csv")
+    return pattern.replace("\\", "/"), sorted(_glob.glob(pattern))
 
 
 def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
@@ -177,12 +249,7 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
     settings = get_settings()
     project_root = settings.project_root
     data_dir = os.path.join(project_root, "data")
-    if date_str:
-        file_pattern = f"settlement_{date_str.replace('-', '')}.csv"
-        data_path = os.path.join(data_dir, file_pattern)
-    else:
-        data_path = os.path.join(data_dir, "*.csv")
-    data_path = data_path.replace("\\", "/")
+    data_path, settlement_files = _settlement_source(data_dir, date_str)
 
     logger.info("Initializing Spark Session for Batch Reconciliation")
     spark = get_spark_session("ReconciliationJob")
@@ -207,16 +274,14 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
 
     try:
         if settings.load_csv_on_driver:
-            import glob
-
             import pandas as pd
 
-            host_path = os.path.join(project_root, "data", file_pattern if date_str else "*.csv")
-            bank_df = spark.createDataFrame(
-                pd.read_csv(host_path)
-                if date_str
-                else pd.concat([pd.read_csv(f) for f in glob.glob(host_path)], ignore_index=True)
-            )
+            if date_str:
+                bank_df = spark.createDataFrame(pd.read_csv(settlement_files[0]))
+            else:
+                bank_df = spark.createDataFrame(
+                    pd.concat([pd.read_csv(f) for f in settlement_files], ignore_index=True)
+                )
         else:
             bank_df = (
                 spark.read.format("csv")
@@ -230,7 +295,12 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
     import pyspark.sql.functions as F
     from pyspark.sql.window import Window
 
-    window_spec = Window.partitionBy("transaction_id").orderBy(F.col("settlement_date").desc())
+    window_spec = Window.partitionBy("transaction_id").orderBy(
+        F.col("settlement_date").desc(),
+        F.col("bank_ref_id").asc(),
+        F.col("settlement_id").asc(),
+    )
+    settlement_rows_total = bank_df.filter(F.col("transaction_id").isNotNull()).count()
     bank_df_dedup = (
         bank_df.filter(F.col("transaction_id").isNotNull())
         .withColumn("row_num", F.row_number().over(window_spec))
@@ -295,6 +365,10 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
     try:
         spark.sql(merge_sql)
     except Exception as exc:
+        import contextlib as _ctx
+
+        with _ctx.suppress(Exception):
+            bank_df_dedup.unpersist()
         raise RuntimeError(f"Reconciliation MERGE failed: {exc}") from exc
 
     # Mart: refresh the BI-ready view over the reconciled table so Trino/Metabase
@@ -316,9 +390,20 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
     # Observability: report outcome distribution (FAANG expects match-rate metrics).
     # NOTE: status counts below are table-level (cumulative); settlement_rows_deduped
     # scopes the batch so MATCHED can be judged per-run.
-    counts = {}
+    # Fail closed: dedup count must succeed, else the batch is unknown (never return {}).
+    counts: dict[str, int] = {"settlement_rows_total": settlement_rows_total}
+    counts["settlement_rows_deduped"] = bank_df_dedup.count()
+    counts["duplicate_settlement_rows"] = max(
+        0, settlement_rows_total - counts["settlement_rows_deduped"]
+    )
+    if counts["duplicate_settlement_rows"]:
+        counts["batch_EXCEPTION_DUPLICATE_SETTLEMENT"] = counts["duplicate_settlement_rows"]
+        logger.warning(
+            "Duplicate settlements deduped: %d rows collapsed (deterministic tiebreak "
+            "settlement_date DESC, bank_ref_id/settlement_id ASC)",
+            counts["duplicate_settlement_rows"],
+        )
     try:
-        counts["settlement_rows_deduped"] = bank_df_dedup.count()
         for row in spark.sql(
             f"SELECT reconciliation_status, COUNT(*) AS n FROM {table} GROUP BY reconciliation_status"
         ).collect():
@@ -331,8 +416,8 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
             f"GROUP BY t.reconciliation_status"
         ).collect():
             counts[f"batch_{row['st']}"] = row["n"]
-    except Exception as exc:  # metrics must never fail the job
-        logger.warning(f"Could not fetch reconciliation counts: {exc}")
+    except Exception as exc:
+        raise RuntimeError(f"Could not fetch reconciliation counts: {exc}") from exc
     finally:
         import contextlib
 
@@ -340,6 +425,65 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
             bank_df_dedup.unpersist()
     logger.info(f"Reconciliation batch complete: {counts}")
     return counts
+
+
+def maintain_tables(
+    spark=None, tables: list[str] | None = None, retain_last: int | None = None
+) -> dict:
+    """Binpack + expire snapshots on Iceberg tables (prod parity with bench hygiene).
+
+    Never raises: per-statement failures are logged and skipped so maintenance
+    can never fail a batch. Opens its own session when spark is None.
+    """
+    import contextlib as _ctx
+
+    from src.common.config import get_spark_session
+    from src.common.settings import get_settings
+
+    own_session = spark is None
+    if own_session:
+        spark = get_spark_session("Maintenance")
+    try:
+        settings = get_settings()
+        targets = tables or [settings.webhook_table, settings.dlq_table]
+        retain = retain_last or int(os.environ.get("MAINTAIN_RETAIN_LAST", "7"))
+        out: dict = {}
+        for raw in targets:
+            tbl = _qualified_table(raw)
+            parts = tbl.split(".")
+            catalog, rest = parts[0], ".".join(parts[1:])
+            entry: dict = {}
+            try:
+                entry["files_before"] = spark.sql(
+                    f"SELECT COUNT(*) AS n FROM {tbl}.files"
+                ).collect()[0]["n"]
+            except Exception as exc:
+                logger.warning(f"Maintenance: file count before failed for {tbl}: {exc}")
+            try:
+                spark.sql(
+                    f"CALL {catalog}.system.rewrite_data_files(table => '{rest}', strategy => 'binpack')"
+                )
+            except Exception as exc:
+                logger.warning(f"Maintenance: binpack failed for {tbl}: {exc}")
+            try:
+                spark.sql(
+                    f"CALL {catalog}.system.expire_snapshots(table => '{rest}', retain_last => {retain})"
+                )
+            except Exception as exc:
+                logger.warning(f"Maintenance: expire_snapshots failed for {tbl}: {exc}")
+            try:
+                entry["files_after"] = spark.sql(
+                    f"SELECT COUNT(*) AS n FROM {tbl}.files"
+                ).collect()[0]["n"]
+            except Exception as exc:
+                logger.warning(f"Maintenance: file count after failed for {tbl}: {exc}")
+            out[tbl] = entry
+        logger.info(f"Maintenance complete: {out}")
+        return out
+    finally:
+        if own_session:
+            with _ctx.suppress(Exception):
+                spark.stop()
 
 
 if __name__ == "__main__":
