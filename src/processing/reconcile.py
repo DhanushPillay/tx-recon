@@ -26,6 +26,47 @@ def _qualified_table(name: str) -> str:
     return name
 
 
+def _append_leg(fee_cases, gst_cases, tol_cases, pred, amount_col, mdr_bps, gst_bps, tol):
+    """Append one WHEN leg to fee/gst/tolerance CASE lists (single source for leg shape)."""
+    fee_cases.append(f"WHEN {pred} THEN (({amount_col} * {mdr_bps} + 5000) DIV 10000)")
+    if gst_bps > 0:
+        gst_cases.append(
+            f"WHEN {pred} THEN ((((({amount_col} * {mdr_bps} + 5000) DIV 10000) * {gst_bps} + 5000) DIV 10000))"
+        )
+    else:
+        gst_cases.append(f"WHEN {pred} THEN 0")
+    tol_cases.append(f"WHEN {pred} THEN {tol}")
+
+
+def _versioned_wrap(cards, top_merchants, date_col, build):
+    """Wrap per-card SQL fragments in settlement_date range WHENs (latest-first, ELSE latest).
+
+    build(card_eff) -> tuple of fragments; returns tuple of versioned CASEs.
+    Mirrors FeeEngine._card_for_date: NULL/malformed dates match nothing -> latest.
+    """
+    per = []
+    for card in reversed(cards):
+        eff_from_esc = str(card.get("effective_from", "1970-01-01")).replace("'", "''")
+        eff_to = card.get("effective_to")
+        card_eff = dict(card)
+        card_eff["merchants"] = {**top_merchants, **(card.get("merchants", {}) or {})}
+        if eff_to:
+            eff_to_esc = str(eff_to).replace("'", "''")
+            cond = f"{date_col} >= '{eff_from_esc}' AND {date_col} <= '{eff_to_esc}'"
+        else:
+            cond = f"{date_col} >= '{eff_from_esc}'"
+        per.append((cond, build(card_eff)))
+    latest_eff = dict(cards[-1])
+    latest_eff["merchants"] = {**top_merchants, **(cards[-1].get("merchants", {}) or {})}
+    latest = build(latest_eff)
+    return tuple(
+        "CASE "
+        + " ".join(f"WHEN {cond} THEN {frag[i]}" for cond, frag in per)
+        + f" ELSE {latest[i]} END"
+        for i in range(len(latest))
+    )
+
+
 def _build_single_card_fee_sql(
     card: dict, amount_col: str, inst_col: str, merchant_col: str | None
 ):
@@ -47,19 +88,15 @@ def _build_single_card_fee_sql(
             tol = int(rate.get("tolerance_paise", default_tol))
             inst_esc = inst.replace("'", "''")
             if merchant_col:
-                fee_cases.append(
-                    f"WHEN {merchant_col} = '{merch_esc}' AND {inst_col} = '{inst_esc}' THEN (({amount_col} * {mdr_bps} + 5000) DIV 10000)"
-                )
-                if gst_bps > 0:
-                    gst_cases.append(
-                        f"WHEN {merchant_col} = '{merch_esc}' AND {inst_col} = '{inst_esc}' THEN ((((({amount_col} * {mdr_bps} + 5000) DIV 10000) * {gst_bps} + 5000) DIV 10000))"
-                    )
-                else:
-                    gst_cases.append(
-                        f"WHEN {merchant_col} = '{merch_esc}' AND {inst_col} = '{inst_esc}' THEN 0"
-                    )
-                tol_cases.append(
-                    f"WHEN {merchant_col} = '{merch_esc}' AND {inst_col} = '{inst_esc}' THEN {tol}"
+                _append_leg(
+                    fee_cases,
+                    gst_cases,
+                    tol_cases,
+                    f"{merchant_col} = '{merch_esc}' AND {inst_col} = '{inst_esc}'",
+                    amount_col,
+                    mdr_bps,
+                    gst_bps,
+                    tol,
                 )
 
     instruments = card.get("instruments", {}) or {}
@@ -70,16 +107,16 @@ def _build_single_card_fee_sql(
         gst_bps = int(round(float(gst_pct) * 100))
         tol = int(rate.get("tolerance_paise", default_tol))
         inst_esc = inst.replace("'", "''")
-        fee_cases.append(
-            f"WHEN {inst_col} = '{inst_esc}' THEN (({amount_col} * {mdr_bps} + 5000) DIV 10000)"
+        _append_leg(
+            fee_cases,
+            gst_cases,
+            tol_cases,
+            f"{inst_col} = '{inst_esc}'",
+            amount_col,
+            mdr_bps,
+            gst_bps,
+            tol,
         )
-        if gst_bps > 0:
-            gst_cases.append(
-                f"WHEN {inst_col} = '{inst_esc}' THEN ((((({amount_col} * {mdr_bps} + 5000) DIV 10000) * {gst_bps} + 5000) DIV 10000))"
-            )
-        else:
-            gst_cases.append(f"WHEN {inst_col} = '{inst_esc}' THEN 0")
-        tol_cases.append(f"WHEN {inst_col} = '{inst_esc}' THEN {tol}")
 
     fee_sql = (
         "CASE "
@@ -117,36 +154,12 @@ def build_fee_case_sql(
         # NULL/malformed dates match nothing -> ELSE latest (mirrors FeeEngine._card_for_date).
         # Top-level merchants inherit into every card (mirrors FeeEngine get_rate_for_date).
         top_merchants = (getattr(fee_engine, "config", {}) or {}).get("merchants", {}) or {}
-        fee_parts, gst_parts = [], []
-        # Latest first so WHEN matches most recent applicable
-        for card in reversed(cards):
-            eff_from = card.get("effective_from", "1970-01-01")
-            eff_from_esc = str(eff_from).replace("'", "''")
-            eff_to = card.get("effective_to")
-            card_eff = dict(card)
-            card_eff["merchants"] = {**top_merchants, **(card.get("merchants", {}) or {})}
-            f_sql, g_sql, _ = _build_single_card_fee_sql(
-                card_eff, amount_col, inst_col, merchant_col
-            )
-            if eff_to:
-                eff_to_esc = str(eff_to).replace("'", "''")
-                fee_parts.append(
-                    f"WHEN {settlement_date_col} >= '{eff_from_esc}' AND {settlement_date_col} <= '{eff_to_esc}' THEN {f_sql}"
-                )
-                gst_parts.append(
-                    f"WHEN {settlement_date_col} >= '{eff_from_esc}' AND {settlement_date_col} <= '{eff_to_esc}' THEN {g_sql}"
-                )
-            else:
-                fee_parts.append(f"WHEN {settlement_date_col} >= '{eff_from_esc}' THEN {f_sql}")
-                gst_parts.append(f"WHEN {settlement_date_col} >= '{eff_from_esc}' THEN {g_sql}")
-        # Fallback to latest card's inner CASE (invalid/NULL date -> latest, like Python)
-        latest = cards[-1]
-        latest_eff = dict(latest)
-        latest_eff["merchants"] = {**top_merchants, **(latest.get("merchants", {}) or {})}
-        f0, g0, _ = _build_single_card_fee_sql(latest_eff, amount_col, inst_col, merchant_col)
-        fee_sql = "CASE " + " ".join(fee_parts) + f" ELSE {f0} END"
-        gst_sql = "CASE " + " ".join(gst_parts) + f" ELSE {g0} END"
-        return fee_sql, gst_sql
+        return _versioned_wrap(
+            cards,
+            top_merchants,
+            settlement_date_col,
+            lambda c: _build_single_card_fee_sql(c, amount_col, inst_col, merchant_col)[:2],
+        )
 
     # Single card path
     card = (
@@ -172,30 +185,12 @@ def build_tolerance_case_sql(
     cards = getattr(fee_engine, "rate_cards", None)
     if cards and len(cards) > 1:
         top_merchants = (getattr(fee_engine, "config", {}) or {}).get("merchants", {}) or {}
-        parts = []
-        for card in reversed(cards):
-            eff_from = card.get("effective_from", "1970-01-01")
-            eff_from_esc = str(eff_from).replace("'", "''")
-            eff_to = card.get("effective_to")
-            card_eff = dict(card)
-            card_eff["merchants"] = {**top_merchants, **(card.get("merchants", {}) or {})}
-            _, _, tol_sql = _build_single_card_fee_sql(
-                card_eff, "t.amount_paise", inst_col, merchant_col
-            )
-            if eff_to:
-                eff_to_esc = str(eff_to).replace("'", "''")
-                parts.append(
-                    f"WHEN {settlement_date_col} >= '{eff_from_esc}' AND {settlement_date_col} <= '{eff_to_esc}' THEN {tol_sql}"
-                )
-            else:
-                parts.append(f"WHEN {settlement_date_col} >= '{eff_from_esc}' THEN {tol_sql}")
-        _, _, tol0 = _build_single_card_fee_sql(
-            {**cards[-1], "merchants": {**top_merchants, **(cards[-1].get("merchants", {}) or {})}},
-            "t.amount_paise",
-            inst_col,
-            merchant_col,
-        )
-        return "CASE " + " ".join(parts) + f" ELSE {tol0} END"
+        return _versioned_wrap(
+            cards,
+            top_merchants,
+            settlement_date_col,
+            lambda c: _build_single_card_fee_sql(c, "t.amount_paise", inst_col, merchant_col)[2:],
+        )[0]
     card = (
         cards[0]
         if cards
@@ -453,30 +448,25 @@ def maintain_tables(
             parts = tbl.split(".")
             catalog, rest = parts[0], ".".join(parts[1:])
             entry: dict = {}
-            try:
-                entry["files_before"] = spark.sql(
-                    f"SELECT COUNT(*) AS n FROM {tbl}.files"
-                ).collect()[0]["n"]
-            except Exception as exc:
-                logger.warning(f"Maintenance: file count before failed for {tbl}: {exc}")
-            try:
-                spark.sql(
-                    f"CALL {catalog}.system.rewrite_data_files(table => '{rest}', strategy => 'binpack')"
-                )
-            except Exception as exc:
-                logger.warning(f"Maintenance: binpack failed for {tbl}: {exc}")
-            try:
-                spark.sql(
-                    f"CALL {catalog}.system.expire_snapshots(table => '{rest}', retain_last => {retain})"
-                )
-            except Exception as exc:
-                logger.warning(f"Maintenance: expire_snapshots failed for {tbl}: {exc}")
-            try:
-                entry["files_after"] = spark.sql(
-                    f"SELECT COUNT(*) AS n FROM {tbl}.files"
-                ).collect()[0]["n"]
-            except Exception as exc:
-                logger.warning(f"Maintenance: file count after failed for {tbl}: {exc}")
+            stmts = [
+                ("files_before", f"SELECT COUNT(*) AS n FROM {tbl}.files"),
+                (
+                    None,
+                    f"CALL {catalog}.system.rewrite_data_files(table => '{rest}', strategy => 'binpack')",
+                ),
+                (
+                    None,
+                    f"CALL {catalog}.system.expire_snapshots(table => '{rest}', retain_last => {retain})",
+                ),
+                ("files_after", f"SELECT COUNT(*) AS n FROM {tbl}.files"),
+            ]
+            for key, sql in stmts:
+                try:
+                    res = spark.sql(sql)
+                    if key:
+                        entry[key] = res.collect()[0]["n"]
+                except Exception as exc:
+                    logger.warning(f"Maintenance: {key or 'statement'} failed for {tbl}: {exc}")
             out[tbl] = entry
         logger.info(f"Maintenance complete: {out}")
         return out
