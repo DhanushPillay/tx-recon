@@ -10,7 +10,7 @@ settlement_schema_pl = pa.DataFrameSchema(
             str,
             unique=True,
             nullable=False,
-            checks=[Check.str_matches(r"^tx_[a-f0-9]{12}$")],
+            checks=[Check.str_matches(r"^[A-Za-z0-9_]{4,64}$")],
         ),
         "settled_amount_paise": pa.Column(pl.Int64, Check.gt(0), nullable=False),
         "bank_ref_id": pa.Column(str, nullable=False),
