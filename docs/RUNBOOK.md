@@ -22,6 +22,8 @@ Common causes: schema registry mismatch, producer emitting garbage, Kafka tombst
 
 Pandera validates settlement CSVs before they reach Spark. Rows that fail (negative amounts, duplicate `transaction_id`, bad dates, wrong instrument type) are written to `quarantine_YYYYMMDD.csv` and the pipeline raises `SettlementValidationError`.
 
+Validated rows are persisted as `curated_<basename>.csv` (PG-normalized: INR→paise, ISO dates, canonical instruments). Reconcile merges from the curated file when present, falling back to raw. When debugging a MERGE, inspect the curated file — it is what Spark actually read.
+
 **To reprocess quarantined rows:** fix the source CSV, delete the quarantine file, and re-run the pipeline for that date.
 
 ### MERGE errors
@@ -34,7 +36,7 @@ The MERGE wraps all SQL in a `RuntimeError`. Common causes:
 
 ## Batch drift
 
-`pipeline.py` logs a warning when `settlement_rows_deduped != sum(batch_*)`. This means the MERGE missed rows (NULL guards) or double-counted. Treat as P1: check the dedup window and `WHERE s.transaction_id IS NOT NULL` clause in `reconcile.py`.
+`check_batch_drift` raises `RuntimeError` when `settlement_rows_deduped != sum(batch_*)` (excluding the `batch_EXCEPTION_DUPLICATE_SETTLEMENT` diagnostic). This means the MERGE missed rows (NULL guards) or double-counted. Treat as P1: check the dedup window and `WHERE s.transaction_id IS NOT NULL` clause in `reconcile.py`. Both cron (`run_daily`) and Airflow enforce it, so drift pages instead of logging green.
 
 The `batch_*` keys in the counts dict scope the MERGE to this batch's settlement IDs (joined back to the target), so a stale cumulative `MATCHED` count cannot mask a failing batch.
 
@@ -60,13 +62,17 @@ Mutate one settlement `settled_amount_paise` by +500 paise. Expect `batch_EXCEPT
 
 ### Missing webhook (orphan)
 
-Add a settlement `transaction_id` with no matching webhook row. Expect `EXCEPTION_MISSING_WEBHOOK` placeholder inserted. Second run preserves its status (first `WHEN MATCHED` clause) and only refreshes `bank_ref_id`.
+Add a settlement `transaction_id` with no matching webhook row. Expect `EXCEPTION_MISSING_WEBHOOK` placeholder inserted. Second run preserves its status (first `WHEN MATCHED` clause) and only refreshes `bank_ref_id`. A late-arriving webhook heals the placeholder via the ingestion MERGE (`WHEN MATCHED AND status=MISSING THEN UPDATE` amount/status back to the gateway status).
 
 Run with: `pytest tests/ -m "not integration" -k "chaos or failure or drift"`
 
 ## Replaying data
 
 The pipeline is idempotent. Re-running over the same settlement files converges to identical state.
+
+## Maintenance
+
+`maintain_tables()` runs `binpack` + `expire_snapshots(retain_last=7)` after each MERGE. If MERGE latency creeps up week over week, check `files_after` in the counts log — a growing count means maintenance is disabled (`MAINTAIN_AFTER_MERGE=0`) or failing (it warns, never raises). Tune retention with `MAINTAIN_RETAIN_LAST` (lower = faster, less time-travel).
 
 - **Midway failure:** re-run the script. Successfully processed rows update in place; missed rows insert.
 - **Late corrections:** place the updated CSV in `data/` and re-run. MERGE overwrites based on `transaction_id`.
