@@ -79,22 +79,30 @@ def _build_demo_plan(num_records: int, seed: int = 42) -> list[tuple[str, int, s
     return planned
 
 
-def main() -> dict:
-    parser = argparse.ArgumentParser(description="Daily tx-reconciliation pipeline")
-    parser.add_argument("--date", default=None, help="Settlement date YYYY-MM-DD")
-    parser.add_argument("--num-records", type=int, default=500)
-    parser.add_argument(
-        "--demo",
-        action="store_true",
-        help="Seed the webhook table from the same plan as the settlement CSV, so the demo MERGE matches.",
-    )
-    args = parser.parse_args()
+def check_batch_drift(counts: dict, ds: str | None = None) -> None:
+    """Fail closed if batch statuses don't tile deduped rows (shared cron/DAG)."""
+    batch_n = counts.get("settlement_rows_deduped", 0)
+    batch_total = sum(v for k, v in counts.items() if k.startswith("batch_"))
+    tile_total = batch_total - counts.get("batch_EXCEPTION_DUPLICATE_SETTLEMENT", 0)
+    if batch_n and batch_total and tile_total != batch_n:
+        raise RuntimeError(
+            f"Batch drift{f' for ds={ds}' if ds else ''}: deduped {batch_n} "
+            f"but batch statuses tile {tile_total} — investigate dedup/window."
+        )
 
+
+def run_daily(
+    date_str: str | None = None,
+    num_records: int = 500,
+    seed: int = 42,
+    demo: bool = False,
+) -> dict:
+    """Shared daily entrypoint for cron/main and Airflow DAG (single source of truth)."""
     from src.generators.settlement_generator import generate_settlement_file
-    from src.processing.reconcile import run_reconciliation
+    from src.processing.reconcile import maintain_tables, run_reconciliation
     from src.validation.validate_settlement import validate_latest_settlement
 
-    planned = _build_demo_plan(args.num_records) if args.demo else None
+    planned = _build_demo_plan(num_records, seed=seed) if demo else None
     spark = None
     if planned is not None:
         from src.common.config import get_spark_session
@@ -112,26 +120,38 @@ def main() -> dict:
             spark = None
         logger.info(f"Seeded {seeded} demo webhooks")
     logger.info("Step 1/3: generating settlement file")
-    generate_settlement_file(
-        num_records=args.num_records, seed=42, date_str=args.date, planned=planned
-    )
+    generate_settlement_file(num_records=num_records, seed=seed, date_str=date_str, planned=planned)
     logger.info("Step 2/3: validating settlement file")
-    validate_latest_settlement(date_str=args.date)
+    validate_latest_settlement(date_str=date_str)
     logger.info("Step 3/3: running reconciliation MERGE")
-    counts = run_reconciliation(date_str=args.date)
+    counts = run_reconciliation(date_str=date_str)
     logger.info(f"Pipeline done: {counts}")
+    check_batch_drift(counts, ds=date_str)
     batch_n = counts.get("settlement_rows_deduped", 0)
     batch_matched = counts.get("batch_MATCHED", counts.get("MATCHED", 0))
-    # Drift guard: batch-scoped statuses must sum to deduped settlements;
-    # otherwise MERGE missed rows or double counted.
-    batch_total = sum(v for k, v in counts.items() if k.startswith("batch_"))
-    if batch_n and batch_total and batch_total != batch_n:
-        logger.warning(
-            f"Batch drift: deduped {batch_n} but batch statuses sum {batch_total} — investigate dedup/window."
-        )
-    if args.demo and batch_n and not batch_matched:
-        logger.warning("Demo matched nothing — seeding and settlement plan diverged, investigate.")
+    if demo and batch_n and not batch_matched:
+        raise RuntimeError("Demo matched nothing — seeding and settlement plan diverged.")
+    try:
+        counts["maintenance"] = maintain_tables()
+    except Exception as exc:
+        logger.warning(f"Maintenance skipped: {exc}")
     return counts
+
+
+def main() -> dict:
+    parser = argparse.ArgumentParser(description="Daily tx-reconciliation pipeline")
+    parser.add_argument("--date", default=None, help="Settlement date YYYY-MM-DD")
+    parser.add_argument("--num-records", type=int, default=500)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Seed the webhook table from the same plan as the settlement CSV, so the demo MERGE matches.",
+    )
+    args = parser.parse_args()
+    return run_daily(
+        date_str=args.date, num_records=args.num_records, seed=args.seed, demo=args.demo
+    )
 
 
 if __name__ == "__main__":
