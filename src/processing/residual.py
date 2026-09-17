@@ -164,7 +164,6 @@ def apply_residual(
     """
     from src.processing.reconcile import _qualified_table
 
-    _qualified_table(table)
     table = _qualified_table(table)
 
     if fee_engine is None:
