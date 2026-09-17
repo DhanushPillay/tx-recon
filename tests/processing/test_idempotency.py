@@ -39,7 +39,8 @@ def test_reconciliation_is_idempotent():
             processing_run_id string,
             reconciliation_status string,
             bank_ref_id string,
-            ingested_at timestamp
+            ingested_at timestamp,
+            instrument_type string
         ) USING iceberg"""
     )
 
