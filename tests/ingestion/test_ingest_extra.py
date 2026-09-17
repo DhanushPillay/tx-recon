@@ -98,6 +98,8 @@ def test_write_batch_merges_and_dlqs(mocker):
     # valid.withColumn x3 -> enriched (has createOrReplaceTempView)
     valid.withColumn.return_value.withColumn.return_value.withColumn.return_value = enriched
     invalid = MagicMock(name="invalid")
+    invalid.dropDuplicates.return_value = invalid
+    invalid.isEmpty.return_value = False
     batch.filter.side_effect = [valid, invalid]
     mocker.patch.object(ing, "lit", return_value=MagicMock())
     mocker.patch.object(ing, "current_timestamp", return_value=MagicMock())
