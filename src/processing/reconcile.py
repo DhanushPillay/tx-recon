@@ -268,7 +268,7 @@ def _load_mart_sql(project_root: str, source_table: str, mart_table: str) -> tup
     )
 
 
-def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
+def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
     """Run batch MERGE of settlement CSVs into the webhooks Iceberg table.
 
     Returns a dict of outcome counts: {"MATCHED": n, "EXCEPTION_FEE_MISMATCH": n,
@@ -430,7 +430,7 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
     # NOTE: status counts below are table-level (cumulative); settlement_rows_deduped
     # scopes the batch so MATCHED can be judged per-run.
     # Fail closed: dedup count must succeed, else the batch is unknown (never return {}).
-    counts: dict[str, int] = {"settlement_rows_total": settlement_rows_total}
+    counts: dict[str, int | float] = {"settlement_rows_total": settlement_rows_total}
     counts["settlement_rows_deduped"] = settlement_rows_deduped
     counts["duplicate_settlement_rows"] = max(
         0, settlement_rows_total - counts["settlement_rows_deduped"]
