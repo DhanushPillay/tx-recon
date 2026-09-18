@@ -30,8 +30,8 @@ logs.txt
 .opencode/
 results*.json
 .serena
+.playwright-mcp/
 .tmp/
 tmp/
 ~/
 merge_results.py
-

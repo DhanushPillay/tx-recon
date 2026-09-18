@@ -114,6 +114,8 @@ Single-node vs multi-node (Hadoop YARN+HDFS). Full method, hardware fingerprints
 | Iceberg MERGE (single-node, `SPARK_MODE=local` 28 cores) | **57,582 rows/sec** @ 100k 50% (0.87s), **163,747 rows/sec** @ 1M 50% (3.05s) — `tests/performance/results_iceberg.json` |
 | Iceberg MERGE (multi-node, `SPARK_MODE=yarn` 14 cores, `hdfs://namenode:8020/warehouse`) | **23,710 rows/sec** @ 100k 50% (2.11s), **71k rows/sec** @ 1M 50% (7.02s) via `tx-recon-driver:bench` inside `tx-recon_default` — `tests/performance/results_iceberg_yarn_hdfs.json`; YARN +76–191% slower at ≤1M from staging/4096MB NM, wins at 5M+ |
 
+Figures last verified 13–16 Sep 2026 (see `docs/BENCHMARKS.md`); full re-run pending — treat as last-known, not current.
+
 ## Project structure
 
 ```

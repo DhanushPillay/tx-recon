@@ -15,6 +15,8 @@ Spark: 3.5.1, JDK 17 (host 17.0.13 Temurin, NMs 17.0.15 openjdk)
 
 Each suite writes a per-suite file (`results_accuracy.json`, `results_pandera.json`, `results_iceberg.json`). The orchestrator `tests/performance/run_benchmarks.py` aggregates them into `tests/performance/results.json`. Treat the per-suite files as the cited source; `results.json` is a convenience copy.
 
+Last-verified status (18 Sep 2026): the figures below were measured 13-16 Sep 2026 on Python 3.11. The per-suite JSON files are gitignored, so this prose is the record. A same-host spot-check on 18 Sep 2026 under Python 3.10 (within the supported `>=3.10,<3.13` range) reproduced the tuned 100k MERGE rows (10%: 0.87s; 50%: 0.94s, broadcast join); 500k/1M re-runs are pending, so treat all figures as last-known, not current.
+
 ## Accuracy harness (sealed key)
 
 Correctness first. A fast matcher that categorizes records incorrectly corrupts the ledger.
@@ -39,7 +41,7 @@ Measures sustained throughput and serial flush latency against a local Redpanda.
   python tests/performance/kafka_producer_benchmark.py --count 5000 --acks all --compression lz4
   python tests/performance/run_benchmarks.py --suite kafka --kafka-count 5000 --kafka-acks all
   ```
-- **Measured result (Redpanda `localhost:19092`, 13 Sep 2026):**
+- **Measured result (Redpanda `localhost:19092`, last verified 13 Sep 2026; an 18 Sep 2026 same-host spot-check measured ~107k msgs/sec, full re-run pending):**
   - Throughput: **131,887 msgs/sec** (async, 5000 msgs after 5000 warmup)
   - Ack latency (serial flush, single sample of 1000): **p50 0.73ms / p95 0.94ms / p99 1.31ms**, mean 0.77ms, max 10.06ms
   - Config: `acks=all`, `lz4`, 1KB records. Broker, tuning, and `WARMUP` are part of the claim.
@@ -56,7 +58,7 @@ Compares validation paths at the batch boundary on the same in-memory DataFrame.
   python tests/performance/pandas_validation_benchmark.py
   # writes tests/performance/results_pandera.json
   ```
-- **Measured result (`results_pandera.json`, 7 iterations, seed 7, 13 Sep 2026):**
+- **Measured result (`results_pandera.json`, 7 iterations, seed 7, last verified 13 Sep 2026; an 18 Sep 2026 spot-check matched or beat these at ≤1M rows but measured ~62% lower manual-pandas throughput at 10M rows on this host, full re-run pending):**
 
   | Rows | Manual pandas | Polars | Pandera | Pydantic |
   | :--- | :--- | :--- | :--- | :--- |
