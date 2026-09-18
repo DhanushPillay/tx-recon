@@ -85,9 +85,9 @@ def test_maintain_tables_rewrites_and_expires():
 def test_maintain_tables_never_raises():
     spark = MagicMock()
     spark.sql.side_effect = RuntimeError("nessie down")
-    assert rec.maintain_tables(spark=spark, tables=["nessie.db.webhooks"]) == {
-        "nessie.db.webhooks": {}
-    }
+    out = rec.maintain_tables(spark=spark, tables=["nessie.db.webhooks"])
+    assert out["nessie.db.webhooks"]["status"] == "failed"
+    assert "nessie down" in out["nessie.db.webhooks"]["error"]
 
 
 def test_run_reconciliation_missing_file_raises():

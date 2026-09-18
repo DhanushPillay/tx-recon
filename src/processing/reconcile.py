@@ -237,6 +237,37 @@ def _settlement_source(data_dir: str, date_str: str | None) -> tuple[str, list[s
     return pattern.replace("\\", "/"), sorted(_glob.glob(pattern))
 
 
+def _load_mart_sql(project_root: str, source_table: str, mart_table: str) -> tuple[str, str]:
+    """Load the newest sql/marts/migrations/V*__fact_reconciliation.sql migration.
+
+    Single source of truth for the mart DDL — the inline CTAS it replaces and
+    the checked-in hand-run copy (sql/marts/fact_reconciliation.sql) both derive
+    from these files, so ad-hoc DDL cannot drift. Returns (sql, version).
+    Falls back to the V1 inline copy if the migrations dir is absent (tests).
+    """
+    import glob as _glob
+
+    files = sorted(_glob.glob(os.path.join(project_root, "sql", "marts", "migrations", "V*.sql")))
+    if files:
+        path = files[-1]
+        with open(path) as f:
+            body = f.read()
+        version = os.path.basename(path).split("__")[0]
+        return (
+            body.replace("__SOURCE_TABLE__", source_table).replace("__MART_TABLE__", mart_table),
+            version,
+        )
+    return (
+        f"CREATE OR REPLACE TABLE {mart_table} USING iceberg AS "
+        "SELECT transaction_id, amount_paise, merchant_id, instrument_type, gateway_status, "
+        "reconciliation_status AS status, bank_ref_id, "
+        "CAST(timestamp_utc AS TIMESTAMP) AS transacted_at, "
+        "CASE WHEN reconciliation_status = 'MATCHED' THEN amount_paise "
+        f"ELSE NULL END AS matched_amount_paise FROM {source_table}",
+        "inline",
+    )
+
+
 def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
     """Run batch MERGE of settlement CSVs into the webhooks Iceberg table.
 
@@ -383,22 +414,15 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
 
     # Mart: materialize a BI-ready snapshot table over the reconciled data so
     # Trino/Metabase scan a compact snapshot, not the full mutable table.
-    # Same SELECT as sql/marts/fact_reconciliation.sql. Full rewrite per batch
-    # is fine at this scale; graduate to incremental merge when batches grow.
+    # DDL comes from sql/marts/migrations (newest V* file); full rewrite per
+    # batch is fine at this scale, graduate to incremental merge when batches grow.
     namespace = table.rsplit(".", 1)[0]
     try:
-        spark.sql(
-            f"CREATE OR REPLACE TABLE {namespace}.fact_reconciliation USING iceberg "
-            "TBLPROPERTIES ("
-            "'write.target-file-size-bytes' = '134217728', "
-            "'write.parquet.compression-codec' = 'zstd') AS "
-            "SELECT transaction_id, amount_paise, merchant_id, instrument_type, gateway_status, "
-            "reconciliation_status AS status, bank_ref_id, "
-            "CAST(timestamp_utc AS TIMESTAMP) AS transacted_at, "
-            "CASE WHEN reconciliation_status = 'MATCHED' THEN amount_paise "
-            "ELSE NULL END AS matched_amount_paise "
-            f"FROM {table}"
+        _mart_sql, _mart_version = _load_mart_sql(
+            project_root, table, f"{namespace}.fact_reconciliation"
         )
+        spark.sql(_mart_sql)
+        logger.info(f"mart {_mart_version} refreshed: {namespace}.fact_reconciliation")
     except Exception as exc:  # mart must never fail the job
         logger.warning(f"Could not refresh fact_reconciliation table: {exc}")
 
@@ -450,13 +474,40 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
             logger.warning(f"Match-rate SLO breach: {_rate:.2%} < {_slo:.0%} (batch)")
     try:  # Late SLA: MISSING_WEBHOOK older than N days -> LATE_UNRESOLVED
         _days = int(_os.environ.get("LATE_SLA_DAYS", "7"))
+        _late_where = (
+            f"reconciliation_status = '{EXCEPTION_MISSING_WEBHOOK}' "
+            f"AND to_date(timestamp_utc) < date_sub(current_date(), {_days})"
+        )
+        # Side-output count first: the UPDATE below returns no row count, and
+        # the oncall alert (runbook) keys off late_unresolved_marked > 0.
+        counts["late_unresolved_marked"] = spark.sql(
+            f"SELECT COUNT(*) AS n FROM {table} WHERE {_late_where}"
+        ).collect()[0]["n"]
+        if counts["late_unresolved_marked"]:
+            logger.warning(
+                f"late-SLA: {counts['late_unresolved_marked']} placeholders older "
+                f"than {_days}d -> {EXCEPTION_LATE_UNRESOLVED}"
+            )
         spark.sql(
             f"UPDATE {table} SET reconciliation_status = '{EXCEPTION_LATE_UNRESOLVED}' "
-            f"WHERE reconciliation_status = '{EXCEPTION_MISSING_WEBHOOK}' "
-            f"AND to_date(timestamp_utc) < date_sub(current_date(), {_days})"
+            f"WHERE {_late_where}"
         )
     except Exception as exc:
         logger.warning(f"Late-SLA marking skipped: {exc}")
+    try:  # Ops depth gauges: DLQ backlog + terminal late pile, one JSON line for scraping
+        _dlq = _qualified_table(settings.dlq_table)
+        counts["dlq_depth"] = spark.sql(f"SELECT COUNT(*) AS n FROM {_dlq}").collect()[0]["n"]
+        counts["late_unresolved_total"] = spark.sql(
+            f"SELECT COUNT(*) AS n FROM {table} "
+            f"WHERE reconciliation_status = '{EXCEPTION_LATE_UNRESOLVED}'"
+        ).collect()[0]["n"]
+    except Exception as exc:
+        logger.warning(f"Depth gauges skipped: {exc}")
+    import json as _json
+
+    logger.info(
+        f"metrics {_json.dumps({k: counts[k] for k in sorted(counts) if isinstance(counts[k], (int, float))})}"
+    )
     return counts
 
 
@@ -504,7 +555,12 @@ def maintain_tables(
                     if key:
                         entry[key] = res.collect()[0]["n"]
                 except Exception as exc:
+                    # Logged AND recorded: never-raise must not mean never-seen.
+                    # entry["error"] is the oncall signal (runbook), not just a log line.
+                    entry["status"] = "failed"
+                    entry["error"] = f"{key or 'statement'}: {exc}"
                     logger.warning(f"Maintenance: {key or 'statement'} failed for {tbl}: {exc}")
+            entry.setdefault("status", "ok")
             out[tbl] = entry
         logger.info(f"Maintenance complete: {out}")
         return out

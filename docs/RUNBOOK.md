@@ -80,6 +80,33 @@ The pipeline is idempotent. Re-running over the same settlement files converges 
   breach; `LATE_SLA_DAYS` (default `7`) flips stale `MISSING_WEBHOOK` placeholders
   to `LATE_UNRESOLVED`, which the batch MERGE preserves across re-runs.
 
+## Oncall
+
+Signals come from one JSON line per batch: `metrics {"batch_match_rate": ...,
+"dlq_depth": ..., "late_unresolved_marked": ..., "late_unresolved_total": ...}`.
+
+- **`batch_match_rate < MATCH_RATE_SLO`** (tolerance breach): owner is whoever
+  changed `config/fee_rates.yaml` last (`git log -- config/fee_rates.yaml`).
+  Do NOT widen `tolerance_paise` to silence it — first check whether a PG
+  changed MDR without notice (compare `EXCEPTION_FEE_MISMATCH` rows' instruments
+  against the active card). Escalate to the payments owner if the mismatch
+  persists across two batches.
+- **`dlq_depth` growing across batches**: upstream is publishing corrupt rows.
+  Inspect `SELECT * FROM nessie.db.webhooks_dlq ORDER BY ingested_at DESC LIMIT 20`,
+  fix the producer, then replay with `python scripts/replay_dlq.py --delete`.
+  Replay when the cause is fixed; never `--delete` before verifying the replayed
+  rows merge (re-run without the flag first and compare counts).
+- **`late_unresolved_marked > 0`**: counterparty webhooks never arrived. Page the
+  gateway integrator; these rows are terminal for the batch MERGE and heal only
+  via a late webhook through ingestion.
+- **Backfill (whole day re-run)**: only when the settlement file itself was wrong.
+  Replace `data/settlement_<date>.csv`, delete its `quarantine_*.csv` marker if any,
+  re-run the pipeline. MERGE converges; do not hand-edit the Iceberg table.
+- **Maintenance `status: failed`** in the `Maintenance complete` log: batch is
+  unaffected (maintenance never raises), but file debt grows. Re-run
+  `maintain_tables()` standalone; if binpack keeps failing, check MinIO disk
+  before the next batch.
+
 ## Maintenance
 
 `maintain_tables()` runs `binpack` + `expire_snapshots(retain_last=7)` after each MERGE. If MERGE latency creeps up week over week, check `files_after` in the counts log — a growing count means maintenance is disabled (`MAINTAIN_AFTER_MERGE=0`) or failing (it warns, never raises). Tune retention with `MAINTAIN_RETAIN_LAST` (lower = faster, less time-travel).
