@@ -41,6 +41,13 @@ def _check_bps(bps, label: str) -> int:
     return bps
 
 
+def _check_tol(tol, label: str) -> int:
+    tol = int(tol)
+    if tol < 0:
+        raise ValueError(f"invalid tolerance_paise {label}: {tol!r}")
+    return tol
+
+
 class FeeEngine:
     def __init__(self, config_path: str | None = None):
         settings = get_settings()
@@ -85,12 +92,20 @@ class FeeEngine:
                 _check_bps(
                     rate.get("mdr_rate_bps", default["mdr_rate_bps"]), f"for {inst} in {label}"
                 )
+                _check_tol(
+                    rate.get("tolerance_paise", default["tolerance_paise"]),
+                    f"for {inst} in {label}",
+                )
             for merch, inst_map in (card.get("merchants", {}) or {}).items():
                 if not isinstance(inst_map, dict):
                     raise ValueError(f"invalid merchants.{merch} in {label}: must be dict")
                 for inst, rate in inst_map.items():
                     _check_bps(
                         rate.get("mdr_rate_bps", default["mdr_rate_bps"]),
+                        f"for merchants.{merch}.{inst} in {label}",
+                    )
+                    _check_tol(
+                        rate.get("tolerance_paise", default["tolerance_paise"]),
                         f"for merchants.{merch}.{inst} in {label}",
                     )
 

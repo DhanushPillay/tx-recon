@@ -36,7 +36,15 @@ settlement_schema = pa.DataFrameSchema(
         "gst_paise": pa.Column(pd.Int64Dtype(), nullable=True, required=False, coerce=True),
         "settlement_id": pa.Column(str, nullable=True, required=False),
         "utr": pa.Column(str, nullable=True, required=False),
-        "currency": pa.Column(str, nullable=True, required=False),
+        # Single-currency ledger: matching math assumes INR paise. Non-INR rows
+        # fail closed into quarantine instead of silently matching wrong rates.
+        # NULL stays allowed (adapter did not populate -> treated as INR).
+        "currency": pa.Column(
+            str,
+            nullable=True,
+            required=False,
+            checks=Check.isin(["INR"]),
+        ),
         "gross_amount_paise": pa.Column(
             pd.Int64Dtype(), nullable=True, required=False, coerce=True
         ),
