@@ -338,7 +338,7 @@ def run_benchmark(scale=None, catalog="nessie", merge_mode="mor", cluster=False)
     spark.conf.set("spark.sql.adaptive.advisoryPartitionSizeInBytes", "64MB")
     spark.conf.set("spark.sql.adaptive.coalescePartitions.initialPartitionNum", "32")
     spark.conf.set("spark.sql.adaptive.optimizeSkewsInReorderedPartitions.enabled", "true")
-    spark.conf.set("spark.sql.autoBroadcastJoinThreshold", "52428800")
+    spark.conf.set("spark.sql.autoBroadcastJoinThreshold", "10485760")
     spark.conf.set("spark.default.parallelism", "32")
     spark.conf.set("spark.sql.shuffle.partitions", "32")
 
