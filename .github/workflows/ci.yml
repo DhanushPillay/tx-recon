@@ -100,15 +100,16 @@ jobs:
             docker compose exec -T redpanda rpk cluster health 2>/dev/null && break
             sleep 2
           done
-          # 403 = bucket exists but needs auth; anything else = keep waiting
+          # 403 = bucket exists but needs auth; anything else = keep waiting.
+          # `|| true`: curl recv-failure (exit 56) mid-boot must retry, not kill the step under set -e.
           for i in $(seq 1 30); do
-            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9000/lakehouse/)
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9000/lakehouse/ || true)
             [ "$code" = "403" ] && break
             sleep 2
           done
           # Trino is slow to boot (~2-4 min); /v1/info 200 = coordinator ready
           for i in $(seq 1 60); do
-            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/v1/info)
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/v1/info || true)
             [ "$code" = "200" ] && break
             sleep 5
           done
@@ -170,7 +171,7 @@ jobs:
             sleep 2
           done
           for i in $(seq 1 30); do
-            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9000/lakehouse/)
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9000/lakehouse/ || true)
             [ "$code" = "403" ] && break
             sleep 2
           done
