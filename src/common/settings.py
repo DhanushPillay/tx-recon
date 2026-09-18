@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     kafka_sasl_mechanism: str = ""
     kafka_sasl_username: str = ""
     kafka_sasl_password: str = ""
+    # Late-data policy: event-time bound for dropDuplicates state + late-row alerts.
+    stream_watermark_delay: str = "1 day"
 
     # Spark
     spark_mode: str = "local"

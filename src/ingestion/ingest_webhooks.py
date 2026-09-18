@@ -1,8 +1,9 @@
 import logging
+import re
 
 import pyspark.sql.functions as F
 from pyspark.sql.avro.functions import from_avro
-from pyspark.sql.functions import col, current_timestamp, expr, lit
+from pyspark.sql.functions import col, current_timestamp, expr, lit, to_timestamp
 from pyspark.sql.streaming.listener import StreamingQueryListener
 
 from src.common.config import get_spark_session
@@ -11,6 +12,20 @@ from src.common.settings import get_settings
 from src.processing.reconcile import _qualified_table
 
 logger = logging.getLogger(__name__)
+
+_WATERMARK_RE = re.compile(r"^(\d+)\s+(seconds?|minutes?|hours?|days?)$", re.IGNORECASE)
+
+
+def parse_watermark_delay(delay: str) -> tuple[int, str]:
+    """Validate STREAM_WATERMARK_DELAY into (amount, unit) for INTERVAL use.
+
+    Allowlist only (digits + time unit) so the parts are safe to interpolate
+    into Spark SQL — the table names already go through _qualified_table.
+    """
+    m = _WATERMARK_RE.match(delay.strip())
+    if not m:
+        raise ValueError(f"Bad STREAM_WATERMARK_DELAY {delay!r}: want e.g. '1 day', '12 hours'")
+    return int(m.group(1)), m.group(2).lower()
 
 
 class _BatchProgressLogger(StreamingQueryListener):
@@ -69,6 +84,13 @@ def run_ingestion():
     parsed_df = df.select(from_avro(col("fixed_value"), WEBHOOK_AVRO_SCHEMA).alias("data")).select(
         "data.*"
     )
+    # Event time for watermarking (Avro carries ISO string; watermark needs TimestampType).
+    # withWatermark bounds dropDuplicates state: keys older than the delay are evicted,
+    # so the state store cannot grow without bound on a long-lived stream.
+    _wm_n, _wm_unit = parse_watermark_delay(settings.stream_watermark_delay)
+    parsed_df = parsed_df.withColumn(
+        "event_time", to_timestamp(col("timestamp_utc"))
+    ).withWatermark("event_time", f"{_wm_n} {_wm_unit}")
 
     # NULL-safe split: corrupt from_avro rows yield NULLs, and NULL > 0 / NULL <= 0
     # are both NULL (3VL), so a naive <= 0 complement silently drops them.
@@ -82,6 +104,15 @@ def run_ingestion():
     logger.info(f"Starting stream to Iceberg {webhook_table} (+ DLQ {dlq_table})")
 
     def _write_batch(batch_df, _epoch: int) -> None:
+        # Late-data policy: count rows arriving older than the watermark delay.
+        # They still merge (effect path is idempotent) but the count is the
+        # side-output the oncall watches; alert threshold lives in the runbook.
+        _late_n = batch_df.filter(
+            col("event_time").isNotNull()
+            & (col("event_time") < F.expr(f"current_timestamp() - INTERVAL {_wm_n} {_wm_unit}"))
+        ).count()
+        if _late_n:
+            logger.warning(f"late-data: {_late_n} rows older than {_wm_n} {_wm_unit} in batch")
         # ponytail: no persist/head — MERGE on empty is no-op cheaper than extra jobs
         v = batch_df.filter(valid_cond).dropDuplicates(["transaction_id"])
         v = (

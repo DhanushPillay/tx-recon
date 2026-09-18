@@ -64,9 +64,10 @@ class MockColumn:
 @patch("src.ingestion.ingest_webhooks.current_timestamp", return_value=MockColumn())
 @patch("src.ingestion.ingest_webhooks.col", return_value=MockColumn())
 @patch("src.ingestion.ingest_webhooks.expr", return_value=MockColumn())
+@patch("src.ingestion.ingest_webhooks.to_timestamp", return_value=MockColumn())
 @patch("src.ingestion.ingest_webhooks.lit", return_value=MockColumn())
 def test_run_ingestion_wiring(
-    mock_lit, mock_expr, mock_col, mock_ts, mock_from_avro, mock_get_spark
+    mock_lit, mock_ts_cast, mock_expr, mock_col, mock_ts, mock_from_avro, mock_get_spark
 ):
     mock_spark = MagicMock()
     mock_get_spark.return_value = mock_spark
@@ -78,6 +79,7 @@ def test_run_ingestion_wiring(
 
     mock_df.withColumn.return_value = mock_df
     mock_df.select.return_value = mock_df
+    mock_df.withWatermark.return_value = mock_df
     mock_df.filter.return_value = mock_df
 
     mock_write = MagicMock()

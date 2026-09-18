@@ -15,6 +15,12 @@ class _FakeCol:
     def __gt__(self, other):
         return _FakeCol()
 
+    def __lt__(self, other):
+        return _FakeCol()
+
+    def __le__(self, other):
+        return _FakeCol()
+
     def __and__(self, other):
         return _FakeCol()
 
@@ -51,6 +57,8 @@ def _mock_stream(spark, parsed, ws, captured):
     rs.option.return_value = rs
     rs.load.return_value.withColumn.return_value = MagicMock()
     rs.load.return_value.withColumn.return_value.select.return_value.select.return_value = parsed
+    parsed.withColumn.return_value = parsed
+    parsed.withWatermark.return_value = parsed
     parsed.writeStream.foreachBatch.return_value = ws
     ws.queryName.return_value = ws
     ws.trigger.return_value = ws
@@ -67,6 +75,7 @@ def _patch_ingest(ing, mocker, spark):
     mocker.patch.object(ing, "get_spark_session", return_value=spark)
     mocker.patch.object(ing, "from_avro", return_value=MagicMock())
     mocker.patch.object(ing, "expr", return_value=MagicMock())
+    mocker.patch.object(ing, "to_timestamp", return_value=_FakeCol())
     mocker.patch.object(ing, "col", side_effect=lambda *a, **k: _FakeCol())
 
 
@@ -100,7 +109,10 @@ def test_write_batch_merges_and_dlqs(mocker):
     invalid = MagicMock(name="invalid")
     invalid.dropDuplicates.return_value = invalid
     invalid.isEmpty.return_value = False
-    batch.filter.side_effect = [valid, invalid]
+    late = MagicMock(name="late")
+    late.count.return_value = 0
+    # _write_batch filters 3x: late-data count, valid split, invalid split
+    batch.filter.side_effect = [late, valid, invalid]
     mocker.patch.object(ing, "lit", return_value=MagicMock())
     mocker.patch.object(ing, "current_timestamp", return_value=MagicMock())
     mocker.patch.object(ing, "F", new=MagicMock())
