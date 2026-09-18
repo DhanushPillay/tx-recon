@@ -196,9 +196,7 @@ def test_maintain_tables_own_session(monkeypatch):
         )
         mock_spark = MagicMock()
         mock_get_spark.return_value = mock_spark
-        mock_spark.sql.return_value = MagicMock(
-            collect=MagicMock(return_value=[{"n": 5}])
-        )
+        mock_spark.sql.return_value = MagicMock(collect=MagicMock(return_value=[{"n": 5}]))
         out = maintain_tables()
     mock_get_spark.assert_called_once_with("Maintenance")
     mock_spark.stop.assert_called_once()
