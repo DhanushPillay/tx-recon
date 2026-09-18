@@ -92,7 +92,7 @@ jobs:
           sed -i 's/^MINIO_ROOT_PASSWORD=.*/MINIO_ROOT_PASSWORD=password/' .env
 
       - name: Start Docker Services for Integration Tests
-        run: docker compose up -d redpanda minio minio-createbucket nessie
+        run: docker compose up -d redpanda minio minio-createbucket nessie trino
 
       - name: Wait for services to initialize
         run: |
@@ -105,6 +105,12 @@ jobs:
             code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9000/lakehouse/)
             [ "$code" = "403" ] && break
             sleep 2
+          done
+          # Trino is slow to boot (~2-4 min); /v1/info 200 = coordinator ready
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/v1/info)
+            [ "$code" = "200" ] && break
+            sleep 5
           done
 
       - name: Run Integration Tests

@@ -9,3 +9,14 @@ variable "aws_region" {
   type        = string
   default     = "ap-south-1"
 }
+
+variable "env" {
+  description = "Environment name: dev, stage, or prod. Select via -var-file=envs/<env>.tfvars."
+  type        = string
+  default     = "dev"
+
+  validation {
+    condition     = contains(["dev", "stage", "prod"], var.env)
+    error_message = "env must be dev, stage, or prod."
+  }
+}

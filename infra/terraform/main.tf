@@ -14,7 +14,8 @@ provider "aws" {
 
 # Lakehouse storage: MinIO bucket 'lakehouse' -> S3 bucket 'tx-recon-lakehouse'.
 resource "aws_s3_bucket" "lakehouse" {
-  bucket = "${var.project}-lakehouse"
+  bucket = "${var.project}-lakehouse-${var.env}"
+  tags   = { Environment = var.env }
 }
 
 resource "aws_s3_bucket_versioning" "lakehouse" {
