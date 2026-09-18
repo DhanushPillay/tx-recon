@@ -49,6 +49,8 @@ def test_get_spark_session_clears_spark_home(mock_spark_cls, monkeypatch):
     from src.common import config
 
     monkeypatch.setenv("SPARK_HOME", "/bad/path")
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "test")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "test")
     mock_builder = MagicMock()
     mock_spark_cls.builder.appName.return_value = mock_builder
     mock_builder.config.return_value = mock_builder
@@ -65,6 +67,8 @@ def test_get_spark_session_config_values(monkeypatch):
     monkeypatch.setenv("SPARK_MODE", "local")
     monkeypatch.setenv("NESSIE_HOST", "localhost")
     monkeypatch.setenv("NESSIE_PORT", "19120")
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "test")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "test")
     settings_mod._settings = None
     from src.common import config
 

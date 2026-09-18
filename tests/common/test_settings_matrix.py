@@ -78,6 +78,8 @@ def test_get_spark_session_yarn_branch(monkeypatch):
 
     monkeypatch.setenv("SPARK_MODE", "yarn")
     monkeypatch.delenv("AIRFLOW_HOME", raising=False)
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "test")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "test")
     settings_mod._settings = None
     with patch.object(config, "SparkSession") as mock_cls:
         builder = MagicMock()
@@ -99,6 +101,8 @@ def test_get_spark_session_cluster_branch(monkeypatch):
     from src.common import settings as settings_mod
 
     monkeypatch.delenv("AIRFLOW_HOME", raising=False)
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "test")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "test")
     settings_mod._settings = None
     with patch.object(config, "SparkSession") as mock_cls:
         builder = MagicMock()

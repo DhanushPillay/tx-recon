@@ -8,8 +8,44 @@ from src.processing.fee_engine import FeeEngine
 from src.processing.reconcile import (
     _qualified_table,
     build_fee_case_sql,
+    maintain_tables,
     run_reconciliation,
 )
+
+
+def _run_with_collects(batch_collect, table_collect, late_n=0, dlq_n=0, late_total_n=0):
+    """Drive run_reconciliation with a mocked Spark; returns (counts, mock_spark)."""
+    with (
+        patch("pyspark.sql.functions.row_number"),
+        patch("pyspark.sql.functions.col"),
+        patch("pyspark.sql.window.Window"),
+        patch("src.processing.reconcile.get_settings") as mock_get_settings,
+        patch("src.processing.reconcile.get_spark_session") as mock_get_spark,
+    ):
+        mock_get_settings.return_value = MagicMock(
+            project_root=".",
+            load_csv_on_driver=False,
+            webhook_table="nessie.db.webhooks",
+            dlq_table="nessie.db.webhooks_dlq",
+        )
+        mock_spark = MagicMock()
+        mock_get_spark.return_value = mock_spark
+
+        mock_bank_df = MagicMock()
+        mock_spark.read.format.return_value.option.return_value.schema.return_value.load.return_value = mock_bank_df
+        mock_bank_df.filter.return_value.count.return_value = 4
+        mock_bank_df.filter.return_value.withColumn.return_value.filter.return_value.drop.return_value.count.return_value = 4
+        mock_spark.sql.side_effect = [
+            MagicMock(),  # MERGE
+            MagicMock(),  # mart CTAS (runs before counts)
+            MagicMock(collect=MagicMock(return_value=table_collect)),  # table-level
+            MagicMock(collect=MagicMock(return_value=batch_collect)),  # batch-scoped
+            MagicMock(collect=MagicMock(return_value=[{"n": late_n}])),  # late-SLA side count
+            MagicMock(),  # late-SLA UPDATE
+            MagicMock(collect=MagicMock(return_value=[{"n": dlq_n}])),  # dlq_depth
+            MagicMock(collect=MagicMock(return_value=[{"n": late_total_n}])),  # late total
+        ]
+        return run_reconciliation(), mock_spark
 
 
 def test_fee_case_sql_matches_fee_engine():
@@ -48,10 +84,14 @@ def test_qualified_table_rejects_injection():
 @patch("src.processing.reconcile.get_settings")
 @patch("src.processing.reconcile.get_spark_session")
 def test_run_reconciliation_wiring(
-    mock_get_spark, mock_get_settings, mock_window, mock_col, mock_row_number
+    mock_get_spark, mock_get_settings, mock_window, mock_col, mock_row_number, monkeypatch
 ):
+    monkeypatch.setenv("MATCH_RATE_SLO", "0.95")
     mock_get_settings.return_value = MagicMock(
-        project_root=".", load_csv_on_driver=False, webhook_table="nessie.db.webhooks"
+        project_root=".",
+        load_csv_on_driver=False,
+        webhook_table="nessie.db.webhooks",
+        dlq_table="nessie.db.webhooks_dlq",
     )
     mock_spark = MagicMock()
     mock_get_spark.return_value = mock_spark
@@ -71,9 +111,13 @@ def test_run_reconciliation_wiring(
     ]
     mock_spark.sql.side_effect = [
         MagicMock(),  # MERGE
-        MagicMock(),  # mart view (runs before counts)
+        MagicMock(),  # mart table (runs before counts)
         MagicMock(collect=MagicMock(return_value=table_collect)),  # table-level
         MagicMock(collect=MagicMock(return_value=batch_collect)),  # batch-scoped
+        MagicMock(collect=MagicMock(return_value=[{"n": 2}])),  # late-SLA side count
+        MagicMock(),  # late-SLA UPDATE
+        MagicMock(collect=MagicMock(return_value=[{"n": 1}])),  # dlq_depth
+        MagicMock(collect=MagicMock(return_value=[{"n": 2}])),  # late_unresolved_total
     ]
 
     counts = run_reconciliation()
@@ -112,9 +156,52 @@ def test_run_reconciliation_wiring(
     assert counts["EXCEPTION_FEE_MISMATCH"] == 1
     assert counts["batch_MATCHED"] == 3
     assert counts["batch_EXCEPTION_FEE_MISMATCH"] == 1
+    # Match-rate SLO: 3/4 = 0.75 < 0.95 -> breach recorded as float rate.
+    assert counts["batch_match_rate"] == 0.75
+    # Late-SLA side-output count + ops depth gauges.
+    assert counts["late_unresolved_marked"] == 2
+    assert counts["dlq_depth"] == 1
+    assert counts["late_unresolved_total"] == 2
+    update_sqls = [c[0][0] for c in mock_spark.sql.call_args_list if c[0][0].startswith("UPDATE ")]
+    assert len(update_sqls) == 1 and "EXCEPTION_LATE_UNRESOLVED" in update_sqls[0]
     # Mart table must be materialized on the same namespace as the target table.
     mart_sqls = [c[0][0] for c in mock_spark.sql.call_args_list if "fact_reconciliation" in c[0][0]]
     assert len(mart_sqls) == 1
     assert "CREATE OR REPLACE TABLE" in mart_sqls[0]
     assert "nessie.db.fact_reconciliation" in mart_sqls[0]
     assert "FROM nessie.db.webhooks" in mart_sqls[0]
+
+
+def test_run_reconciliation_slo_satisfied(monkeypatch):
+    """4/4 batch MATCHED -> rate 1.0, no breach; zero late rows -> no late warning."""
+    monkeypatch.setenv("MATCH_RATE_SLO", "0.95")
+    counts, _ = _run_with_collects(
+        batch_collect=[{"st": "MATCHED", "n": 4}],
+        table_collect=[{"reconciliation_status": "MATCHED", "n": 4}],
+        late_n=0,
+    )
+    assert counts["batch_match_rate"] == 1.0
+    assert counts["late_unresolved_marked"] == 0
+
+
+def test_maintain_tables_own_session(monkeypatch):
+    """spark=None opens its own session and stops it (own_session branch)."""
+    monkeypatch.setenv("MAINTAIN_RETAIN_LAST", "7")
+    with (
+        patch("src.common.config.get_spark_session") as mock_get_spark,
+        patch("src.common.settings.get_settings") as mock_get_settings,
+    ):
+        mock_get_settings.return_value = MagicMock(
+            webhook_table="nessie.db.webhooks", dlq_table="nessie.db.webhooks_dlq"
+        )
+        mock_spark = MagicMock()
+        mock_get_spark.return_value = mock_spark
+        mock_spark.sql.return_value = MagicMock(
+            collect=MagicMock(return_value=[{"n": 5}])
+        )
+        out = maintain_tables()
+    mock_get_spark.assert_called_once_with("Maintenance")
+    mock_spark.stop.assert_called_once()
+    assert out["nessie.db.webhooks"]["status"] == "ok"
+    assert out["nessie.db.webhooks"]["files_before"] == 5
+    assert out["nessie.db.webhooks_dlq"]["files_after"] == 5
