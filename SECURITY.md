@@ -28,3 +28,15 @@ assessment. Expect an initial response within 7 days.
 - `src/processing/residual.py` interpolates transaction IDs into SQL;
   acceptable for a local demo, must be parameterized before any shared
   deployment.
+- PII (`transaction_id`, `merchant_id`, amounts) sits cleartext in
+  `data/settlement_*.csv`, quarantine CSVs, and the Iceberg DLQ. Local demo
+  only: encrypt the volume/bucket, purge quarantine + DLQ on a schedule
+  (`python scripts/replay_dlq.py --delete` after replay), mask IDs in logs
+  and dashboards before any shared deployment.
+- Deps are range-pinned (`pyproject.toml`); reproduce exact builds with
+  `uv lock` and run `pip-audit` (CI already gates on it).
+- Webhook authenticity: producer signs `x-tx-sig: HMAC(transaction_id|amount)`
+  when `WEBHOOK_SECRET` is set; broker trust comes from SASL
+  (`KAFKA_SECURITY_PROTOCOL` + `KAFKA_SASL_*`). Spark's Kafka source exposes
+  no headers, so HMAC verify lives at the gateway edge, not in
+  `ingest_webhooks.py` (which warns when the secret is set without SASL).

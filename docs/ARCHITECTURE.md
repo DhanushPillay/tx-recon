@@ -33,7 +33,9 @@ The batch MERGE in `reconcile.py` evaluates rows in this order. The first matchi
 flowchart TD
     A[Settlement row arrives] --> B{transaction_id<br/>exists in webhooks?}
     B -->|no| C[EXCEPTION_MISSING_WEBHOOK<br/>insert placeholder]
-    B -->|yes| D{Existing status is<br/>MISSING_WEBHOOK?}
+    B -->|yes| L{Existing status is<br/>LATE_UNRESOLVED?}
+    L -->|yes| M[No-op preserve<br/>late SLA is terminal for batch]
+    L -->|no| D{Existing status is<br/>MISSING_WEBHOOK?}
     D -->|yes| E[Keep status, refresh bank_ref_id<br/>placeholder -> real settlement]
     D -->|no| F{amount_paise<br/>IS NULL?}
     F -->|yes| G[EXCEPTION_FEE_MISMATCH<br/>cannot compute fee]
@@ -44,6 +46,8 @@ flowchart TD
 
 The fee and tolerance in step H are computed per-row via a `CASE` expression that selects the correct rate card by instrument type, merchant ID, and settlement date. See "Versioned rate cards" below.
 
+Rows already marked `LATE_UNRESOLVED` by the late-SLA pass (`LATE_SLA_DAYS`, default 7) hit the preserving no-op clause first, so re-runs stay idempotent; only a late-arriving webhook heals them via the ingestion MERGE.
+
 ## Streaming dedup
 
 The ingestion path (`ingest_webhooks.py`) uses `foreachBatch` with a single sink (not dual `toTable`). Each micro-batch:
@@ -53,7 +57,7 @@ The ingestion path (`ingest_webhooks.py`) uses `foreachBatch` with a single sink
 3. Splits valid (`amount_paise > 0 AND transaction_id IS NOT NULL`) from invalid using `coalesce` to catch `NULL` from corrupt decode (3VL problem).
 4. Deduplicates valid rows by `transaction_id` via `dropDuplicates`.
 5. Upserts valid rows via `MERGE INTO ... WHEN NOT MATCHED THEN INSERT *`.
-6. Appends invalid rows to the DLQ table.
+6. Appends invalid rows to the DLQ table (single guarded write; skipped when the batch has none).
 
 Checkpoint at `warehouse/checkpoints/webhooks_all` gives Spark streaming exactly-once semantics.
 

@@ -134,9 +134,11 @@ PR checklist: `.github/PULL_REQUEST_TEMPLATE.md`.
 
 ## Roadmap
 
-- BI milestone: persisted Metabase, materialized `fact_reconciliation` view, checked-in dashboard.
-- DLQ/quarantine replay path and match-rate alerting.
 - Production Kubernetes manifest (the `k8s/` stub was removed; compose is the supported path).
+
+Shipped: materialized `fact_reconciliation` TABLE mart, DLQ replay script
+(`scripts/replay_dlq.py`), match-rate SLO warning (`MATCH_RATE_SLO`),
+late-resolution SLA (`LATE_SLA_DAYS` → `LATE_UNRESOLVED`).
 
 ## License
 

@@ -35,13 +35,33 @@ def run_ingestion():
     spark = get_spark_session("WebhookIngestion")
 
     logger.info(f"Connecting to Redpanda at {settings.kafka_broker}")
-    df = (
-        spark.readStream.format("kafka")
-        .option("kafka.bootstrap.servers", settings.kafka_broker)
-        .option("subscribe", settings.topic_name)
-        .option("startingOffsets", "earliest")
-        .load()
-    )
+    kafka_opts = {
+        "kafka.bootstrap.servers": settings.kafka_broker,
+        "subscribe": settings.topic_name,
+        "startingOffsets": "earliest",
+    }
+    if settings.kafka_security_protocol != "PLAINTEXT":
+        kafka_opts.update(
+            {
+                "kafka.security.protocol": settings.kafka_security_protocol,
+                "kafka.sasl.mechanism": settings.kafka_sasl_mechanism or "SCRAM-SHA-256",
+                "kafka.sasl.jaas.config": (
+                    f"org.apache.kafka.common.security.scram.ScramLoginModule required "
+                    f'username="{settings.kafka_sasl_username}" '
+                    f'password="{settings.kafka_sasl_password}";'
+                ),
+            }
+        )
+    if settings.webhook_secret:
+        logger.warning(
+            "WEBHOOK_SECRET set but Kafka source exposes no headers: HMAC verify "
+            "runs at producer/gateway edge, Spark ingestion trusts SASL + schema. "
+            "Enable SASL (KAFKA_SECURITY_PROTOCOL) so forging requires broker creds."
+        )
+    reader = spark.readStream.format("kafka")
+    for k, v in kafka_opts.items():
+        reader = reader.option(k, v)
+    df = reader.load()
 
     # Confluent Avro wire format: Magic Byte (1 byte) + Schema ID (4 bytes)
     df = df.withColumn("fixed_value", expr("substring(value, 6, length(value)-5)"))
@@ -84,8 +104,9 @@ def run_ingestion():
             ["transaction_id"]
         )
         if not inv.isEmpty():
-            logger.warning(f"DLQ batch: {inv.count()} invalid rows -> {dlq_table}")
-        inv.writeTo(dlq_table).append()
+            n_inv = inv.count()
+            logger.warning(f"DLQ batch: {n_inv} invalid rows -> {dlq_table}")
+            inv.writeTo(dlq_table).append()
 
     spark.streams.addListener(_BatchProgressLogger())
     query = (

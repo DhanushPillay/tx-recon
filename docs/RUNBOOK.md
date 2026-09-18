@@ -70,6 +70,16 @@ Run with: `pytest tests/ -m "not integration" -k "chaos or failure or drift"`
 
 The pipeline is idempotent. Re-running over the same settlement files converges to identical state.
 
+- **DLQ replay:** `python scripts/replay_dlq.py [--delete]` replays `webhooks_dlq`
+  rows back through validation into the target via MERGE. Pass `--delete` to
+  remove rows from the DLQ after a successful replay.
+- **Quarantine replay:** fix the offending rows in `data/`, delete the
+  `quarantine_*.csv` marker, and re-run the pipeline; only validated rows reach
+  the MERGE (Write-Audit-Publish).
+- **SLO/SLA knobs:** `MATCH_RATE_SLO` (default `0.95`) warns on batch match-rate
+  breach; `LATE_SLA_DAYS` (default `7`) flips stale `MISSING_WEBHOOK` placeholders
+  to `LATE_UNRESOLVED`, which the batch MERGE preserves across re-runs.
+
 ## Maintenance
 
 `maintain_tables()` runs `binpack` + `expire_snapshots(retain_last=7)` after each MERGE. If MERGE latency creeps up week over week, check `files_after` in the counts log — a growing count means maintenance is disabled (`MAINTAIN_AFTER_MERGE=0`) or failing (it warns, never raises). Tune retention with `MAINTAIN_RETAIN_LAST` (lower = faster, less time-travel).

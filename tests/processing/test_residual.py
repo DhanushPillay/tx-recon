@@ -49,17 +49,25 @@ def test_threshold_monotone():
         ["UPI", "CREDIT_CARD", "DEBIT_CARD", "NETBANKING", "WALLET", "INTERNATIONAL"]
     ),
 )
-def test_downgrade_never_creates_fp_property(amount, instrument):
-    """Downgrade-only: FP after residual <= FP before, for all draws."""
+def test_perfect_match_never_downgrades_property(amount, instrument):
+    """Perfect rule-match scores below tau for all draws (calls real scorer)."""
     eng = get_fee_engine()
     settled = eng.compute_expected_settled(amount, instrument)
-    # Before: MATCH (truth MATCH, pred MATCH) => FP 0
-    fp_before = 0
-    downgraded = should_downgrade(amount, settled, instrument, None, None, fee_engine=eng)
-    fp_after = 0  # demoting a true MATCH creates FN, not FP
-    assert fp_after <= fp_before
-    # If we fake a FP (truth MISMATCH, pred MATCH), downgrading removes FP
-    fp_before_fake = 1
-    # settled is true MATCH; to fake FP we claim truth is MISMATCH — downgrade would clear it
-    fp_after_fake = 0 if downgraded else 1
-    assert fp_after_fake <= fp_before_fake
+    s = score_match(amount, settled, instrument, None, None, fee_engine=eng)
+    assert 0.0 <= s < DEFAULT_TAU
+    assert not should_downgrade(amount, settled, instrument, None, None, fee_engine=eng)
+
+
+@given(
+    amount=st.integers(min_value=1000, max_value=1_000_000),
+    instrument=st.sampled_from(
+        ["UPI", "CREDIT_CARD", "DEBIT_CARD", "NETBANKING", "WALLET", "INTERNATIONAL"]
+    ),
+)
+def test_score_monotone_in_excess_property(amount, instrument):
+    """A far-mismatch always scores above the perfect match (same draw)."""
+    eng = get_fee_engine()
+    settled_ok = eng.compute_expected_settled(amount, instrument)
+    s_ok = score_match(amount, settled_ok, instrument, None, None, fee_engine=eng)
+    s_bad = score_match(amount, settled_ok + 500, instrument, None, None, fee_engine=eng)
+    assert s_bad > s_ok

@@ -7,6 +7,7 @@ from pyspark.sql.types import LongType, StringType, StructField, StructType
 from src.common.config import get_spark_session
 from src.common.schemas import (
     EXCEPTION_FEE_MISMATCH,
+    EXCEPTION_LATE_UNRESOLVED,
     EXCEPTION_MISSING_WEBHOOK,
     INSTRUMENT_TYPES,
     MATCHED,
@@ -217,6 +218,11 @@ def _settlement_source(data_dir: str, date_str: str | None) -> tuple[str, list[s
     import glob as _glob
 
     if date_str:
+        # Digit-only date in YYYY-MM-DD or YYYYMMDD (pipeline uses dashed,
+        # tests seed compact files). Anything else (.., /, glob chars) is
+        # rejected so date_str can never escape data_dir.
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}|\d{8}", date_str):
+            raise ValueError(f"Bad date_str (want YYYY-MM-DD): {date_str!r}")
         stem = date_str.replace("-", "")
         curated = os.path.join(data_dir, f"curated_settlement_{stem}.csv")
         if os.path.exists(curated):
@@ -305,6 +311,7 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
         .drop("row_num")
     )
     bank_df_dedup.cache()
+    settlement_rows_deduped = bank_df_dedup.count()  # warm cache before MERGE; reuse below
     bank_df_dedup.createOrReplaceTempView("bank_settlements")
 
     fee_engine = get_fee_engine()
@@ -346,6 +353,9 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
         UPDATE SET
             t.bank_ref_id = s.bank_ref_id,
             t.instrument_type = s.instrument_type
+    WHEN MATCHED AND t.reconciliation_status = '{EXCEPTION_LATE_UNRESOLVED}' THEN
+        UPDATE SET
+            t.bank_ref_id = t.bank_ref_id
     WHEN MATCHED AND t.amount_paise IS NULL THEN
         UPDATE SET
             t.reconciliation_status = '{EXCEPTION_FEE_MISMATCH}',
@@ -371,12 +381,17 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
             bank_df_dedup.unpersist()
         raise RuntimeError(f"Reconciliation MERGE failed: {exc}") from exc
 
-    # Mart: refresh the BI-ready view over the reconciled table so Trino/Metabase
-    # never query a stale or missing object. Same SELECT as sql/marts/fact_reconciliation.sql.
+    # Mart: materialize a BI-ready snapshot table over the reconciled data so
+    # Trino/Metabase scan a compact snapshot, not the full mutable table.
+    # Same SELECT as sql/marts/fact_reconciliation.sql. Full rewrite per batch
+    # is fine at this scale; graduate to incremental merge when batches grow.
     namespace = table.rsplit(".", 1)[0]
     try:
         spark.sql(
-            f"CREATE OR REPLACE VIEW {namespace}.fact_reconciliation AS "
+            f"CREATE OR REPLACE TABLE {namespace}.fact_reconciliation USING iceberg "
+            "TBLPROPERTIES ("
+            "'write.target-file-size-bytes' = '134217728', "
+            "'write.parquet.compression-codec' = 'zstd') AS "
             "SELECT transaction_id, amount_paise, merchant_id, instrument_type, gateway_status, "
             "reconciliation_status AS status, bank_ref_id, "
             "CAST(timestamp_utc AS TIMESTAMP) AS transacted_at, "
@@ -385,14 +400,14 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
             f"FROM {table}"
         )
     except Exception as exc:  # mart must never fail the job
-        logger.warning(f"Could not refresh fact_reconciliation view: {exc}")
+        logger.warning(f"Could not refresh fact_reconciliation table: {exc}")
 
     # Observability: report outcome distribution (FAANG expects match-rate metrics).
     # NOTE: status counts below are table-level (cumulative); settlement_rows_deduped
     # scopes the batch so MATCHED can be judged per-run.
     # Fail closed: dedup count must succeed, else the batch is unknown (never return {}).
     counts: dict[str, int] = {"settlement_rows_total": settlement_rows_total}
-    counts["settlement_rows_deduped"] = bank_df_dedup.count()
+    counts["settlement_rows_deduped"] = settlement_rows_deduped
     counts["duplicate_settlement_rows"] = max(
         0, settlement_rows_total - counts["settlement_rows_deduped"]
     )
@@ -424,6 +439,24 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int]:
         with contextlib.suppress(Exception):
             bank_df_dedup.unpersist()
     logger.info(f"Reconciliation batch complete: {counts}")
+    import os as _os
+
+    _slo = float(_os.environ.get("MATCH_RATE_SLO", "0.95"))
+    _bm, _bt = counts.get("batch_MATCHED", 0), counts.get("settlement_rows_deduped", 0)
+    if _bt:
+        _rate = _bm / _bt
+        counts["batch_match_rate"] = round(_rate, 4)
+        if _rate < _slo:
+            logger.warning(f"Match-rate SLO breach: {_rate:.2%} < {_slo:.0%} (batch)")
+    try:  # Late SLA: MISSING_WEBHOOK older than N days -> LATE_UNRESOLVED
+        _days = int(_os.environ.get("LATE_SLA_DAYS", "7"))
+        spark.sql(
+            f"UPDATE {table} SET reconciliation_status = '{EXCEPTION_LATE_UNRESOLVED}' "
+            f"WHERE reconciliation_status = '{EXCEPTION_MISSING_WEBHOOK}' "
+            f"AND to_date(timestamp_utc) < date_sub(current_date(), {_days})"
+        )
+    except Exception as exc:
+        logger.warning(f"Late-SLA marking skipped: {exc}")
     return counts
 
 

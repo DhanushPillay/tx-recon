@@ -94,8 +94,8 @@ def test_run_reconciliation_wiring(
     assert "JOIN" not in using_clause
     assert "IS NOT NULL" in merge_sql, "null guards required on both branches"
     assert (
-        merge_sql.count("UPDATE SET") == 3
-    )  # placeholder-keep + null-amount + single-pass CASE (matched/mismatched)
+        merge_sql.count("UPDATE SET") == 4
+    )  # placeholder-keep + late-keep + null-amount + single-pass CASE (matched/mismatched)
     assert merge_sql.count("WHEN NOT MATCHED") == 1
     assert "CASE WHEN ABS(" in merge_sql, "single-pass CASE replaces double ABS eval"
     # Placeholder rows (inserted by WHEN NOT MATCHED on an earlier run) must
@@ -103,15 +103,18 @@ def test_run_reconciliation_wiring(
     placeholder_clause = merge_sql.split("WHEN MATCHED AND t.amount_paise IS NULL")[0]
     assert "EXCEPTION_MISSING_WEBHOOK" in placeholder_clause
     assert "DELETE" not in merge_sql
+    # Late-SLA rows must survive rerun: LATE_UNRESOLVED is terminal for the
+    # batch MERGE (only the late-SLA UPDATE writes it), else reruns flap
+    # LATE -> MATCHED -> LATE and idempotency breaks.
+    assert "EXCEPTION_LATE_UNRESOLVED" in merge_sql
     assert counts["settlement_rows_deduped"] == 4
     assert counts["MATCHED"] == 3
     assert counts["EXCEPTION_FEE_MISMATCH"] == 1
     assert counts["batch_MATCHED"] == 3
     assert counts["batch_EXCEPTION_FEE_MISMATCH"] == 1
-    # Mart view must be refreshed on the same namespace as the target table.
-    view_sqls = [
-        c[0][0] for c in mock_spark.sql.call_args_list if "CREATE OR REPLACE VIEW" in c[0][0]
-    ]
-    assert len(view_sqls) == 1
-    assert "nessie.db.fact_reconciliation" in view_sqls[0]
-    assert "FROM nessie.db.webhooks" in view_sqls[0]
+    # Mart table must be materialized on the same namespace as the target table.
+    mart_sqls = [c[0][0] for c in mock_spark.sql.call_args_list if "fact_reconciliation" in c[0][0]]
+    assert len(mart_sqls) == 1
+    assert "CREATE OR REPLACE TABLE" in mart_sqls[0]
+    assert "nessie.db.fact_reconciliation" in mart_sqls[0]
+    assert "FROM nessie.db.webhooks" in mart_sqls[0]

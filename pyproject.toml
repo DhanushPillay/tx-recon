@@ -53,6 +53,7 @@ ignore = ["E501", "S101"]
 "tests/performance/**" = ["S311", "S608", "S603", "S110", "SIM105", "B017", "RUF100", "F401", "E402", "S324"]
 "src/processing/reconcile.py" = ["S608"]
 "src/processing/residual.py" = ["S608"]
+"scripts/replay_dlq.py" = ["S608"]
 "tests/**/test_fee_spark_golden.py" = ["S608"]
 "tests/**/test_schema_evolution.py" = ["S608"]
 

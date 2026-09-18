@@ -10,6 +10,7 @@ from confluent_kafka.schema_registry import SchemaRegistryClient
 from confluent_kafka.schema_registry.avro import AvroSerializer
 from confluent_kafka.serialization import StringSerializer
 
+from src.common.auth import sign_webhook as _hmac_sig
 from src.common.schemas import WEBHOOK_AVRO_SCHEMA
 from src.common.settings import get_settings
 
@@ -62,6 +63,15 @@ def main():
         "acks": "all",  # money pipeline: never lose a webhook on leader failover
         "enable.idempotence": True,
     }
+    if settings.kafka_security_protocol != "PLAINTEXT":
+        producer_conf.update(
+            {
+                "security.protocol": settings.kafka_security_protocol,
+                "sasl.mechanism": settings.kafka_sasl_mechanism or "SCRAM-SHA-256",
+                "sasl.username": settings.kafka_sasl_username,
+                "sasl.password": settings.kafka_sasl_password,
+            }
+        )
 
     producer = SerializingProducer(producer_conf)
 
@@ -103,10 +113,20 @@ def main():
     try:
         while True:
             event = generate_webhook_event()
+            headers = (
+                {
+                    "x-tx-sig": _hmac_sig(
+                        event["transaction_id"], event["amount_paise"], settings.webhook_secret
+                    )
+                }
+                if settings.webhook_secret
+                else None
+            )
             producer.produce(
                 topic=settings.topic_name,
                 key=event["transaction_id"],
                 value=event,
+                headers=headers,
                 on_delivery=delivery_report,
             )
             producer.poll(0.001)

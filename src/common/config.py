@@ -40,6 +40,14 @@ def get_spark_session(app_name: str = "TxRecon") -> SparkSession:
     """Build the Iceberg+Nessie+S3A Spark session. Reads all config from Settings."""
     settings = get_settings()
 
+    if settings.iceberg_warehouse.startswith("s3a://") and (
+        not settings.minio_access_key or not settings.minio_secret_key
+    ):
+        raise RuntimeError(
+            "MINIO_ACCESS_KEY/MINIO_SECRET_KEY must be set for s3a warehouse "
+            "(see .env.example); refusing to start with empty creds."
+        )
+
     # PySpark ships its own Hadoop; a stale SPARK_HOME breaks worker classpath.
     os.environ.pop("SPARK_HOME", None)
     _check_java_home()
@@ -106,7 +114,7 @@ def get_spark_session(app_name: str = "TxRecon") -> SparkSession:
         .config("spark.sql.adaptive.advisoryPartitionSizeInBytes", "64MB")
         .config("spark.sql.adaptive.coalescePartitions.initialPartitionNum", "32")
         .config("spark.sql.adaptive.optimizeSkewsInReorderedPartitions.enabled", "true")
-        .config("spark.sql.autoBroadcastJoinThreshold", "52428800")
+        .config("spark.sql.autoBroadcastJoinThreshold", "10485760")
         .config("spark.default.parallelism", str(settings.spark_shuffle_partitions))
         .config("spark.hadoop.fs.s3a.committer.name", "directory")
         .config("spark.sql.streaming.checkpoint.compress", "true")

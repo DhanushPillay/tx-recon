@@ -5,7 +5,11 @@
 -- copy of that same SELECT for hand-runs on Spark/Trino/Athena. Replace
 -- nessie.db with glue.db for the AWS Glue catalog (TABLE_PREFIX in
 -- settings.py only retargets the Python path, not this file).
-CREATE OR REPLACE VIEW nessie.db.fact_reconciliation AS
+CREATE OR REPLACE TABLE nessie.db.fact_reconciliation USING iceberg
+TBLPROPERTIES (
+    'write.target-file-size-bytes' = '134217728',
+    'write.parquet.compression-codec' = 'zstd'
+) AS
 SELECT
     transaction_id,
     amount_paise,

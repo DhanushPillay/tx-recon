@@ -12,8 +12,9 @@ class Settings(BaseSettings):
 
     # MinIO / S3
     minio_endpoint: str = "http://localhost:9000"
-    minio_access_key: str = ""
-    minio_secret_key: str = ""
+    minio_access_key: str = Field(default="", min_length=0)
+    minio_secret_key: str = Field(default="", min_length=0)
+    webhook_secret: str = ""
 
     # Nessie
     nessie_host: str = "localhost"
@@ -25,11 +26,15 @@ class Settings(BaseSettings):
     kafka_broker: str = "localhost:19092"
     schema_registry_url: str = "http://localhost:8081"
     topic_name: str = "gateway_webhooks"
+    kafka_security_protocol: str = "PLAINTEXT"
+    kafka_sasl_mechanism: str = ""
+    kafka_sasl_username: str = ""
+    kafka_sasl_password: str = ""
 
     # Spark
     spark_mode: str = "local"
     load_csv_on_driver: bool = False
-    spark_shuffle_partitions: int = 200
+    spark_shuffle_partitions: int = 32
     spark_master: str = "local[*]"
     spark_driver_memory: str = "2g"
     spark_executor_memory: str = "2g"
@@ -106,7 +111,7 @@ class Settings(BaseSettings):
         base = cls._docker_common(base)
         base.update(
             spark_master=master,
-            spark_shuffle_partitions=200,
+            spark_shuffle_partitions=32,
             spark_executor_cores=2,
             load_csv_on_driver=False,
         )

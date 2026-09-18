@@ -76,7 +76,7 @@ Written to `reconciliation_status` by the MERGE in `src/processing/reconcile.py`
 | `EXCEPTION_DUPLICATE_SETTLEMENT` | Multiple settlement rows for the same `transaction_id` in one file. | Defined in `schemas.py`; quarantined by Pandera `unique=True` before MERGE. |
 | `EXCEPTION_DUPLICATE_WEBHOOK` | Multiple webhooks for the same `transaction_id`. | Defined in `schemas.py`; streaming `dropDuplicates` prevents this at ingest. |
 | `EXCEPTION_INVALID` | Failed schema validation or quarantine. | Defined in `schemas.py`; Pandera quarantine path. |
-| `EXCEPTION_LATE_UNRESOLVED` | Time-bound SLA breached for resolution. | Defined in `schemas.py`; not yet implemented in code. |
+| `EXCEPTION_LATE_UNRESOLVED` | `MISSING_WEBHOOK` placeholder older than `LATE_SLA_DAYS` (default 7). Terminal for the batch MERGE, which preserves it via a no-op clause; only a late-arriving webhook heals it. | Late-SLA pass in `reconcile.py`; preserved by MERGE `WHEN MATCHED AND status=LATE_UNRESOLVED`. |
 
 ## Instrument types
 

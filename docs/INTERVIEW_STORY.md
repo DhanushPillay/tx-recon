@@ -30,7 +30,7 @@ python -m src.pipeline --date 2026-09-04   # generate → validate → reconcile
 ## Questions you'll get
 
 - *Why Iceberg MERGE over joins?* ACID upsert on the grain; re-runs converge
-  instead of duplicating. The MERGE-shape test asserts 2×UPDATE / 1×INSERT /
+   instead of duplicating. The MERGE-shape test asserts 3×UPDATE / 1×INSERT /
   no DELETE.
 - *Why integer paise?* Floats round; money must not. SQL uses integer `DIV`
   mirroring the engine exactly.
