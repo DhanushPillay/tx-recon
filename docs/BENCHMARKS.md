@@ -13,7 +13,7 @@ Services: Redpanda, MinIO, Nessie via Docker Compose; Hadoop 3.3.6 (namenode+2NM
 Spark: 3.5.1, JDK 17 (host 17.0.13 Temurin, NMs 17.0.15 openjdk)
 ```
 
-Each suite writes a per-suite file (`results_accuracy.json`, `results_pandera.json`, `results_iceberg.json`). The orchestrator `tests/performance/run_benchmarks.py` aggregates them into `tests/performance/results.json`. Treat the per-suite files as the cited source; `results.json` is a convenience copy.
+Each suite writes a per-suite file (`results_accuracy.json`, `results_pandera.json`, `results_iceberg.json`). Real-data runs write separate files (`results_iceberg_real.json`, `results_pandera_real.json`, `results_kafka_real.json`, combined `results_real.json`) so synthetic baselines are never overwritten. The orchestrator `tests/performance/run_benchmarks.py` aggregates them into `tests/performance/results.json` (`--real` writes `results_real.json`). Treat the per-suite files as the cited source; `results.json` is a convenience copy.
 
 Last-verified status (18 Sep 2026): the figures below were measured 13-16 Sep 2026 on Python 3.11. The per-suite JSON files are gitignored, so this prose is the record. A same-host spot-check on 18 Sep 2026 under Python 3.10 (within the supported `>=3.10,<3.13` range) reproduced the tuned 100k MERGE rows (10%: 0.87s; 50%: 0.94s, broadcast join); 500k/1M re-runs are pending, so treat all figures as last-known, not current.
 
@@ -74,7 +74,7 @@ Compares validation paths at the batch boundary on the same in-memory DataFrame.
 Measures the `MERGE INTO nessie.db.webhooks` (and `nessie_hdfs.db.webhooks` for YARN) across 100k/500k/1M. Iceberg 1.11.0 / Nessie 0.107.9 / Spark 3.5.1 JDK 17 / py 3.11, median of 4 repeats. See `HADOOP.md` for YARN wiring.
 
 - **Script:** `tests/performance/reconciliation_benchmark.py --catalog nessie|nessie_hdfs`, orchestrated by `run_benchmarks.py --suite iceberg`
-- **Method:** seeded synthetic webhooks and settlements, dedup via `WINDOW row_number()`, fee CASE from live `FeeEngine.get_rate`, `MERGE ... ABS((amount - fee - gst) - settled) <= 1`. `rows_per_sec = (matched + mismatched) / median_write_sec`, `healthy = rows_per_sec > 0 and matched > 0`. Files via `files_before/files_after`. `--catalog` selects `s3://lakehouse/warehouse` (S3FileIO) vs `hdfs://namenode:8020/warehouse` (HadoopFileIO).
+- **Method:** seeded synthetic webhooks and settlements, dedup via `WINDOW row_number()`, fee CASE from live `FeeEngine.get_rate`, `MERGE ... ABS((amount - fee - gst) - settled) <= 1`. `rows_per_sec = (matched + mismatched) / median_write_sec`, `healthy = rows_per_sec > 0 and matched > 0`. Timers use `perf_counter` (monotonic). Files via `files_before/files_after`. `--catalog` selects `s3://lakehouse/warehouse` (S3FileIO) vs `hdfs://namenode:8020/warehouse` (HadoopFileIO). No 2M/5M runs yet; do not extrapolate YARN wins beyond 1M.
 - **Repro (single-node):**
   ```bash
   docker compose up -d minio nessie
@@ -148,6 +148,31 @@ docker run --rm --platform linux/amd64 --network tx-recon_default -v "E:\Persona
 
   YARN slower on small scales due to staging/YARN AM startup (~1s) and constrained NM (4096MB/4vcores, driver 5.61GB image vs 15.8GB host, files `1->4` vs `1->20/13->28` due to fewer tasks). Proves true distributed scheduling on `hdfs://` (2 NMs, HDFS Live 1/2 DNs, YARN UI :8088, History :19888) — not raw speed. Source JSONs are `results_iceberg.json` and `results_iceberg_yarn_hdfs.json`.
 
+## Real-data benchmarks ([thiru1711/Financial_Transactions](https://huggingface.co/datasets/thiru1711/Financial_Transactions))
+
+13,305,915 public card transactions through the same harnesses with real
+amount/date/merchant distributions. Loader (`src/adapters/real_data.py`)
+derives settlement nets from an independent schedule calibrated to the v1
+rate card; ~10% of rows are exceptions by design (5% mismatch, 5% orphan),
+so the health gate here is match rate ≥ 85%, not F1=1.0. Full method and
+per-run tables: `docs/REAL_DATA.md`.
+
+- **MERGE** (`reconciliation_benchmark.py --source real`, 8g driver, 128
+  shuffles ≥5M): 1M 50% 6.21s, 5M 50% 11.38s, **12M 50% 23.69s**,
+  match ~94.7% throughout. Source: `results_iceberg_real.json`.
+- **Validation** (`pandas_validation_benchmark.py --input
+  data/real_thiru_full_settlement.csv --dedup`, 12.6M rows): polars 8.44M,
+  manual 3.63M, pandera 1.44M, pydantic 208k rows/s. Source:
+  `results_pandera_real.json`.
+- **Kafka** (`kafka_producer_benchmark.py --replay-csv
+  data/real_thiru_full_hooks.csv`, real ~150B records, acks=all, lz4):
+  **239,061 msgs/sec**, serial p50 0.98ms / p99 20.59ms. Source:
+  `results_kafka_real.json`.
+- **Repro:** `python tests/performance/run_benchmarks.py --real`
+  (kafka replay 1M + pandera real + MERGE 1M/5M/12M, ~30–45 min) or each
+  module directly. Regression gates stay on synthetic baselines only —
+  different distribution, comparing would false-alarm.
+
 ## PySpark streaming ingestion
 
 - **Script:** `tests/performance/pyspark_ingestion_benchmark.py`
@@ -168,7 +193,7 @@ Earlier revisions cited numbers that are no longer reproducible:
 - Iceberg **sub-linear scaling to 227K rows/sec at 5M** from single-sample writes with non-monotonic timing. Replaced by seeded median at 100k only.
 - Validation footnote about Polars "cold-start overhead" from a run that re-read CSV from disk. Current run validates in-memory.
 
-Per-suite files (`results_accuracy.json`, `results_pandera.json`, `results_iceberg.json`) are the cited sources. `results.json` is an aggreg convenience copy.
+Per-suite files (`results_accuracy.json`, `results_pandera.json`, `results_iceberg.json`, plus `*_real.json` for real-data runs) are the cited sources. `results.json` is an aggreg convenience copy.
 
 ## Hardware
 
