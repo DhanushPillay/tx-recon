@@ -82,7 +82,7 @@ The pipeline is idempotent. Re-running over the same settlement files converges 
 
 ## Oncall
 
-Signals come from one JSON line per batch: `metrics {"batch_match_rate": ...,
+Signals come from one JSON line per batch: `metrics run_date=<ds> {"batch_match_rate": ...,
 "dlq_depth": ..., "late_unresolved_marked": ..., "late_unresolved_total": ...}`.
 
 - **`batch_match_rate < MATCH_RATE_SLO`** (tolerance breach): owner is whoever
@@ -99,6 +99,13 @@ Signals come from one JSON line per batch: `metrics {"batch_match_rate": ...,
 - **`late_unresolved_marked > 0`**: counterparty webhooks never arrived. Page the
   gateway integrator; these rows are terminal for the batch MERGE and heal only
   via a late webhook through ingestion.
+- **`schema-id drift` warning in ingestion**: producer evolved the Avro schema
+  without updating the pinned `WEBHOOK_AVRO_SCHEMA`. Diff the registry subject
+  (`<registry>/subjects/gateway_webhooks-value/versions/latest`) against
+  `src/common/schemas.py`; expect a DLQ flood if the change breaks the parse.
+- **`volume shift` / `stale settlement file` warning in validation**: the PG drop
+  shrank >50% vs the previous curated batch, or the file is >48h old. Confirm
+  the drop is complete before trusting the batch counts; re-pull the file if not.
 - **Backfill (whole day re-run)**: only when the settlement file itself was wrong.
   Replace `data/settlement_<date>.csv`, delete its `quarantine_*.csv` marker if any,
   re-run the pipeline. MERGE converges; do not hand-edit the Iceberg table.
