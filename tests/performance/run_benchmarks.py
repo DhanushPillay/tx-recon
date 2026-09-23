@@ -88,6 +88,60 @@ def print_summary(results):
     print(f"{'=' * 60}")
 
 
+def run_real(results, hw):
+    """Full real-data pass (direct calls, no 600s subprocess cap).
+
+    Suites: kafka replay 1M msgs (caps broker retention), pandera on the real
+    12.9M file (deduped), iceberg MERGE at 1M/5M/12M. Writes results_real.json;
+    per-suite files (results_iceberg_real.json etc.) are written by the modules.
+    Regression gates stay on synthetic baselines only (different distribution).
+    """
+    import pandas_validation_benchmark as pvb
+    from kafka_producer_benchmark import load_replay_events
+    from kafka_producer_benchmark import run as run_kafka
+
+    hooks_csv = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../data")
+    replay_csv = os.path.normpath(os.path.join(hooks_csv, "real_thiru_full_hooks.csv"))
+    settlement_csv = os.path.normpath(os.path.join(hooks_csv, "real_thiru_full_settlement.csv"))
+    for req in (replay_csv, settlement_csv):
+        if not os.path.exists(req):
+            raise SystemExit(f"--real needs {req}: build it with src.adapters.real_data")
+
+    print("\n=== Kafka replay (real rows) ===")
+    try:
+        event_fn = load_replay_events(replay_csv, 1_000_000)
+        results["kafka"] = run_kafka(
+            "localhost:19092", 1_000_000, "all", "lz4", "real", "both", event_fn
+        )
+    except Exception as e:  # noqa: BLE001
+        results["kafka"] = {"error": str(e)}
+
+    print("\n=== Pandera validation (real file) ===")
+    try:
+        res = pvb.run_single(0, "benchmarks/data", input_csv=settlement_csv, dedup=True)
+        out = {"hardware": hw, "benchmarks": [res]}
+        with open(os.path.join(SCRIPT_DIR, "results_pandera_real.json"), "w") as f:
+            json.dump(out, f, indent=2)
+        results["pandera"] = out
+    except Exception as e:  # noqa: BLE001
+        results["pandera"] = {"error": str(e)}
+
+    print("\n=== Iceberg MERGE (real, 1M/5M/12M) ===")
+    try:
+        from reconciliation_benchmark import run_benchmark
+
+        results["iceberg"] = run_benchmark(None, "nessie", "mor", False, "real")
+    except Exception as e:  # noqa: BLE001
+        results["iceberg"] = {"error": str(e)}
+
+    output_path = os.path.join(SCRIPT_DIR, "results_real.json")
+    with open(output_path, "w") as f:
+        json.dump(results, f, indent=2, default=str)
+    print(f"\nResults written to {output_path}")
+    print_summary(results)
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(description="Benchmark Orchestrator")
     parser.add_argument(
@@ -102,6 +156,12 @@ def main():
     )
     parser.add_argument("--partitions", type=int, default=16)
     parser.add_argument("--scale", type=int, default=None)
+    parser.add_argument(
+        "--real",
+        action="store_true",
+        help="Real-data pass: thiru replay/inputs, results_real.json. "
+        "Slow (full 12M MERGE); run modules directly for single suites.",
+    )
     args = parser.parse_args()
 
     hw = get_hardware_info()
@@ -114,6 +174,9 @@ def main():
     except Exception:
         pass
     results = {"timestamp": datetime.now(UTC).isoformat(), "hardware": hw}
+
+    if args.real:
+        return run_real(results, hw)
 
     if args.suite in ("all", "kafka"):
         print("\n=== Kafka Producer Benchmark ===")
