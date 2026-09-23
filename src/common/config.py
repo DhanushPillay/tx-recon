@@ -161,10 +161,7 @@ def get_spark_session(app_name: str = "TxRecon") -> SparkSession:
         spark = spark.config("spark.submit.deployMode", deploy_mode)
         if deploy_mode == "client":
             # inside Docker (/.dockerenv) driver must be reachable container IP, not host gateway
-            try:
-                in_docker = os.path.exists("/.dockerenv")
-            except Exception:
-                in_docker = False
+            in_docker = os.path.exists("/.dockerenv")
             if in_docker:
                 import socket
 
