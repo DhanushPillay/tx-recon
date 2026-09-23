@@ -27,24 +27,36 @@ def _run_with_collects(batch_collect, table_collect, late_n=0, dlq_n=0, late_tot
             load_csv_on_driver=False,
             webhook_table="nessie.db.webhooks",
             dlq_table="nessie.db.webhooks_dlq",
+            spark_shuffle_partitions=32,
         )
         mock_spark = MagicMock()
         mock_get_spark.return_value = mock_spark
 
         mock_bank_df = MagicMock()
         mock_spark.read.format.return_value.option.return_value.schema.return_value.load.return_value = mock_bank_df
-        mock_bank_df.filter.return_value.count.return_value = 4
-        mock_bank_df.filter.return_value.withColumn.return_value.filter.return_value.drop.return_value.count.return_value = 4
-        mock_spark.sql.side_effect = [
+        _valid = mock_bank_df.filter.return_value
+        _valid.cache.return_value = _valid
+        _valid.count.return_value = 4
+        _dedup = _valid.withColumn.return_value.filter.return_value.drop.return_value
+        _dedup.repartition.return_value.count.return_value = 4
+        # Late UPDATE runs only when late_n > 0; gauges are one UNION collect.
+        _side = [
             MagicMock(),  # MERGE
             MagicMock(),  # mart CTAS (runs before counts)
             MagicMock(collect=MagicMock(return_value=table_collect)),  # table-level
             MagicMock(collect=MagicMock(return_value=batch_collect)),  # batch-scoped
             MagicMock(collect=MagicMock(return_value=[{"n": late_n}])),  # late-SLA side count
-            MagicMock(),  # late-SLA UPDATE
-            MagicMock(collect=MagicMock(return_value=[{"n": dlq_n}])),  # dlq_depth
-            MagicMock(collect=MagicMock(return_value=[{"n": late_total_n}])),  # late total
         ]
+        if late_n:
+            _side.append(MagicMock())  # late-SLA UPDATE
+        _side.append(
+            MagicMock(
+                collect=MagicMock(
+                    return_value=[{"k": "dlq", "n": dlq_n}, {"k": "late", "n": late_total_n}]
+                )
+            )
+        )
+        mock_spark.sql.side_effect = _side
         return run_reconciliation(), mock_spark
 
 
@@ -92,6 +104,7 @@ def test_run_reconciliation_wiring(
         load_csv_on_driver=False,
         webhook_table="nessie.db.webhooks",
         dlq_table="nessie.db.webhooks_dlq",
+        spark_shuffle_partitions=32,
     )
     mock_spark = MagicMock()
     mock_get_spark.return_value = mock_spark
@@ -99,8 +112,10 @@ def test_run_reconciliation_wiring(
     mock_bank_df = MagicMock()
     mock_spark.read.format.return_value.option.return_value.schema.return_value.load.return_value = mock_bank_df
     # counts path: 4 deduped settlement rows; table holds 3 MATCHED + 1 FEE_MISMATCH
-    mock_bank_df.filter.return_value.count.return_value = 4
-    mock_bank_df.filter.return_value.withColumn.return_value.filter.return_value.drop.return_value.count.return_value = 4
+    _valid = mock_bank_df.filter.return_value
+    _valid.cache.return_value = _valid
+    _valid.count.return_value = 4
+    _valid.withColumn.return_value.filter.return_value.drop.return_value.repartition.return_value.count.return_value = 4
     table_collect = [
         {"reconciliation_status": "MATCHED", "n": 3},
         {"reconciliation_status": "EXCEPTION_FEE_MISMATCH", "n": 1},
@@ -115,15 +130,16 @@ def test_run_reconciliation_wiring(
         MagicMock(collect=MagicMock(return_value=table_collect)),  # table-level
         MagicMock(collect=MagicMock(return_value=batch_collect)),  # batch-scoped
         MagicMock(collect=MagicMock(return_value=[{"n": 2}])),  # late-SLA side count
-        MagicMock(),  # late-SLA UPDATE
-        MagicMock(collect=MagicMock(return_value=[{"n": 1}])),  # dlq_depth
-        MagicMock(collect=MagicMock(return_value=[{"n": 2}])),  # late_unresolved_total
+        MagicMock(),  # late-SLA UPDATE (late_n=2 > 0)
+        MagicMock(
+            collect=MagicMock(return_value=[{"k": "dlq", "n": 1}, {"k": "late", "n": 2}])
+        ),  # gauges UNION
     ]
 
     counts = run_reconciliation()
 
     mock_spark.read.format.assert_called_with("csv")
-    dedup_df = mock_bank_df.filter.return_value.withColumn.return_value.filter.return_value.drop.return_value
+    dedup_df = mock_bank_df.filter.return_value.withColumn.return_value.filter.return_value.drop.return_value.repartition.return_value
     dedup_df.createOrReplaceTempView.assert_called_once_with("bank_settlements")
 
     merge_sql = mock_spark.sql.call_args_list[0][0][0]
