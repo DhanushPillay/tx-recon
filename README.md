@@ -104,18 +104,19 @@ Full tour of all 11 cards: [docs/DASHBOARD.md](docs/DASHBOARD.md).
 
 ## Benchmarks
 
-Single-node vs multi-node (Hadoop YARN+HDFS). Full method, hardware fingerprints, and repro commands: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+Measured on real data: [thiru1711/Financial_Transactions](https://huggingface.co/datasets/thiru1711/Financial_Transactions)
+(13,305,915 card transactions) on 23 Sep 2026. Method, repro commands, and full tables: [docs/REAL_DATA.md](docs/REAL_DATA.md).
 
 | Suite | Result |
 | :--- | :--- |
-| Accuracy (sealed key) | `min_f1=1.0, FP=0` @ 2000 rows x 3 seeds |
-| Kafka producer | **131,887 msgs/sec** async; serial flush p99 1.31ms (acks=all, lz4, 1KB padded; real Avro ~150B) |
-| Validation (Pandera) | **2.66M rows/sec** @ 1M rows (in-memory; 10M spot-check ~62% lower, re-run pending) |
-| Iceberg MERGE (single-node, `SPARK_MODE=local` 28 cores) | **57,582 rows/sec** @ 100k 50% (0.87s), **163,747 rows/sec** @ 1M 50% (3.05s) — tuned run `docs/BENCHMARKS.md`, per-suite JSON gitignored |
-| Iceberg MERGE (multi-node, `SPARK_MODE=yarn` 14 cores, `hdfs://namenode:8020/warehouse`) | **23,710 rows/sec** @ 100k 50% (2.11s), **71k rows/sec** @ 1M 50% (7.02s) via `tx-recon-driver:bench` inside `tx-recon_default` — `tests/performance/results_iceberg_yarn_hdfs.json`; YARN +76–191% slower at ≤1M from staging/4096MB NM |
-| Real data ([thiru1711/Financial_Transactions](https://huggingface.co/datasets/thiru1711/Financial_Transactions), 13.3M rows) | MERGE 12M 50% **23.69s** (~94.7% match); validation 12.6M rows polars 8.44M/s; Kafka replay 239k msgs/s — full tables `docs/REAL_DATA.md`, record `tests/performance/results_real.json` |
+| Iceberg MERGE (single-node, 8g driver) | 1M 50% **6.21s**, 5M 50% **11.38s**, 12M 50% **23.69s**, match ~94.7% throughout |
+| Validation, 12.6M rows | polars **8.44M** / manual 3.63M / pandera 1.44M / pydantic 208k rows/sec |
+| Kafka producer (real ~150B records, acks=all, lz4) | **239,061 msgs/sec**; serial p50 0.98ms, p99 20.59ms |
+| End-to-end batch (12.6M rows: validate + MERGE) | ~5 min wall (173s validate, 105s MERGE) |
 
-Figures last verified 13–16 Sep 2026 (synthetic) and 23 Sep 2026 (real data, see `docs/REAL_DATA.md`); full re-run pending — treat as last-known, not current.
+Record: `tests/performance/results_real.json`. Match rate ~94.7% is the loader's
+~10%-exception mix working as designed (health gate ≥ 85%), not matcher error.
+Synthetic regression baselines are archived in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## Project structure
 
