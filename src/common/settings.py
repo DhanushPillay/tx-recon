@@ -68,7 +68,6 @@ class Settings(BaseSettings):
 
     # Fee engine
     fee_rate_config: str = "config/fee_rates.yaml"
-    default_mdr_rate: float = 0.015
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
