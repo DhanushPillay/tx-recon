@@ -49,6 +49,15 @@ WHEN MATCHED THEN
 
 
 SCALE_OPTIONS = [100_000, 500_000, 1_000_000, 2_000_000, 5_000_000]
+REAL_SCALES = [1_000_000, 5_000_000, 12_000_000]
+
+# Real-data inputs (thiru loader outputs). Settlement nets are loader-computed
+# (independent schedule = v1 card), so clean rows MATCH and the ~5% injected
+# mismatch slice reports as mismatched instead of a synthetic 0%.
+REAL_HOOKS_CSV = os.path.join(os.path.dirname(__file__), "../../data/real_thiru_full_hooks.csv")
+REAL_SETTLEMENT_CSV = os.path.join(
+    os.path.dirname(__file__), "../../data/real_thiru_full_settlement.csv"
+)
 
 
 def _latest_snapshot_summary(spark, table_name):
@@ -80,10 +89,8 @@ def _hygiene(spark, catalog, table_name):
     spark.sql(f"CALL {catalog}.system.expire_snapshots(table => '{table_name}', retain_last => 1)")
 
 
-def create_table(spark, table_name, num_rows, seed=7, merge_mode="mor"):
-    logger.info(f"Creating {table_name} with {num_rows:,} rows...")
-    rnd = random.Random(seed)
-
+def _bench_ddl(spark, table_name, merge_mode="mor"):
+    """Shared scratch-table DDL (synthetic + real runs measure the same layout)."""
     spark.sql(f"DROP TABLE IF EXISTS {table_name}")
     mode = "merge-on-read" if merge_mode == "mor" else "copy-on-write"
     spark.sql(
@@ -113,6 +120,13 @@ def create_table(spark, table_name, num_rows, seed=7, merge_mode="mor"):
         )
     """
     )
+
+
+def create_table(spark, table_name, num_rows, seed=7, merge_mode="mor"):
+    logger.info(f"Creating {table_name} with {num_rows:,} rows...")
+    rnd = random.Random(seed)
+
+    _bench_ddl(spark, table_name, merge_mode)
 
     batch_size = 50000
     schema = StructType(
@@ -211,10 +225,126 @@ def create_settlement_data(spark, table_name, update_fraction):
     return settlement_count
 
 
-def measure_merge(spark, catalog, table_name, update_fraction, merge_mode, repeats=3):
+def create_table_real(spark, table_name, num_rows, merge_mode="mor"):
+    """Bench target from real hook rows: JVM CSV read (no driver list), same DDL.
+
+    ORDER BY makes the slice deterministic; setup is untimed so sort cost is free.
+    """
+    from pyspark.sql import functions as F
+    from pyspark.sql.types import LongType, StringType, StructField, StructType
+
+    logger.info(f"Creating {table_name} with {num_rows:,} real rows...")
+    _bench_ddl(spark, table_name, merge_mode)
+    hooks = spark.read.csv(
+        REAL_HOOKS_CSV,
+        header=True,
+        schema=StructType(
+            [
+                StructField("transaction_id", StringType(), True),
+                StructField("amount_paise", LongType(), True),
+                StructField("day", StringType(), True),
+                StructField("merchant_id", StringType(), True),
+                StructField("instrument_type", StringType(), True),
+            ]
+        ),
+    )
+    hooks.orderBy("transaction_id").limit(num_rows).select(
+        "transaction_id",
+        "amount_paise",
+        F.lit("SUCCESS").alias("gateway_status"),
+        F.concat(F.col("day"), F.lit("T00:00:00")).alias("timestamp_utc"),
+        "merchant_id",
+        F.lit("PENDING_SETTLEMENT").alias("reconciliation_status"),
+        F.lit(None).cast("string").alias("bank_ref_id"),
+        F.current_timestamp().alias("ingested_at"),
+    ).writeTo(table_name).append()
+    count = spark.sql(f"SELECT COUNT(*) FROM {table_name}").collect()[0][0]
+    logger.info(f"Table {table_name} created with {count:,} real rows")
+    return count
+
+
+_REAL_RAW_CACHED = False
+
+
+def _real_settlement_raw(spark):
+    """Read + persist the 1GB settlement CSV once per process.
+
+    Both update fractions reuse it instead of re-scanning 12.9M rows each
+    (~1 min saved per scale). Untimed setup; warmed before timing.
+    """
+    global _REAL_RAW_CACHED
+    from pyspark.sql.types import LongType, StringType, StructField, StructType
+
+    if _REAL_RAW_CACHED:
+        return
+    bank_schema = StructType(
+        [
+            StructField("bank_ref_id", StringType(), True),
+            StructField("transaction_id", StringType(), True),
+            StructField("settled_amount_paise", LongType(), True),
+            StructField("settlement_date", StringType(), True),
+            StructField("instrument_type", StringType(), True),
+            StructField("merchant_id", StringType(), True),
+            StructField("fee_paise", LongType(), True),
+            StructField("gst_paise", LongType(), True),
+            StructField("settlement_id", StringType(), True),
+            StructField("utr", StringType(), True),
+            StructField("currency", StringType(), True),
+            StructField("gross_amount_paise", LongType(), True),
+        ]
+    )
+    raw = spark.read.csv(REAL_SETTLEMENT_CSV, header=True, schema=bank_schema)
+    raw.persist()
+    raw.createOrReplaceTempView("settlement_raw_real")
+    raw.count()
+    _REAL_RAW_CACHED = True
+
+
+def create_settlement_data_real(spark, table_name, update_fraction):
+    """Settlement slice = cached raw CSV semi-joined to the target ids.
+
+    Same temp view + persist + warm-count contract as the synthetic builder.
+    """
+    count = spark.sql(f"SELECT COUNT(*) FROM {table_name}").collect()[0][0]
+    settlement_count = int(count * update_fraction)
+    logger.info(
+        f"Creating real settlement data: {settlement_count:,} rows "
+        f"({update_fraction * 100:.0f}% of {count:,})"
+    )
+    _real_settlement_raw(spark)
+    target_ids = spark.sql(
+        f"SELECT transaction_id FROM {table_name} ORDER BY transaction_id LIMIT {settlement_count}"
+    )
+    settlement_df = (
+        spark.sql("SELECT * FROM settlement_raw_real")
+        .join(target_ids, "transaction_id")
+        # Real files carry dup settlement rows (dedup-keep-latest is prod behavior);
+        # MERGE demands one source row per target. Untimed setup.
+        .dropDuplicates(["transaction_id"])
+        .select(
+            "bank_ref_id",
+            "transaction_id",
+            "settled_amount_paise",
+            "settlement_date",
+            "instrument_type",
+            "merchant_id",
+        )
+    )
+    settlement_df = settlement_df.persist()
+    settlement_df.createOrReplaceTempView("bank_settlements")
+    settlement_df.count()
+    return settlement_count
+
+
+def measure_merge(
+    spark, catalog, table_name, update_fraction, merge_mode, repeats=3, source="synthetic"
+):
     import statistics
 
-    create_settlement_data(spark, table_name, update_fraction)
+    if source == "real":
+        create_settlement_data_real(spark, table_name, update_fraction)
+    else:
+        create_settlement_data(spark, table_name, update_fraction)
 
     files_before = spark.sql(f"SELECT COUNT(*) FROM {table_name}.files").collect()[0][0]
 
@@ -250,9 +380,9 @@ def measure_merge(spark, catalog, table_name, update_fraction, merge_mode, repea
     spark.sql(reset_sql)
     for _ in range(repeats):
         _hygiene(spark, catalog, table_name)  # untimed steady-state reset
-        start = time.time()
+        start = time.perf_counter()
         spark.sql(merge_sql)
-        elapsed = time.time() - start
+        elapsed = time.perf_counter() - start
         _, summary = _latest_snapshot_summary(spark, table_name)
         merge_runs.append(
             {
@@ -266,9 +396,9 @@ def measure_merge(spark, catalog, table_name, update_fraction, merge_mode, repea
         # Reset state between repeats so each timing measures the same work.
         spark.sql(reset_sql)
     # One final MERGE leaves the table matched for the count queries below.
-    start = time.time()
+    start = time.perf_counter()
     spark.sql(merge_sql)
-    write_time = time.time() - start
+    write_time = time.perf_counter() - start
     merge_runs.append(
         {
             "time_sec": round(write_time, 2),
@@ -290,9 +420,9 @@ def measure_merge(spark, catalog, table_name, update_fraction, merge_mode, repea
         f"SELECT COUNT(*) FROM {table_name} WHERE reconciliation_status = 'EXCEPTION_FEE_MISMATCH'"
     ).collect()[0][0]
 
-    start = time.time()
+    start = time.perf_counter()
     spark.sql(f"SELECT COUNT(*) FROM {table_name}").collect()
-    read_time = time.time() - start
+    read_time = time.perf_counter() - start
 
     # Release settlement cache
     try:
@@ -318,11 +448,14 @@ def measure_merge(spark, catalog, table_name, update_fraction, merge_mode, repea
         "files_after": files_after,
         "matched": matched,
         "mismatched": mismatched,
+        "match_rate": round(matched / (matched + mismatched), 4) if matched + mismatched else 0,
         "healthy": bool(matched + mismatched > 0),
     }
 
 
-def run_benchmark(scale=None, catalog="nessie", merge_mode="mor", cluster=False):
+def run_benchmark(
+    scale=None, catalog="nessie", merge_mode="mor", cluster=False, source="synthetic"
+):
     from hardware import fingerprint
 
     hw = {**get_hardware_info(), "fingerprint": fingerprint()}
@@ -341,15 +474,49 @@ def run_benchmark(scale=None, catalog="nessie", merge_mode="mor", cluster=False)
     spark.conf.set("spark.sql.autoBroadcastJoinThreshold", "10485760")
     spark.conf.set("spark.default.parallelism", "32")
     spark.conf.set("spark.sql.shuffle.partitions", "32")
+    if source == "real":
+        for req in (REAL_HOOKS_CSV, REAL_SETTLEMENT_CSV):
+            if not os.path.exists(req):
+                raise FileNotFoundError(
+                    f"real source needs {req}: build it with src.adapters.real_data"
+                )
 
     spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {catalog}.db")
 
-    row_counts = [scale] if scale else SCALE_OPTIONS
+    row_counts = [scale] if scale else (REAL_SCALES if source == "real" else SCALE_OPTIONS)
     results = {}
+    output = {"hardware": hw, "benchmarks": results, "catalog": catalog}
+
+    # Dual-catalog: nessie -> results_iceberg.json (s3a), nessie_hdfs -> results_iceberg_yarn_hdfs.json (hdfs).
+    # CoW runs get their own file so they never overwrite the cited MoR record.
+    # Real-data runs never touch synthetic baselines: separate results file.
+    if source == "real":
+        out_name = "results_iceberg_real.json"
+    elif catalog == "nessie_hdfs":
+        out_name = "results_iceberg_yarn_hdfs.json"
+    elif merge_mode == "cow":
+        out_name = "results_iceberg_cow.json"
+    else:
+        out_name = "results_iceberg.json"
+    out_path = os.path.join(os.path.dirname(__file__), out_name)
+
+    def _dump():
+        # Incremental: a kill loses at most the in-flight scale, never completed ones.
+        with open(out_path, "w") as f:
+            json.dump(output, f, indent=2)
 
     for num_rows in row_counts:
         table_name = f"{catalog}.db.webhooks_bench_{num_rows // 1000}k"
-        create_table(spark, table_name, num_rows, merge_mode=merge_mode)
+        if source == "real":
+            table_name += "_real"
+            if num_rows >= 5_000_000:
+                # 12M-row joins OOM at 32 partitions on a 16GB box (measured);
+                # smaller partitions keep per-task heap flat. Runtime conf only.
+                spark.conf.set("spark.sql.shuffle.partitions", "128")
+                spark.conf.set("spark.default.parallelism", "128")
+            create_table_real(spark, table_name, num_rows, merge_mode=merge_mode)
+        else:
+            create_table(spark, table_name, num_rows, merge_mode=merge_mode)
         if cluster:
             # One-variable experiment: sort on the join key. Untimed setup.
             logger.info("Clustering table on transaction_id (sort rewrite)...")
@@ -362,19 +529,29 @@ def run_benchmark(scale=None, catalog="nessie", merge_mode="mor", cluster=False)
         for update_pct in [10, 50]:
             update_frac = update_pct / 100
             label = f"{num_rows // 1000}k_rows_{update_pct}pct_update_{merge_mode}"
+            if source == "real":
+                label += "_real"
             if cluster:
                 label += "_clustered"
             logger.info(f"\n=== Benchmark: {label} ===")
 
-            result = measure_merge(spark, catalog, table_name, update_frac, merge_mode)
+            result = measure_merge(
+                spark, catalog, table_name, update_frac, merge_mode, source=source
+            )
             results[label] = result
 
             logger.info(
                 f"  MERGE write: {result['write_time_sec']}s, "
                 f"read: {result['read_time_sec']}s, "
                 f"matched: {result['matched']:,}, "
-                f"mismatched: {result['mismatched']:,}"
+                f"mismatched: {result['mismatched']:,}, "
+                f"match_rate: {result['match_rate']:.2%}"
             )
+            if source == "real" and result["match_rate"] < 0.85:
+                raise RuntimeError(
+                    f"real-data health gate: match_rate {result['match_rate']:.2%} < 85% "
+                    f"(loader mix targets ~90%; fee calibration or data drift suspect)"
+                )
             logger.info(f"  Files: {result['files_before']} -> {result['files_after']}")
             logger.info(f"  Join: {result['join_type']}, mode: {merge_mode}")
 
@@ -383,26 +560,18 @@ def run_benchmark(scale=None, catalog="nessie", merge_mode="mor", cluster=False)
                     SET reconciliation_status = 'PENDING_SETTLEMENT',
                         bank_ref_id = NULL"""
             )
+        _dump()
+        logger.info(f"  checkpoint: scale {num_rows:,} results flushed to {out_name}")
 
     for num_rows in row_counts:
         table_name = f"{catalog}.db.webhooks_bench_{num_rows // 1000}k"
+        if source == "real":
+            table_name += "_real"
         spark.sql(f"DROP TABLE IF EXISTS {table_name}")
 
     spark.stop()
 
-    output = {"hardware": hw, "benchmarks": results, "catalog": catalog}
-
-    # Dual-catalog: nessie -> results_iceberg.json (s3a), nessie_hdfs -> results_iceberg_yarn_hdfs.json (hdfs).
-    # CoW runs get their own file so they never overwrite the cited MoR record.
-    if catalog == "nessie_hdfs":
-        out_name = "results_iceberg_yarn_hdfs.json"
-    elif merge_mode == "cow":
-        out_name = "results_iceberg_cow.json"
-    else:
-        out_name = "results_iceberg.json"
-    out_path = os.path.join(os.path.dirname(__file__), out_name)
-    with open(out_path, "w") as f:
-        json.dump(output, f, indent=2)
+    _dump()
     logger.info(f"\nResults written to {out_path} (catalog={catalog})")
 
     return output
@@ -410,14 +579,24 @@ def run_benchmark(scale=None, catalog="nessie", merge_mode="mor", cluster=False)
 
 def main():
     parser = argparse.ArgumentParser(description="Reconciliation Benchmark")
-    parser.add_argument("--scale", type=int, default=None, choices=SCALE_OPTIONS)
+    parser.add_argument("--scale", type=int, default=None)
     parser.add_argument("--catalog", type=str, default="nessie", choices=["nessie", "nessie_hdfs"])
     parser.add_argument("--merge-mode", type=str, default="mor", choices=["mor", "cow"])
+    parser.add_argument(
+        "--source",
+        type=str,
+        default="synthetic",
+        choices=["synthetic", "real"],
+        help="real: thiru hook/settlement CSVs (needs data/real_thiru_full_*.csv + 8g driver at 12M)",
+    )
     parser.add_argument(
         "--cluster", action="store_true", help="sort-rewrite on join key before measuring"
     )
     args = parser.parse_args()
-    run_benchmark(args.scale, args.catalog, args.merge_mode, args.cluster)
+    allowed = REAL_SCALES if args.source == "real" else SCALE_OPTIONS
+    if args.scale is not None and args.scale not in allowed:
+        raise SystemExit(f"--scale {args.scale} not in {allowed} for source={args.source}")
+    run_benchmark(args.scale, args.catalog, args.merge_mode, args.cluster, args.source)
 
 
 if __name__ == "__main__":
