@@ -36,13 +36,48 @@ def _load_rate_card():
 _RATE_CARD = _load_rate_card()
 
 
-def _expected_net_raw(amount_paise, instrument_type):
+def _expected_net_raw(amount_paise, instrument_type, merchant_id=None, settlement_date=None):
     """Independent oracle: reads the YAML rate card directly and does integer
     math inline, never touching FeeEngine. Ground truth must not share code
-    with the matcher, or a FeeEngine bug scores a perfect 1.0 on both sides."""
+    with the matcher, or a FeeEngine bug scores a perfect 1.0 on both sides.
+    Version + merchant aware: picks the history card whose
+    [effective_from, effective_to] contains settlement_date, then
+    merchant+instrument > instrument > default (mirrors FeeEngine)."""
+    from datetime import date as _date
+
+    def _iso(s):
+        try:
+            return _date.fromisoformat(str(s))
+        except Exception:
+            return None
+
     card = _RATE_CARD
+    history = card.get("history") or card.get("rate_card_history") or card.get("rate_cards")
+    if history and settlement_date:
+        d = _iso(settlement_date)
+        chosen = prior = None
+        cards = sorted(
+            history, key=lambda c: _iso(str(c.get("effective_from", "1970-01-01"))) or _date.min
+        )
+        for c in cards:
+            eff_from = _iso(str(c.get("effective_from", "1970-01-01")))
+            if not eff_from or (d is not None and eff_from > d):
+                continue
+            prior = c
+            eff_to = _iso(str(c["effective_to"])) if c.get("effective_to") else None
+            if d is None or eff_to is None or d <= eff_to:
+                chosen = c
+        card = chosen or prior or cards[0]
     rate = dict(card.get("default", {}))
     for k, v in card.get("instruments", {}).get(instrument_type, {}).items():
+        if k in ("mdr_rate_bps", "gst_on_mdr", "tolerance_paise"):
+            rate[k] = v
+    merch_map = (card.get("merchants", {}) or {}).get(merchant_id or "", {}) if merchant_id else {}
+    if merchant_id and not merch_map:
+        # Top-level merchants apply to all cards unless a card overrides that
+        # merchant key (mirrors FeeEngine _build_rate_cards + _lookup).
+        merch_map = (_RATE_CARD.get("merchants", {}) or {}).get(merchant_id, {}) or {}
+    for k, v in merch_map.get(instrument_type, {}).items():
         if k in ("mdr_rate_bps", "gst_on_mdr", "tolerance_paise"):
             rate[k] = v
     mdr_bps = int(rate.get("mdr_rate_bps", 150))
@@ -64,9 +99,9 @@ def build_case(n=2000, seed=7):
     seen_ids = set()
     seq = 0
 
-    def add(tx, settled):
+    def add(tx, settled, merchant=None, sdate=None):
         nonlocal seq
-        settlements.append((tx, settled, seq))
+        settlements.append((tx, settled, seq, merchant, sdate))
         seq += 1
 
     for _ in range(n):
@@ -76,34 +111,38 @@ def build_case(n=2000, seed=7):
         seen_ids.add(tx)
         amount = rnd.randint(1000, 1000000)
         inst = rnd.choice(INSTRUMENTS)
-        webhooks[tx] = (amount, inst)
-        net = _expected_net_raw(amount, inst)
+        # Merchant + version coverage: 20% merch_001, 10% merch_demo, dates split v1/v2.
+        _mr = rnd.random()
+        merchant = "merch_001" if _mr < 0.20 else ("merch_demo" if _mr < 0.30 else None)
+        sdate = "2025-01-15" if rnd.random() < 0.5 else "2025-06-15"
+        webhooks[tx] = (amount, inst, merchant, sdate)
+        net = _expected_net_raw(amount, inst, merchant, sdate)
         r = rnd.random()
         if r < 0.70:  # exact
-            add(tx, net)
+            add(tx, net, merchant, sdate)
             answer[tx] = MATCHED
         elif r < 0.80:  # rounding noise, still within tolerance
-            add(tx, net + rnd.choice([-1, 1]))
+            add(tx, net + rnd.choice([-1, 1]), merchant, sdate)
             answer[tx] = MATCHED
         elif r < 0.85:  # genuine fee mismatch
-            add(tx, net + rnd.randint(50, 5000))
+            add(tx, net + rnd.randint(50, 5000), merchant, sdate)
             answer[tx] = EXCEPTION_FEE_MISMATCH
         elif r < 0.90:  # orphan settlement, webhook withheld
             del webhooks[tx]
-            add(tx, net)
+            add(tx, net, merchant, sdate)
             answer[tx] = EXCEPTION_MISSING_WEBHOOK
         elif r < 0.95:  # duplicate settlement row (dedup keeps latest = correct net)
-            add(tx, net + rnd.randint(50, 5000))
-            add(tx, net)
+            add(tx, net + rnd.randint(50, 5000), merchant, sdate)
+            add(tx, net, merchant, sdate)
             answer[tx] = MATCHED
         elif r < 0.975:  # out-of-order redelivery: stale dup arrives between, correct net is latest
-            add(tx, net + rnd.randint(50, 5000))
-            add(tx, net + rnd.randint(50, 5000))
-            add(tx, net)
+            add(tx, net + rnd.randint(50, 5000), merchant, sdate)
+            add(tx, net + rnd.randint(50, 5000), merchant, sdate)
+            add(tx, net, merchant, sdate)
             answer[tx] = MATCHED
         else:  # late correction: wrong net posted first, corrective row converges to net
-            add(tx, net + rnd.randint(50, 5000))
-            add(tx, net)
+            add(tx, net + rnd.randint(50, 5000), merchant, sdate)
+            add(tx, net, merchant, sdate)
             answer[tx] = MATCHED
     return webhooks, settlements, answer
 
@@ -112,16 +151,23 @@ def match(webhooks, settlements):
     """Matcher under test: sees ONLY webhooks + settlements, never the answer."""
     engine = FeeEngine()
     latest = {}
-    for tx, settled, day in settlements:  # max day wins = WINDOW row_number() dedup
+    for row in settlements:  # max day wins = WINDOW row_number() dedup
+        tx, settled, day = row[0], row[1], row[2]
+        merch, sdate = (row[3], row[4]) if len(row) > 4 else (None, None)
         if tx not in latest or day > latest[tx][1]:
-            latest[tx] = (settled, day)
+            latest[tx] = (settled, day, merch, sdate)
     predicted = {}
-    for tx, (settled, _) in latest.items():
+    for tx, (settled, _, merch, sdate) in latest.items():
         if tx not in webhooks:
             predicted[tx] = EXCEPTION_MISSING_WEBHOOK
             continue
-        amount, inst = webhooks[tx]
-        ok, _ = engine.check_match(amount, settled, inst)
+        wh = webhooks[tx]
+        amount, inst = wh[0], wh[1]
+        wmerch = wh[2] if len(wh) > 2 else None
+        wsdate = wh[3] if len(wh) > 3 else None
+        # Settlement-side merchant/date win (they are the observed leg);
+        # webhook values are the fallback for old 2-tuple harnesses.
+        ok, _ = engine.check_match(amount, settled, inst, merch or wmerch, sdate or wsdate)
         predicted[tx] = MATCHED if ok else EXCEPTION_FEE_MISMATCH
     return predicted
 
@@ -149,13 +195,18 @@ def score(answer, predicted):
 
 
 def run(n=2000, seed=7):
+    from collections import Counter
+
     webhooks, settlements, answer = build_case(n, seed)
     predicted = match(webhooks, settlements)
     report = score(answer, predicted)
-    # one-to-one invariant: every predicted MATCHED maps to exactly one webhook
-    matched_tx = [tx for tx, p in predicted.items() if p == MATCHED]
-    assert len(matched_tx) == len(set(matched_tx)), "fanout > 1: duplicate MATCHED"
+    # Real fanout check: one prediction per distinct settlement tx, keys tile the answer.
+    # (Old check compared a dict against itself, always true.)
+    assert set(predicted) == set(answer), "prediction keys diverged from answer keys"
+    dup_max = max(Counter(s[0] for s in settlements).values(), default=1)
+    assert len(predicted) == len(answer), f"fanout: {len(predicted)} preds vs {len(answer)} answers"
     report["fanout_max"] = 1
+    report["settlement_dup_max"] = dup_max
     return report
 
 
