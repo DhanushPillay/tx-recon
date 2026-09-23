@@ -57,6 +57,11 @@ jobs:
           pip install pip-audit
           pip-audit --desc || true
 
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run accuracy gate (sealed harness)
         env:
           PYTHONPATH: .
