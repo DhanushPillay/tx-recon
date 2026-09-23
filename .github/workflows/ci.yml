@@ -22,6 +22,10 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v7
+        with:
+          # Full history: gitleaks scans the push range (base^..head),
+          # which does not resolve in a depth-1 clone.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v7
