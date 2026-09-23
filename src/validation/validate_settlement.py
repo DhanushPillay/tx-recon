@@ -1,6 +1,7 @@
 import glob
 import logging
 import os
+import time
 
 import pandas as pd
 import pandera.pandas as pa
@@ -9,6 +10,42 @@ from pandera.errors import SchemaErrors
 from src.validation.settlement_schema import settlement_schema
 
 logger = logging.getLogger(__name__)
+
+_VOLUME_DROP_WARN = 0.5  # warn if this batch has <50% of the previous curated rows
+_STALE_FILE_HOURS = 48  # warn if the settlement file itself is older than this
+
+
+def _warn_volume_shift(data_dir: str, latest_file: str, n_rows: int) -> None:
+    """Warn-only volume guard: compare against the previous curated batch.
+
+    Catches a truncated/partial PG drop before MERGE bakes it in. Never
+    raises — a first-ever run has no previous batch, and unreadable history
+    must not fail a valid batch."""
+    try:
+        current = "curated_" + os.path.basename(latest_file)
+        cands = [
+            p
+            for p in glob.glob(os.path.join(data_dir, "curated_settlement_*.csv"))
+            if os.path.basename(p) != current
+        ]
+        if not cands:
+            return
+        prev = max(cands, key=os.path.getmtime)
+        with open(prev, encoding="utf-8") as fh:
+            prev_n = sum(1 for _ in fh) - 1  # header
+        if prev_n > 0 and n_rows < _VOLUME_DROP_WARN * prev_n:
+            logger.warning(
+                f"volume shift: {n_rows} rows vs {prev_n} in {os.path.basename(prev)} "
+                f"(>{(1 - _VOLUME_DROP_WARN):.0%} drop) — verify the PG drop is complete"
+            )
+        age_h = (time.time() - os.path.getmtime(latest_file)) / 3600
+        if age_h > _STALE_FILE_HOURS:
+            logger.warning(
+                f"stale settlement file: {os.path.basename(latest_file)} is {age_h:.1f}h old "
+                f"(>{_STALE_FILE_HOURS}h) — verify the PG drop schedule"
+            )
+    except OSError as exc:
+        logger.warning(f"volume check skipped: {exc}")
 
 
 class SettlementValidationError(Exception):
@@ -34,6 +71,20 @@ def validate_and_quarantine(
         return df[~invalid_mask], df[invalid_mask]
 
 
+def _validate_large_file(path: str, normalize_fn, chunksize: int = 100_000) -> tuple:
+    """Stream a large settlement CSV in chunks; returns (canonical_df, pg_name)."""
+    import pandas as _pd
+
+    _parts, _pg = [], "generic"
+    for _chunk in _pd.read_csv(
+        path, dtype=str, sep=None, engine="python", keep_default_na=False, chunksize=chunksize
+    ):
+        _chunk = _chunk.replace(r"^\s*$", _pd.NA, regex=True)
+        _norm, _pg = normalize_fn(_chunk)
+        _parts.append(_norm)
+    return (_pd.concat(_parts, ignore_index=True) if _parts else _pd.DataFrame(), _pg)
+
+
 def validate_latest_settlement(
     project_root: str | None = None, date_str: str | None = None
 ) -> str | None:
@@ -57,11 +108,22 @@ def validate_latest_settlement(
 
     # Try PG adapter normalization (Razorpay/Cashfree/PayU/generic) before validation.
     # Generic files pass through unchanged; PG files are converted INR->paise etc.
+    # Large files (>256MB) stream in 100k-row chunks so the driver never holds
+    # the whole file + validated copies in memory at once.
+    _chunk_bytes = 256 * 1024 * 1024
     try:
-        from src.adapters.settlement import load_settlement_csv
+        _big = os.path.getsize(latest_file) > _chunk_bytes
+    except OSError:
+        _big = False
+    try:
+        from src.adapters.settlement import load_settlement_csv, normalize_settlement_df
 
-        df, pg_name = load_settlement_csv(latest_file)
-        logger.info(f"Settlement adapter detected: {pg_name} -> {len(df)} rows normalized")
+        if _big:
+            df, pg_name = _validate_large_file(latest_file, normalize_settlement_df)
+            logger.info(f"Settlement adapter (chunked) -> {len(df)} rows normalized")
+        else:
+            df, pg_name = load_settlement_csv(latest_file)
+            logger.info(f"Settlement adapter detected: {pg_name} -> {len(df)} rows normalized")
     except Exception as exc:
         logger.warning(f"Adapter normalization failed ({exc}), falling back to raw CSV")
         df = pd.read_csv(latest_file)
@@ -80,6 +142,7 @@ def validate_latest_settlement(
 
     quarantine_rate = len(invalid) / len(df) * 100 if len(df) > 0 else 0
     logger.info(f"Quarantine rate: {quarantine_rate:.1f}% ({len(invalid)}/{len(df)} rows)")
+    _warn_volume_shift(data_dir, latest_file, len(valid))
 
     if not invalid.empty:
         base, ext = os.path.splitext(latest_file)
