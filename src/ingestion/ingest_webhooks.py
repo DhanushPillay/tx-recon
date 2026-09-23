@@ -28,6 +28,24 @@ def parse_watermark_delay(delay: str) -> tuple[int, str]:
     return int(m.group(1)), m.group(2).lower()
 
 
+def _registry_schema_id(settings) -> str | None:
+    """Latest Avro schema id for the topic value-subject (warn-only if unreachable).
+
+    The streaming parse uses a pinned local copy (WEBHOOK_AVRO_SCHEMA), so a
+    producer-side evolution shows up as per-batch id drift in _write_batch
+    instead of a silent DLQ flood. Never raises: registry down must not block
+    ingestion, it just disables the drift comparison."""
+    try:
+        from confluent_kafka.schema_registry import SchemaRegistryClient
+
+        client = SchemaRegistryClient({"url": settings.schema_registry_url})
+        latest = client.get_latest_version(f"{settings.topic_name}-value")
+        return str(latest.schema_id)
+    except Exception as exc:
+        logger.warning(f"Schema-registry lookup skipped: {exc}")
+        return None
+
+
 class _BatchProgressLogger(StreamingQueryListener):
     def onQueryStarted(self, event):
         pass
@@ -80,10 +98,15 @@ def run_ingestion():
 
     # Confluent Avro wire format: Magic Byte (1 byte) + Schema ID (4 bytes)
     df = df.withColumn("fixed_value", expr("substring(value, 6, length(value)-5)"))
+    # Carry the writer schema id alongside the payload: from_avro parses with
+    # the pinned local copy, so per-batch ids are the drift signal that catches
+    # a producer-side evolution before it becomes a DLQ flood.
+    df = df.withColumn("schema_id", expr("conv(hex(substring(value, 2, 4)), 16, 10)"))
+    _expected_schema_id = _registry_schema_id(settings)
 
-    parsed_df = df.select(from_avro(col("fixed_value"), WEBHOOK_AVRO_SCHEMA).alias("data")).select(
-        "data.*"
-    )
+    parsed_df = df.select(
+        from_avro(col("fixed_value"), WEBHOOK_AVRO_SCHEMA).alias("data"), col("schema_id")
+    ).select("data.*", "schema_id")
     # Event time for watermarking (Avro carries ISO string; watermark needs TimestampType).
     # withWatermark bounds dropDuplicates state: keys older than the delay are evicted,
     # so the state store cannot grow without bound on a long-lived stream.
@@ -104,6 +127,23 @@ def run_ingestion():
     logger.info(f"Starting stream to Iceberg {webhook_table} (+ DLQ {dlq_table})")
 
     def _write_batch(batch_df, _epoch: int) -> None:
+        # Empty triggers are common: limit-1 check skips count + MERGE planning.
+        if batch_df.isEmpty():
+            return
+        # Schema-id drift: writer evolved without updating the pinned copy.
+        # Warn-only (parse still runs); the oncall checks the registry diff.
+        try:
+            _ids = sorted(
+                {str(r["schema_id"]) for r in batch_df.select("schema_id").distinct().collect()}
+            )
+        except Exception as exc:
+            _ids = []
+            logger.warning(f"schema-id check skipped: {exc}")
+        if _ids and _expected_schema_id and any(i != _expected_schema_id for i in _ids):
+            logger.warning(
+                f"schema-id drift: batch ids {_ids} vs registry {_expected_schema_id} "
+                f"({settings.topic_name}-value) — verify producer evolution"
+            )
         # Late-data policy: count rows arriving older than the watermark delay.
         # They still merge (effect path is idempotent) but the count is the
         # side-output the oncall watches; alert threshold lives in the runbook.
@@ -113,7 +153,6 @@ def run_ingestion():
         ).count()
         if _late_n:
             logger.warning(f"late-data: {_late_n} rows older than {_wm_n} {_wm_unit} in batch")
-        # ponytail: no persist/head — MERGE on empty is no-op cheaper than extra jobs
         v = batch_df.filter(valid_cond).dropDuplicates(["transaction_id"])
         v = (
             v.withColumn("reconciliation_status", col("gateway_status"))
@@ -134,8 +173,9 @@ def run_ingestion():
         inv = batch_df.filter(~F.coalesce(valid_cond, F.lit(False))).dropDuplicates(
             ["transaction_id"]
         )
-        if not inv.isEmpty():
-            n_inv = inv.count()
+        # Single count: isEmpty()+count() was two jobs per microbatch.
+        n_inv = inv.count()
+        if n_inv:
             logger.warning(f"DLQ batch: {n_inv} invalid rows -> {dlq_table}")
             inv.writeTo(dlq_table).append()
 
@@ -151,18 +191,14 @@ def run_ingestion():
     query.awaitTermination()
 
 
-if __name__ == "__main__":
-    settings = get_settings()
-    webhook_table = _qualified_table(settings.webhook_table)
-    dlq_table = _qualified_table(settings.dlq_table)
-
-    logger.info("Initializing Iceberg tables via Nessie")
-    spark = get_spark_session("Init")
-    spark.sql("CREATE NAMESPACE IF NOT EXISTS nessie.db")
-
+def ensure_webhook_table(spark, table: str) -> None:
+    """Create namespace + webhooks Iceberg table if missing (shared by the
+    streaming __main__ init and the pipeline demo seeder)."""
+    *parts, _ = table.split(".")
+    spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {'.'.join(parts)}")
     spark.sql(
         f"""
-        CREATE TABLE IF NOT EXISTS {webhook_table} (
+        CREATE TABLE IF NOT EXISTS {table} (
             transaction_id string,
             amount_paise bigint,
             gateway_status string,
@@ -177,10 +213,28 @@ if __name__ == "__main__":
         TBLPROPERTIES (
             'write.target-file-size-bytes' = '134217728',
             'write.distribution-mode' = 'hash',
-            'write.parquet.compression-codec' = 'zstd'
+            'write.parquet.compression-codec' = 'zstd',
+            'write.merge.mode' = 'merge-on-read',
+            'write.delete.mode' = 'merge-on-read',
+            'write.update.mode' = 'merge-on-read'
         )
     """
     )
+    # Cluster MERGE join key so equality lookups avoid full sort on every write.
+    try:
+        spark.sql(f"ALTER TABLE {table} WRITE ORDERED BY transaction_id")
+    except Exception as exc:
+        logger.warning(f"Write ordering skipped for {table}: {exc}")
+
+
+if __name__ == "__main__":
+    settings = get_settings()
+    webhook_table = _qualified_table(settings.webhook_table)
+    dlq_table = _qualified_table(settings.dlq_table)
+
+    logger.info("Initializing Iceberg tables via Nessie")
+    spark = get_spark_session("Init")
+    ensure_webhook_table(spark, webhook_table)
 
     spark.sql(
         f"""
@@ -195,7 +249,10 @@ if __name__ == "__main__":
         TBLPROPERTIES (
             'write.target-file-size-bytes' = '134217728',
             'write.distribution-mode' = 'hash',
-            'write.parquet.compression-codec' = 'zstd'
+            'write.parquet.compression-codec' = 'zstd',
+            'write.merge.mode' = 'merge-on-read',
+            'write.delete.mode' = 'merge-on-read',
+            'write.update.mode' = 'merge-on-read'
         )
     """
     )
