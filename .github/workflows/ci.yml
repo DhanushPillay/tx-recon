@@ -159,7 +159,7 @@ jobs:
           diff-cover coverage.xml --compare-branch=origin/${{ github.base_ref }} --fail-under=90
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           files: coverage.xml
           fail_ci_if_error: false
