@@ -24,7 +24,8 @@ assessment. Expect an initial response within 7 days.
 
 - Default credentials in `docker-compose.yml` / `.env.example` are local-only
   placeholders. Never expose these ports beyond `localhost`.
-- No secret scanning or image scanning in CI yet (tracked as future work).
+- Secret scanning runs in CI (`gitleaks/gitleaks-action`, detect on the
+  working tree). No image scanning yet (tracked as future work).
 - `src/processing/residual.py` interpolates transaction IDs into SQL;
   acceptable for a local demo, must be parameterized before any shared
   deployment.
@@ -33,6 +34,13 @@ assessment. Expect an initial response within 7 days.
   only: encrypt the volume/bucket, purge quarantine + DLQ on a schedule
   (`python scripts/replay_dlq.py --delete` after replay), mask IDs in logs
   and dashboards before any shared deployment.
+- Real-data provenance: `thiru1711/Financial_Transactions` (Hugging Face) has
+  no license card — used on maintainer's explicit acceptance; re-evaluate
+  before any redistribution. PII (`card_number`, names, addresses, balances)
+  is stripped by the one-time clean step (`data/thiru_clean.parquet`) and by
+  `src/adapters/real_data.py`; only tx id, amount, date, merchant, card type
+  enter the pipeline. Amounts are USD magnitudes treated as notional paise
+  (ledger stays INR-only via NULL currency).
 - Deps are range-pinned (`pyproject.toml`); reproduce exact builds with
   `uv lock` and run `pip-audit` (CI already gates on it).
 - Webhook authenticity: producer signs `x-tx-sig: HMAC(transaction_id|amount)`
