@@ -31,22 +31,9 @@ def _seed_demo_webhooks(
     """
     from datetime import datetime
 
-    # ponytail: DDL duplicated from src/ingestion/ingest_webhooks.py __main__; extract if it changes.
-    *parts, _ = table.split(".")
-    spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {'.'.join(parts)}")
-    spark.sql(
-        f"""CREATE TABLE IF NOT EXISTS {table} (
-            transaction_id string, amount_paise bigint, gateway_status string,
-            timestamp_utc string, merchant_id string, processing_run_id string,
-            reconciliation_status string, bank_ref_id string, ingested_at timestamp,
-            instrument_type string
-        ) USING iceberg
-        TBLPROPERTIES (
-            'write.target-file-size-bytes' = '134217728',
-            'write.distribution-mode' = 'hash',
-            'write.parquet.compression-codec' = 'zstd'
-        )"""
-    )
+    from src.ingestion.ingest_webhooks import ensure_webhook_table
+
+    ensure_webhook_table(spark, table)
     now = datetime.now(UTC)
     event_ts = ts or now.isoformat()
     rows = []
@@ -63,19 +50,24 @@ def _seed_demo_webhooks(
             continue
         seen.add(tx)
         rows.append((tx, amt, "SUCCESS", event_ts, merch, None, "SUCCESS", None, now, inst))
-    plan_df = spark.createDataFrame(
-        rows,
+    if not rows:
+        return 0
+    schema = (
         "transaction_id string, amount_paise long, gateway_status string, timestamp_utc string, "
         "merchant_id string, processing_run_id string, reconciliation_status string, "
-        "bank_ref_id string, ingested_at timestamp, instrument_type string",
+        "bank_ref_id string, ingested_at timestamp, instrument_type string"
     )
-    plan_df.createOrReplaceTempView("demo_plan")
+    # Chunked append: one createDataFrame per 50k keeps driver memory flat at 1M+ scale.
+    first = spark.createDataFrame(rows[:50000], schema)
+    first.createOrReplaceTempView("demo_plan")
     spark.sql(
         f"MERGE INTO {table} t USING demo_plan s "
         "ON t.transaction_id = s.transaction_id WHEN MATCHED THEN DELETE"
     )
-    plan_df.writeTo(table).append()
-    return len(planned)
+    first.writeTo(table).append()
+    for i in range(50000, len(rows), 50000):
+        spark.createDataFrame(rows[i : i + 50000], schema).writeTo(table).append()
+    return len(rows)
 
 
 def _build_demo_plan(num_records: int, seed: int = 42) -> list[tuple[str, int, str, str]]:
@@ -155,7 +147,9 @@ def check_batch_drift(counts: dict, ds: str | None = None) -> None:
     batch_total = sum(
         v
         for k, v in counts.items()
-        if k.startswith("batch_") and k != "batch_EXCEPTION_DUPLICATE_SETTLEMENT"
+        if k.startswith("batch_")
+        and k != "batch_EXCEPTION_DUPLICATE_SETTLEMENT"
+        and isinstance(v, int)  # gauges like batch_match_rate (float) are not statuses
     )
     if batch_n and batch_total and batch_total != batch_n:
         raise RuntimeError(
