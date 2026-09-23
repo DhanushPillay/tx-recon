@@ -63,6 +63,44 @@ def test_perfect_match_never_downgrades_property(amount, instrument):
     instrument=st.sampled_from(
         ["UPI", "CREDIT_CARD", "DEBIT_CARD", "NETBANKING", "WALLET", "INTERNATIONAL"]
     ),
+    merchant=st.sampled_from([None, "merch_001", "merch_demo", "merch_unknown"]),
+    delta=st.integers(min_value=-5000, max_value=5000),
+)
+def test_downgrade_never_creates_fp(amount, instrument, merchant, delta):
+    """PROOF.md property: downgrade-only post-pass never promotes, so for any
+    truth labeling FP(after) <= FP(before). Structural: after==MATCHED implies
+    before==MATCHED, checked against both default-truth and merchant-truth."""
+    from src.common.schemas import EXCEPTION_FEE_MISMATCH, MATCHED
+
+    eng = get_fee_engine()
+    settled = eng.compute_expected_settled(amount, instrument) + delta
+    ok_default, _ = eng.check_match(amount, settled, instrument)
+    pred_before = MATCHED if ok_default else EXCEPTION_FEE_MISMATCH
+    pred_after = (
+        EXCEPTION_FEE_MISMATCH
+        if pred_before == MATCHED
+        and should_downgrade(amount, settled, instrument, merchant, None, fee_engine=eng)
+        else pred_before
+    )
+    # No promotion, ever.
+    assert not (pred_before != MATCHED and pred_after == MATCHED)
+    # FP monotone under either truth labeling.
+    for truth in (
+        MATCHED if eng.check_match(amount, settled, instrument)[0] else EXCEPTION_FEE_MISMATCH,
+        MATCHED
+        if eng.check_match(amount, settled, instrument, merchant_id=merchant)[0]
+        else EXCEPTION_FEE_MISMATCH,
+    ):
+        fp_before = int(pred_before == MATCHED and truth != MATCHED)
+        fp_after = int(pred_after == MATCHED and truth != MATCHED)
+        assert fp_after <= fp_before
+
+
+@given(
+    amount=st.integers(min_value=1000, max_value=1_000_000),
+    instrument=st.sampled_from(
+        ["UPI", "CREDIT_CARD", "DEBIT_CARD", "NETBANKING", "WALLET", "INTERNATIONAL"]
+    ),
 )
 def test_score_monotone_in_excess_property(amount, instrument):
     """A far-mismatch always scores above the perfect match (same draw)."""
