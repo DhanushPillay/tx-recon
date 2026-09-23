@@ -9,7 +9,7 @@ from src.common.schemas import EXCEPTION_MISSING_WEBHOOK
 
 
 def test_recon_accuracy_normal():
-    rep = run(n=500, seed=42)
+    rep = run(n=2000, seed=42)
     assert rep["precision"] == 1.0
     assert rep["recall"] == 1.0
     assert rep["f1"] == 1.0
@@ -20,7 +20,7 @@ def test_recon_accuracy_normal():
 
 
 def test_recon_accuracy_second_seed():
-    rep = run(n=500, seed=7)
+    rep = run(n=2000, seed=7)
     assert rep["precision"] == 1.0
     assert rep["recall"] == 1.0
     assert rep["false_positives"] == 0
