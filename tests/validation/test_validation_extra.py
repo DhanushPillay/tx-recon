@@ -5,7 +5,11 @@ import pytest
 
 from src.validation.settlement_schema import settlement_schema
 from src.validation.settlement_schema_pl import settlement_schema_pl
-from src.validation.validate_settlement import SettlementValidationError, validate_and_quarantine
+from src.validation.validate_settlement import (
+    SettlementValidationError,
+    _warn_volume_shift,
+    validate_and_quarantine,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -107,3 +111,51 @@ def test_quarantine_path_nonstandard_basename(tmp_path, monkeypatch):
     with pytest.raises(SettlementValidationError):
         vs.validate_latest_settlement(project_root=str(tmp_path), date_str="2025-04-02")
     assert (d / "quarantine_20250402.csv").exists()
+
+
+def test_warn_volume_shift_flags_collapse(tmp_path, caplog):
+    """Previous curated batch 10 rows, current 2 -> >50% drop warning."""
+    import logging
+
+    d = tmp_path / "data"
+    d.mkdir()
+    prev = d / "curated_settlement_20250101.csv"
+    prev.write_text("a\n" + "1\n" * 10)
+    cur = d / "settlement_20250102.csv"
+    cur.write_text("a\n1\n")
+    with caplog.at_level(logging.WARNING, logger="src.validation.validate_settlement"):
+        _warn_volume_shift(str(d), str(cur), 2)
+    assert any("volume shift" in r.message for r in caplog.records)
+
+
+def test_warn_volume_shift_first_run_silent(tmp_path, caplog):
+    """No previous curated batch -> no warning, never raises."""
+    import logging
+
+    d = tmp_path / "data"
+    d.mkdir()
+    cur = d / "settlement_20250102.csv"
+    cur.write_text("a\n1\n")
+    with caplog.at_level(logging.WARNING, logger="src.validation.validate_settlement"):
+        _warn_volume_shift(str(d), str(cur), 1)
+    assert not [r for r in caplog.records if "volume shift" in r.message]
+
+
+def test_warn_volume_shift_flags_stale_file(tmp_path, caplog):
+    """Current file >48h old -> stale warning even when volume is normal."""
+    import logging
+    import os
+    import time
+
+    d = tmp_path / "data"
+    d.mkdir()
+    prev = d / "curated_settlement_20250101.csv"
+    prev.write_text("a\n" + "1\n" * 10)
+    cur = d / "settlement_20250102.csv"
+    cur.write_text("a\n" + "1\n" * 10)
+    old = time.time() - 72 * 3600
+    os.utime(cur, (old, old))
+    with caplog.at_level(logging.WARNING, logger="src.validation.validate_settlement"):
+        _warn_volume_shift(str(d), str(cur), 10)
+    assert any("stale settlement file" in r.message for r in caplog.records)
+    assert not [r for r in caplog.records if "volume shift" in r.message]
