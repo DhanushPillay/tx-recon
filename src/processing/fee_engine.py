@@ -34,18 +34,19 @@ def _history_of(config: dict):
     return None
 
 
+def _check_int(v, lo: int, hi: int | None, name: str, label: str) -> int:
+    v = int(v)
+    if v < lo or (hi is not None and v > hi):
+        raise ValueError(f"invalid {name} {label}: {v!r}")
+    return v
+
+
 def _check_bps(bps, label: str) -> int:
-    bps = int(bps)
-    if not (0 <= bps <= 10000):
-        raise ValueError(f"invalid mdr_rate_bps {label}: {bps!r}")
-    return bps
+    return _check_int(bps, 0, 10000, "mdr_rate_bps", label)
 
 
 def _check_tol(tol, label: str) -> int:
-    tol = int(tol)
-    if tol < 0:
-        raise ValueError(f"invalid tolerance_paise {label}: {tol!r}")
-    return tol
+    return _check_int(tol, 0, None, "tolerance_paise", label)
 
 
 class FeeEngine:
