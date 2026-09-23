@@ -1,4 +1,4 @@
-.PHONY: up down install clean format lint test demo pipeline-demo
+.PHONY: up down install clean format lint test bench demo pipeline-demo
 
 demo:
 	python tests/performance/quick_perf.py
@@ -28,3 +28,8 @@ lint:
 
 test:
 	pytest tests/ -m "not integration" -n auto --benchmark-disable
+
+bench:
+	python tests/performance/run_benchmarks.py --suite iceberg --scale 100000
+	python tests/performance/kafka_producer_benchmark.py --count 5000 --acks all --compression lz4
+	python tests/performance/pandas_validation_benchmark.py
