@@ -39,6 +39,19 @@ def test_invalid_config_raises(tmp_path):
         FeeEngine(config_path=str(p))
 
 
+def test_missing_config_raises_not_defaults(tmp_path):
+    """A missing rate card must never silently price money at hardcoded defaults."""
+    with pytest.raises(FileNotFoundError, match="fee rate config not found"):
+        FeeEngine(config_path=str(tmp_path / "nope.yaml"))
+
+
+def test_empty_config_raises(tmp_path):
+    p = tmp_path / "empty.yaml"
+    p.write_text("")
+    with pytest.raises(ValueError, match="empty"):
+        FeeEngine(config_path=str(p))
+
+
 def test_history_aliases_and_pre_earliest(tmp_path):
     p = tmp_path / "hist.yaml"
     p.write_text(
