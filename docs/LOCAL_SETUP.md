@@ -61,24 +61,40 @@ This runs the sealed accuracy harness (2000 rows x 3 seeds) and writes `tests/pe
 ## 5. Run the full pipeline
 
 ```bash
-python -m src.pipeline --date 2026-09-04 --demo
+# Demo (synthetic, matches by construction):
+ALLOW_DESTRUCTIVE_SEED=1 python -m src.pipeline --date 2026-09-04 --demo
+# Messy mix (duplicates, mismatches, orphans, late) — still demo-seeded:
+ALLOW_DESTRUCTIVE_SEED=1 python -m src.pipeline --date 2026-09-04 --demo --messy
+# Real PG file (fail-closed, no synthesis):
+python -m src.pipeline --date 2026-09-04
 ```
 
-`--demo` seeds the webhooks table from the same plan as the settlement CSV so
-the MERGE matches. Without it, a fresh stack has no webhooks table and every
-row lands in `EXCEPTION_MISSING_WEBHOOK`. (Production path: stream webhooks via
-`src/ingestion/ingest_webhooks.py`, then run without `--demo`.)
+`--demo` seeds the webhooks table from the same plan as the settlement CSV so the MERGE matches; it is destructive (`MERGE-DELETE` prior rows) and requires `ALLOW_DESTRUCTIVE_SEED=1` (fail-closed). Without it, a fresh stack has no webhooks table and every row lands in `EXCEPTION_MISSING_WEBHOOK`. The validated file is written as `curated_*.csv`; reruns merge from curated, never `quarantine_*`. To fetch a provider FAQ-real file use `data/settlement_YYYYMMDD.csv` and omit `--demo`.
+Set `GENERATE_DEMO_SETTLEMENT=1` to allow `run_daily` to synthesize a file when invoked without `--demo` (e.g. in Airflow local dev); otherwise absence of a file raises `FileNotFoundError`.
 
-This generates synthetic webhooks and a settlement file, validates the settlement, and runs the Iceberg MERGE reconciliation.
+Additional fail-closed switches (see `src/common/settings.py` and RUNBOOK):
+
+- `REQUIRE_KAFKA_SASL=1` — ingestion refuses `PLAINTEXT` brokers (otherwise forged records are trusted).
+- `REQUIRE_SCHEMA_REGISTRY=1` — unreachable registry fails ingestion instead of warn-only drift check.
+- `strict_slo=true` (default) — sub-SLO match rate, stale mart, >50% volume drop, >48h-old file fail the batch.
+- Secrets via `*_FILE` (`MINIO_SECRET_KEY_FILE`, `WEBHOOK_SECRET_FILE`): mounted file wins over empty env, explicit env wins over file.
+- Table layout: `PARTITIONED BY bucket(16, transaction_id)` (new tables only) with `WRITE ORDERED BY transaction_id` so MERGE prunes to file groups.
+
+This validates the settlement (PAN Luhn scan + `sha256` file registry), writes `curated_*.csv` / `quarantine_*.csv` / `.processed_files.json`, and runs the Iceberg MERGE reconciliation (provider batch windows from `config/providers.yaml`, per-provider `late_sla_days`, optional bank third leg via `reconcile_bank_leg`).
 
 ## 6. Run tests
 
 ```bash
-# Unit tests (no Docker required)
+# Unit tests (no Docker required; Spark skipped only when py missing, not on Windows host)
 pytest tests/ -m "not integration" -v
 
-# Integration tests (Docker required)
+# Integration tests (Docker required: MinIO+Nessie+Redpanda)
 pytest tests/ -m integration -v
+
+# One date's file registry / PAN guard in isolation:
+pytest tests/validation/test_file_registry.py tests/validation/test_pan_guard.py -v
+# WAP branch lifecycle (requires Docker for live table ops):
+pytest tests/processing/test_wap.py -v
 ```
 
 ## Local multi-node Spark cluster
