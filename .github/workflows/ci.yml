@@ -59,7 +59,32 @@ jobs:
       - name: Dependency vulnerability scan
         run: |
           pip install pip-audit
-          pip-audit --desc || true
+          # Blocking: a NEW advisory fails the build. Baseline below pins the
+          # 37 advisories accepted on 2026-09-24 (Airflow 2.11.2 tree, pyspark
+          # 3.5.1, pytest 8.3.4 — all need upstream upgrades, tracked
+          # separately; pyspark 3.5.x bump alone clears PYSEC-2025-184).
+          # Review date: 2026-12-24. To add an ignore: append --ignore-vuln
+          # ID with a dated justification comment.
+          pip-audit --desc \
+            --ignore-vuln PYSEC-2023-314 --ignore-vuln PYSEC-2025-184 \
+            --ignore-vuln PYSEC-2026-10 --ignore-vuln PYSEC-2026-12 \
+            --ignore-vuln PYSEC-2026-13 --ignore-vuln PYSEC-2026-1378 \
+            --ignore-vuln PYSEC-2026-1379 --ignore-vuln PYSEC-2026-172 \
+            --ignore-vuln PYSEC-2026-173 --ignore-vuln PYSEC-2026-18 \
+            --ignore-vuln PYSEC-2026-181 --ignore-vuln PYSEC-2026-1845 \
+            --ignore-vuln PYSEC-2026-186 --ignore-vuln PYSEC-2026-187 \
+            --ignore-vuln PYSEC-2026-2082 --ignore-vuln PYSEC-2026-2083 \
+            --ignore-vuln PYSEC-2026-2086 --ignore-vuln PYSEC-2026-2087 \
+            --ignore-vuln PYSEC-2026-2088 --ignore-vuln PYSEC-2026-2151 \
+            --ignore-vuln PYSEC-2026-2343 --ignore-vuln PYSEC-2026-2344 \
+            --ignore-vuln PYSEC-2026-2345 --ignore-vuln PYSEC-2026-2346 \
+            --ignore-vuln PYSEC-2026-2351 --ignore-vuln PYSEC-2026-2353 \
+            --ignore-vuln PYSEC-2026-2354 --ignore-vuln PYSEC-2026-2356 \
+            --ignore-vuln PYSEC-2026-2366 --ignore-vuln PYSEC-2026-3705 \
+            --ignore-vuln PYSEC-2026-3706 --ignore-vuln PYSEC-2026-3709 \
+            --ignore-vuln PYSEC-2026-3710 --ignore-vuln PYSEC-2026-3711 \
+            --ignore-vuln PYSEC-2026-3712 --ignore-vuln PYSEC-2026-3806 \
+            --ignore-vuln PYSEC-2026-3966
 
       - name: Secret scan (gitleaks)
         uses: gitleaks/gitleaks-action@v2
