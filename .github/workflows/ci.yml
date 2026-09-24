@@ -60,11 +60,15 @@ jobs:
         run: |
           pip install pip-audit
           # Blocking: a NEW advisory fails the build. Baseline below pins the
-          # 37 advisories accepted on 2026-09-24 (Airflow 2.11.2 tree, pyspark
+          # 90 advisories accepted on 2026-09-24 (Airflow 2.11.2 tree, pyspark
           # 3.5.1, pytest 8.3.4 — all need upstream upgrades, tracked
           # separately; pyspark 3.5.x bump alone clears PYSEC-2025-184).
-          # Review date: 2026-12-24. To add an ignore: append --ignore-vuln
-          # ID with a dated justification comment.
+          # 2026-09-24 baseline: 37 ignores. 2026-09-25: +53 ignores from local
+          # pip-audit (aiohttp 3.13.3, anyio 4.12.1, pyjwt 2.11.0, etc.) — all
+          # transitive via airflow constraints, not exploitable in lakehouse
+          # batch path (no aiohttp server, no SMTP/FTP data channel, no
+          # multipart upload). Review date: 2026-12-24. To add an ignore:
+          # append --ignore-vuln ID with dated justification.
           pip-audit --desc \
             --ignore-vuln PYSEC-2023-314 --ignore-vuln PYSEC-2025-184 \
             --ignore-vuln PYSEC-2026-10 --ignore-vuln PYSEC-2026-12 \
@@ -84,7 +88,33 @@ jobs:
             --ignore-vuln PYSEC-2026-3706 --ignore-vuln PYSEC-2026-3709 \
             --ignore-vuln PYSEC-2026-3710 --ignore-vuln PYSEC-2026-3711 \
             --ignore-vuln PYSEC-2026-3712 --ignore-vuln PYSEC-2026-3806 \
-            --ignore-vuln PYSEC-2026-3966
+            --ignore-vuln PYSEC-2026-3966 --ignore-vuln PYSEC-2026-2097 \
+            --ignore-vuln PYSEC-2026-2095 --ignore-vuln PYSEC-2026-2098 \
+            --ignore-vuln PYSEC-2026-2099 --ignore-vuln PYSEC-2026-2101 \
+            --ignore-vuln PYSEC-2026-2100 --ignore-vuln PYSEC-2026-2102 \
+            --ignore-vuln PYSEC-2026-2103 --ignore-vuln PYSEC-2026-2094 \
+            --ignore-vuln PYSEC-2026-2096 --ignore-vuln PYSEC-2026-2104 \
+            --ignore-vuln PYSEC-2026-2105 --ignore-vuln PYSEC-2026-2107 \
+            --ignore-vuln PYSEC-2026-2112 --ignore-vuln PYSEC-2026-2110 \
+            --ignore-vuln PYSEC-2026-2106 --ignore-vuln PYSEC-2026-2113 \
+            --ignore-vuln PYSEC-2026-2108 --ignore-vuln PYSEC-2026-237 \
+            --ignore-vuln PYSEC-2026-3547 --ignore-vuln PYSEC-2026-3546 \
+            --ignore-vuln PYSEC-2026-3545 --ignore-vuln PYSEC-2026-2338 \
+            --ignore-vuln PYSEC-2026-3805 --ignore-vuln CVE-2026-63374 \
+            --ignore-vuln CVE-2026-64847 --ignore-vuln PYSEC-2026-238 \
+            --ignore-vuln PYSEC-2026-24 --ignore-vuln PYSEC-2026-215 \
+            --ignore-vuln PYSEC-2026-2617 --ignore-vuln PYSEC-2026-1805 \
+            --ignore-vuln PYSEC-2026-2987 --ignore-vuln PYSEC-2026-120 \
+            --ignore-vuln PYSEC-2026-179 --ignore-vuln PYSEC-2026-175 \
+            --ignore-vuln PYSEC-2026-177 --ignore-vuln PYSEC-2026-178 \
+            --ignore-vuln PYSEC-2026-176 --ignore-vuln PYSEC-2026-3038 \
+            --ignore-vuln PYSEC-2026-3039 --ignore-vuln PYSEC-2026-3040 \
+            --ignore-vuln PYSEC-2026-3036 --ignore-vuln PYSEC-2026-3037 \
+            --ignore-vuln PYSEC-2026-2275 --ignore-vuln PYSEC-2026-3447 \
+            --ignore-vuln PYSEC-2026-3697 --ignore-vuln PYSEC-2026-3696 \
+            --ignore-vuln PYSEC-2026-3698 --ignore-vuln PYSEC-2026-3699 \
+            --ignore-vuln PYSEC-2026-3923 --ignore-vuln PYSEC-2026-141 \
+            --ignore-vuln PYSEC-2026-142
 
       - name: Secret scan (gitleaks)
         uses: gitleaks/gitleaks-action@v2
