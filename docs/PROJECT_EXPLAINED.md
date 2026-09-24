@@ -19,23 +19,15 @@ if the bank takes a slightly bigger fee than it should, nobody notices.
 tx-recon is a small automated system that does the matching for them:
 
 1. **Listens.** Payment notifications arrive in real time and are collected
-   in order (like a post office sorting incoming letters).
-2. **Receives the bank file.** The next day, the bank's statement arrives as
-   a spreadsheet-like file.
-3. **Checks the file first.** Before trusting the bank file, the system
-   inspects it — correct columns, no duplicates, sensible amounts. Bad rows
-   are set aside in a "quarantine" pile for a human to look at, never silently
-   thrown away.
-4. **Recalculates every fee from scratch.** Using a published rate card (fee
-   percentage per payment method + 18% tax), it recomputes what each payment's
-   fee should have been — using whole paise only, never decimals, so rounding
-   can never corrupt money math.
-5. **Matches.** Each payment is compared against its bank record: exact match,
-   tiny rounding difference (accepted within 1 paise), fee disagreement, or
-   missing on one side. Each outcome is recorded.
-6. **Repeats safely.** The whole process can be re-run any number of times
-   without double-counting — late corrections from the bank simply update the
-   previous answer.
+   in order (like a post office sorting incoming letters) into a bucket-partitioned Iceberg table so later matches scan only the relevant file groups.
+2. **Receives the settlement file.** The next day, the PG's statement arrives as
+   a spreadsheet-like CSV. Each file is tagged to its provider batch (`razorpay`/`cashfree`/`payu` from `config/providers.yaml`) — not just a calendar date — so cross-midnight cut-offs and holidays don't create false "missing" cases.
+3. **Checks the file first.** Before trusting any file the system: scans for card numbers (so a leaked PAN never enters the lake), records the file's fingerprint so the same file dropped twice is recognised, then inspects columns — correct types, real calendar dates, no PAN. Bad rows are set aside in a "quarantine" pile for a human to look at, never silently thrown away. Good rows are saved as a `curated` copy; the quarantined rows never reach the next step.
+4. **Publishes via a branch.** The day's settlement is first written to an isolated branch (`ingest/YYYY-MM-DD`). Only after the checks pass is that branch merged to the main table — if the checks fail, the branch is dropped and the main table is untouched.
+5. **Recalculates every fee from scratch.** Using a published, versioned rate card (fee percentage per payment method + 18% tax + per-merchant overrides + effective dates), it recomputes what each payment's fee should have been — using whole paise only, never decimals, so rounding can never corrupt money math. The same arithmetic runs in Python and in Spark SQL.
+6. **Matches (three legs).** Each payment is compared against its PG record: exact match, tiny rounding difference (accepted within 1 paise), fee disagreement, or missing on one side. Then an independent bank-statement check (MT940 parsed via `mt-940`, never hand-rolled) looks for a matching bank credit — a gateway-consistent error is invisible without this third leg.
+7. **Repeats safely.** The whole process can be re-run any number of times
+   without double-counting — late corrections simply update the previous answer, and every manual fix is logged append-only with two sets of eyes.
 
 ## How it proves it's right
 
@@ -47,29 +39,25 @@ Speed means nothing if the matches are wrong, so correctness is tested first:
 - Latest result: **every planted problem caught, zero false alarms**
   (precision = recall = F1 = 1.0, 0 false positives).
 
-## How fast is it (measured September 2026, ordinary desktop)
+## How fast is it (measured September 2026, ordinary desktop, single node)
 
-- **Ingestion:** ~142,000 payment notifications per second into the queue,
-  typical delay under 1 millisecond.
-- **File checking:** 100,000 bank rows checked in ~9–89 milliseconds
-  depending on method (fastest: plain checks; ~10x cost for the strict
-  contract-based checker — considered worth it since it guards real money).
-- **Lake storage reads/writes at scale:** not yet measured on this machine —
-  the database connection was broken until recently and is now fixed; full
-  scale runs are still pending. No number is claimed here.
+- **End-to-end batch (12.6M rows, real thiru card data, 15.8 GB RAM, 8g driver):** ~5 minutes wall — 173 s validation (12.9M clean) + 105 s MERGE + mart (89.98% match on the injected ~10% exception mix, health gate ≥ 85%).
+- **MERGE slices (same harness `--source real`, 128 shuffles ≥5M):** 1M 50% 6.21 s, 5M 50% 11.38 s, **12M 50% 23.69 s** (slices show ~94.7% due to tx-ordered sampling; see `docs/REAL_DATA.md`).
+- **File checking (12.6M rows, same box):** polars 8.44M / manual 3.63M / pandera 1.44M / pydantic 208k rows/s (`results_pandera_real.json`).
+- **Queue (real ~150B Avro, acks=all, lz4, Redpanda):** 239,061 msgs/sec, serial p50 0.98 ms / p99 20.59 ms.
+- Earlier synthetic baselines (100k–1M single-node + YARN/HDFS) remain archived in `docs/BENCHMARKS.md`; the real-data suite is now the cited scale proof.
 
 ## Honest limits
 
-- This is a **demonstration**, not a production system: it runs on one
-  computer using sample (fake) data, not real money.
-- It does not yet handle billions of transactions or guarantee delivery if a
-  machine crashes mid-run.
-- Anything above marked "pending" is genuinely not done — the README's
-  numbers section is updated only with measurements actually taken.
+- This is a **demonstration**, not a production system: single-node, ~13M real-notional card rows (USD magnitudes as notional paise) proven, but not billions; streaming exactly-once is checkpoint + idempotent MERGE, not transactional outbox.
+- Fee math is INR-only by ledger design; real cross-currency FX would need a second schedule.
+- Cross-region, KMS-at-rest beyond bucket lifecycle, and full Trino RBAC remain Terraform stubs (`infra/terraform/main.tf` is still S3+Glue+skeleton).
+- Anything above marked "pending" is genuinely not done — the README and REAL_DATA numbers are updated only with measurements actually taken.
 
 ## Seeing it work
 
 With Docker running: `docker compose up -d` starts the supporting services,
-`make demo` runs the 10-second correctness check, and
-`python -m src.pipeline --date 2026-09-04` runs the full pipeline on sample
-data.
+`make demo` runs the 10-second correctness check (2000×3 sealed F1=1.0),
+`ALLOW_DESTRUCTIVE_SEED=1 python -m src.pipeline --date 2026-09-04 --demo` runs the synthetic pipeline, and
+`python -m src.pipeline --date 2026-09-04` runs the real PG file path (fail-closed).
+Add `--messy` on demo for the full exception mix + `EXCEPTION_MISSING_WEBHOOK` → `LATE_UNRESOLVED` lifecycle.
