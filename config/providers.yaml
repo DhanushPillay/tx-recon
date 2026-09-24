@@ -1,0 +1,28 @@
+# Per-provider settlement behavior. Reconcile on batch, not calendar date:
+# cutoffs differ by rail, holidays shift, and multi-day batches are normal.
+# lag_days: webhook..settlement window still considered on-time.
+# late_sla_days: MISSING older than this flips to LATE_UNRESOLVED (default 7).
+default:
+  lag_days: 2
+  late_sla_days: 7
+  cadence: daily
+
+providers:
+  razorpay:
+    lag_days: 2
+    late_sla_days: 7
+    cadence: daily
+    cutoff: "22:00 Asia/Kolkata"
+  cashfree:
+    lag_days: 1
+    late_sla_days: 7
+    cadence: daily
+    cutoff: "21:00 Asia/Kolkata"
+  payu:
+    lag_days: 3
+    late_sla_days: 7
+    cadence: daily
+  upi_npci:
+    lag_days: 1
+    late_sla_days: 3
+    cadence: four_cycles_daily
