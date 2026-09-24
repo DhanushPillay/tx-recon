@@ -9,6 +9,7 @@ from src.common.config import get_spark_session
 from src.common.schemas import (
     EXCEPTION_FEE_MISMATCH,
     EXCEPTION_LATE_UNRESOLVED,
+    EXCEPTION_MISSING_BANK_STATEMENT,
     EXCEPTION_MISSING_WEBHOOK,
     INSTRUMENT_TYPES,
     MATCHED,
@@ -272,7 +273,13 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
     INSERTs unseen ids (not matched) — it never appends a second row for the same
     id, so re-running over the same settlement files converges to identical state.
     """
+    if not date_str:
+        # Fail closed: date-less runs merge every curated file (all history),
+        # and cumulative counts then masquerade as batch health.
+        raise ValueError("run_reconciliation requires date_str YYYY-MM-DD (no date-less runs)")
     settings = get_settings()
+    if settings.strict_slo:
+        logger.info("strict SLO mode: breach or stale mart fails the batch")
     project_root = settings.project_root
     data_dir = os.path.join(project_root, "data")
     data_path, settlement_files = _settlement_source(data_dir, date_str)
@@ -295,6 +302,7 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
             StructField("utr", StringType(), True),
             StructField("currency", StringType(), True),
             StructField("gross_amount_paise", LongType(), True),
+            StructField("provider", StringType(), True),
         ]
     )
 
@@ -435,8 +443,12 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
         )
         spark.sql(_mart_sql)
         logger.info(f"mart {_mart_version} refreshed: {namespace}.fact_reconciliation")
-    except Exception as exc:  # mart must never fail the job
-        logger.warning(f"Could not refresh fact_reconciliation table: {exc}")
+    except Exception as exc:
+        # A stale mart behind a "successful" batch is worse than a failed batch.
+        msg = f"Could not refresh fact_reconciliation table: {exc}"
+        if settings.strict_slo:
+            raise RuntimeError(msg) from exc
+        logger.warning(msg)
 
     # Observability: report outcome distribution (FAANG expects match-rate metrics).
     # NOTE: status counts below are table-level (cumulative); settlement_rows_deduped
@@ -479,32 +491,99 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
     logger.info(f"Reconciliation batch complete: {counts}")
     import os as _os
 
-    _slo = float(_os.environ.get("MATCH_RATE_SLO", "0.95"))
+    def _env_float(name: str, default: float) -> float:
+        try:
+            return float(_os.environ.get(name, default))
+        except (TypeError, ValueError):
+            logger.warning(f"bad {name}={_os.environ.get(name)!r}: using {default}")
+            return default
+
+    def _env_int(name: str, default: int) -> int:
+        try:
+            return int(_os.environ.get(name, default))
+        except (TypeError, ValueError):
+            logger.warning(f"bad {name}={_os.environ.get(name)!r}: using {default}")
+            return default
+
+    _slo = _env_float("MATCH_RATE_SLO", 0.95)
     _bm, _bt = counts.get("batch_MATCHED", 0), counts.get("settlement_rows_deduped", 0)
     if _bt:
         _rate = _bm / _bt
         counts["batch_match_rate"] = round(_rate, 4)
         if _rate < _slo:
-            logger.warning(f"Match-rate SLO breach: {_rate:.2%} < {_slo:.0%} (batch)")
-    try:  # Late SLA: MISSING_WEBHOOK older than N days -> LATE_UNRESOLVED
-        _days = int(_os.environ.get("LATE_SLA_DAYS", "7"))
-        _late_where = (
-            f"reconciliation_status = '{EXCEPTION_MISSING_WEBHOOK}' "
-            f"AND to_date(timestamp_utc) < date_sub(current_date(), {_days})"
+            msg = f"Match-rate SLO breach: {_rate:.2%} < {_slo:.0%} (batch)"
+            if settings.strict_slo:
+                raise RuntimeError(msg)
+            logger.warning(msg)
+    try:  # Late SLA per provider: MISSING older than N days -> LATE_UNRESOLVED.
+        # Thresholds come from config/providers.yaml (fallback: global default);
+        # LATE_SLA_DAYS env overrides every provider when set. One MERGE with a
+        # CASE keeps this a single job however many providers the batch holds.
+        from src.processing.batches import load_providers, provider_spec
+
+        try:
+            _pcfg = load_providers(os.path.join(project_root, "config", "providers.yaml"))
+        except (FileNotFoundError, ValueError) as exc:
+            logger.warning(f"provider config unreadable ({exc}): using global late SLA")
+            _pcfg = {"default": {}, "providers": {}}
+        _known = sorted(
+            {
+                str(r["provider"])
+                for r in spark.sql(
+                    "SELECT DISTINCT provider FROM bank_settlements WHERE provider IS NOT NULL"
+                ).collect()
+            }
         )
-        # Side-output count first: the UPDATE below returns no row count, and
+        _global_days = (
+            _env_int("LATE_SLA_DAYS", 7)
+            if "LATE_SLA_DAYS" in _os.environ
+            else int(provider_spec(_pcfg, None).get("late_sla_days", 7))
+        )
+        _whens = " ".join(
+            f"WHEN '{p}' THEN {int(provider_spec(_pcfg, p).get('late_sla_days', _global_days))}"
+            for p in _known
+            if p != "None"
+        )
+        _days_case = f"CASE s.provider {_whens} ELSE {_global_days} END"
+        _late_where = (
+            f"t.reconciliation_status = '{EXCEPTION_MISSING_WEBHOOK}' "
+            f"AND to_date(t.timestamp_utc) < date_sub(current_date(), ({_days_case}))"
+        )
+        # Side-output count first: the MERGE below returns no row count, and
         # the oncall alert (runbook) keys off late_unresolved_marked > 0.
         counts["late_unresolved_marked"] = spark.sql(
-            f"SELECT COUNT(*) AS n FROM {table} WHERE {_late_where}"
+            f"SELECT COUNT(*) AS n FROM {table} t "
+            f"JOIN bank_settlements s ON s.transaction_id = t.transaction_id "
+            f"WHERE {_late_where}"
         ).collect()[0]["n"]
         if counts["late_unresolved_marked"]:
             logger.warning(
-                f"late-SLA: {counts['late_unresolved_marked']} placeholders older "
-                f"than {_days}d -> {EXCEPTION_LATE_UNRESOLVED}"
+                "late-SLA: %d placeholders past provider windows -> %s",
+                counts["late_unresolved_marked"],
+                EXCEPTION_LATE_UNRESOLVED,
             )
+        # Within-lag gauge BEFORE the MERGE below (it consumes MISSING rows):
+        # missing-but-expected vs truly-missing triage. NOT batch_-prefixed:
+        # it overlaps MISSING and must not enter the drift tile.
+        _lag_whens = " ".join(
+            f"WHEN '{p}' THEN {int(provider_spec(_pcfg, p).get('lag_days', 2))}"
+            for p in _known
+            if p != "None"
+        )
+        _lag_case = f"CASE s.provider {_lag_whens} ELSE 2 END"
+        counts["missing_within_lag"] = spark.sql(
+            f"SELECT COUNT(*) AS n FROM {table} t "
+            f"JOIN bank_settlements s ON s.transaction_id = t.transaction_id "
+            f"WHERE t.reconciliation_status = '{EXCEPTION_MISSING_WEBHOOK}' "
+            f"AND DATEDIFF(s.settlement_date, to_date(t.timestamp_utc)) "
+            f"BETWEEN 0 AND ({_lag_case})"
+        ).collect()[0]["n"]
+        if counts["late_unresolved_marked"]:
             spark.sql(
-                f"UPDATE {table} SET reconciliation_status = '{EXCEPTION_LATE_UNRESOLVED}' "
-                f"WHERE {_late_where}"
+                f"MERGE INTO {table} t USING bank_settlements s "
+                "ON t.transaction_id = s.transaction_id "
+                f"WHEN MATCHED AND {_late_where} THEN UPDATE SET "
+                f"t.reconciliation_status = '{EXCEPTION_LATE_UNRESOLVED}'"
             )
     except Exception as exc:
         logger.warning(f"Late-SLA marking skipped: {exc}")
@@ -532,10 +611,74 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
     return counts
 
 
+def build_bank_leg_sql(table: str, lag_days: int = 2) -> tuple[str, str]:
+    """Third-leg SQL: bank evidence for MATCHED rows.
+
+    Evidence = exact narration link OR (net within 1 paise AND value date
+    within lag). Rows without evidence demote to EXCEPTION_MISSING_BANK_STATEMENT;
+    bank rows matching nothing are counted as orphans (logged, not statused).
+    Pure builder (unit-tested); executed by reconcile_bank_leg.
+    """
+    table = _qualified_table(table)
+    missing = (
+        "SELECT s.transaction_id AS tid FROM bank_settlements s "
+        "WHERE NOT EXISTS (SELECT 1 FROM bank_statements b WHERE "
+        "b.link_tx = s.transaction_id "
+        "OR (b.link_tx IS NULL "
+        "AND ABS(b.amount_paise - s.settled_amount_paise) <= 1 "
+        f"AND ABS(DATEDIFF(b.value_date, s.settlement_date)) <= {int(lag_days)}))"
+    )
+    merge_sql = (
+        f"MERGE INTO {table} t USING ({missing}) m "
+        "ON t.transaction_id = m.tid "
+        f"WHEN MATCHED AND t.reconciliation_status = '{MATCHED}' THEN "
+        f"UPDATE SET t.reconciliation_status = '{EXCEPTION_MISSING_BANK_STATEMENT}'"
+    )
+    orphan_sql = (
+        "SELECT COUNT(*) AS n FROM bank_statements b "
+        "WHERE NOT EXISTS (SELECT 1 FROM bank_settlements s "
+        "WHERE s.transaction_id = b.link_tx "
+        "OR (ABS(b.amount_paise - s.settled_amount_paise) <= 1 "
+        f"AND ABS(DATEDIFF(b.value_date, s.settlement_date)) <= {int(lag_days)}))"
+    )
+    return merge_sql, orphan_sql
+
+
+def reconcile_bank_leg(spark, table: str, bank_df, lag_days: int = 2) -> dict:
+    """Run the bank-statement leg. Returns {bank_evidence, bank_missing, bank_orphans}.
+
+    bank_df: Spark frame with (bank_ref, amount_paise, value_date, link_tx).
+    Requires the bank_settlements temp view from run_reconciliation.
+    """
+    table = _qualified_table(table)
+    bank_df.createOrReplaceTempView("bank_statements")
+    merge_sql, orphan_sql = build_bank_leg_sql(table, lag_days)
+    before = spark.sql(
+        f"SELECT COUNT(*) AS n FROM {table} WHERE reconciliation_status = '{MATCHED}'"
+    ).collect()[0]["n"]
+    spark.sql(merge_sql)
+    after = spark.sql(
+        f"SELECT COUNT(*) AS n FROM {table} WHERE reconciliation_status = '{MATCHED}'"
+    ).collect()[0]["n"]
+    orphans = spark.sql(orphan_sql).collect()[0]["n"]
+    out = {
+        "bank_evidence": int(after),
+        "bank_missing": int(before - after),
+        "bank_orphans": int(orphans),
+    }
+    logger.info(f"bank leg complete: {out}")
+    return out
+
+
 def maintain_tables(
     spark=None, tables: list[str] | None = None, retain_last: int | None = None
 ) -> dict:
-    """Binpack + expire snapshots on Iceberg tables (prod parity with bench hygiene).
+    """Iceberg maintenance in dependency order (prod parity with bench hygiene).
+
+    Order is load-bearing: expire snapshots -> remove orphans -> binpack ->
+    rewrite manifests. Reversed, you compact files about to expire (wasted
+    work) or delete files still referenced (corruption). Orphan removal keeps
+    minAge 3d so in-flight WAP writes are never swept.
 
     Never raises: per-statement failures are logged and skipped so maintenance
     can never fail a batch. Opens its own session when spark is None.
@@ -551,7 +694,13 @@ def maintain_tables(
     try:
         settings = get_settings()
         targets = tables or [settings.webhook_table, settings.dlq_table]
-        retain = retain_last or int(os.environ.get("MAINTAIN_RETAIN_LAST", "7"))
+        try:
+            retain = retain_last or int(os.environ.get("MAINTAIN_RETAIN_LAST", "7"))
+        except (TypeError, ValueError):
+            logger.warning(
+                f"bad MAINTAIN_RETAIN_LAST={os.environ.get('MAINTAIN_RETAIN_LAST')!r}: using 7"
+            )
+            retain = retain_last or 7
         out: dict = {}
         for raw in targets:
             tbl = _qualified_table(raw)
@@ -562,11 +711,19 @@ def maintain_tables(
                 ("files_before", f"SELECT COUNT(*) AS n FROM {tbl}.files"),
                 (
                     None,
+                    f"CALL {catalog}.system.expire_snapshots(table => '{rest}', retain_last => {retain})",
+                ),
+                (
+                    None,
+                    f"CALL {catalog}.system.remove_orphan_files(table => '{rest}')",
+                ),
+                (
+                    None,
                     f"CALL {catalog}.system.rewrite_data_files(table => '{rest}', strategy => 'binpack')",
                 ),
                 (
                     None,
-                    f"CALL {catalog}.system.expire_snapshots(table => '{rest}', retain_last => {retain})",
+                    f"CALL {catalog}.system.rewrite_manifests(table => '{rest}')",
                 ),
                 ("files_after", f"SELECT COUNT(*) AS n FROM {tbl}.files"),
             ]
