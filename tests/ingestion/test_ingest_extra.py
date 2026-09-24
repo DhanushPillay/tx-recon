@@ -271,3 +271,93 @@ def test_ensure_webhook_table_ordering_failure_warns(mocker, caplog):
     with caplog.at_level(logging.WARNING, logger="src.ingestion.ingest_webhooks"):
         ing.ensure_webhook_table(spark, "nessie.db.webhooks")
     assert any("Write ordering skipped" in r.message for r in caplog.records)
+
+
+def test_ensure_webhook_table_bucket_partitions_join_key():
+    """New tables partition by bucket(transaction_id): MERGE prunes to file
+    groups instead of full-scanning history (verified live on Nessie)."""
+    spark = MagicMock()
+    import src.ingestion.ingest_webhooks as ing
+
+    ing.ensure_webhook_table(spark, "nessie.db.webhooks")
+    ddl = spark.sql.call_args_list[1][0][0]
+    assert "PARTITIONED BY (bucket(16, transaction_id))" in ddl
+
+
+def test_write_batch_merge_failure_propagates(mocker):
+    """MERGE failure must kill the microbatch (Spark restarts from checkpoint).
+
+    Swallowing here would ACK offsets past unmerged rows — silent money loss.
+    """
+    import src.ingestion.ingest_webhooks as ing
+
+    spark, parsed, ws, captured = MagicMock(), MagicMock(), MagicMock(), {}
+    _mock_stream(spark, parsed, ws, captured)
+    _patch_ingest(ing, mocker, spark)
+    ing.run_ingestion()
+    batch = MagicMock(name="batch")
+    batch.isEmpty.return_value = False
+    batch.select.return_value.distinct.return_value.collect.return_value = [{"schema_id": "123"}]
+    valid = MagicMock(name="valid")
+    valid.dropDuplicates.return_value = valid
+    valid.withColumn.return_value.withColumn.return_value.withColumn.return_value = MagicMock()
+    invalid = MagicMock(name="invalid")
+    invalid.dropDuplicates.return_value = invalid
+    invalid.count.return_value = 0
+    late = MagicMock(name="late")
+    late.count.return_value = 0
+    batch.filter.side_effect = [late, valid, invalid]
+    mocker.patch.object(ing, "lit", return_value=MagicMock())
+    mocker.patch.object(ing, "current_timestamp", return_value=MagicMock())
+    mocker.patch.object(ing, "F", new=MagicMock())
+    spark.sql.side_effect = RuntimeError("merge boom")
+    with pytest.raises(RuntimeError, match="merge boom"):
+        captured["fn"](batch, 0)
+
+
+def test_run_ingestion_requires_sasl_when_flagged(mocker):
+    """REQUIRE_KAFKA_SASL=1 + PLAINTEXT refuses to trust forgeable records."""
+    import src.ingestion.ingest_webhooks as ing
+
+    spark, parsed, ws, captured = MagicMock(), MagicMock(), MagicMock(), {}
+    _mock_stream(spark, parsed, ws, captured)
+    _patch_ingest(ing, mocker, spark)
+    mocker.patch.object(
+        ing,
+        "get_settings",
+        return_value=MagicMock(
+            kafka_broker="x:9092",
+            topic_name="gateway_webhooks",
+            kafka_security_protocol="PLAINTEXT",
+            require_kafka_sasl=True,
+            webhook_secret="",
+            stream_watermark_delay="1 day",
+            iceberg_warehouse="s3a://w",
+            webhook_table="nessie.db.webhooks",
+            dlq_table="nessie.db.dlq",
+        ),
+    )
+    with pytest.raises(RuntimeError, match="REQUIRE_KAFKA_SASL"):
+        ing.run_ingestion()
+
+
+def test_registry_required_raises_when_down(mocker):
+    """REQUIRE_SCHEMA_REGISTRY=1 turns an unreachable registry into failure."""
+    import sys
+    import types
+
+    import src.ingestion.ingest_webhooks as ing
+
+    fake_client_cls = MagicMock(side_effect=RuntimeError("down"))
+    fake_sr = types.ModuleType("confluent_kafka.schema_registry")
+    fake_sr.SchemaRegistryClient = fake_client_cls
+    mocker.patch.dict(
+        sys.modules,
+        {
+            "confluent_kafka": types.ModuleType("confluent_kafka"),
+            "confluent_kafka.schema_registry": fake_sr,
+        },
+    )
+    settings = MagicMock(schema_registry_url="http://x", topic_name="t")
+    with pytest.raises(RuntimeError, match="lookup skipped"):
+        ing._registry_schema_id(settings, required=True)
