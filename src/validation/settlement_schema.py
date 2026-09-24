@@ -48,6 +48,9 @@ settlement_schema = pa.DataFrameSchema(
         "gross_amount_paise": pa.Column(
             pd.Int64Dtype(), nullable=True, required=False, coerce=True
         ),
+        # Provenance stamp from the handling PG adapter (razorpay/cashfree/
+        # payu/generic). Free-form: unknown PGs must not fail validation.
+        "provider": pa.Column(str, nullable=True, required=False),
     },
     strict=False,
     coerce=True,
