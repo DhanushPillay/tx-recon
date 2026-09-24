@@ -39,6 +39,33 @@ def test_bench_warehouse_override(monkeypatch):
     mod._settings = None
 
 
+def test_fail_closed_defaults():
+    """Prod posture out of the box: strict SLO, no destructive seeding."""
+    s = Settings()
+    assert s.strict_slo is True
+    assert s.allow_destructive_seed is False
+    assert s.require_schema_registry is False
+    assert s.require_kafka_sasl is False
+
+
+def test_secret_file_resolution(tmp_path, monkeypatch):
+    """*_FILE convention loads mounted secrets; explicit env wins."""
+    pw = tmp_path / "pw"
+    pw.write_text("s3cr3t\n")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "")  # .env may provide one; force the FILE path
+    monkeypatch.setenv("MINIO_SECRET_KEY_FILE", str(pw))
+    assert Settings().minio_secret_key == "s3cr3t"  # noqa: S105 (test fixture)
+    monkeypatch.setenv("MINIO_SECRET_KEY", "explicit")
+    assert Settings().minio_secret_key == "explicit"  # noqa: S105 (test fixture)
+
+
+def test_secret_file_missing_raises(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINIO_SECRET_KEY", "")
+    monkeypatch.setenv("MINIO_SECRET_KEY_FILE", str(tmp_path / "nope"))
+    with pytest.raises(ValueError, match="cannot read secret file"):
+        Settings()
+
+
 def test_check_java_home_no_env_noop(monkeypatch):
     from src.common.config import _check_java_home
 
