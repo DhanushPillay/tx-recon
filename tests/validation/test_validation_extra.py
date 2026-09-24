@@ -159,3 +159,107 @@ def test_warn_volume_shift_flags_stale_file(tmp_path, caplog):
         _warn_volume_shift(str(d), str(cur), 10)
     assert any("stale settlement file" in r.message for r in caplog.records)
     assert not [r for r in caplog.records if "volume shift" in r.message]
+
+
+def test_pan_gate_rejects_card_number(tmp_path, monkeypatch):
+    """A Luhn-valid PAN anywhere in id columns fails the batch closed."""
+    import src.validation.validate_settlement as vs
+
+    d = tmp_path / "data"
+    d.mkdir()
+    (d / "settlement_20250102.csv").write_text(
+        "bank_ref_id,transaction_id,settled_amount_paise,settlement_date,instrument_type\n"
+        "b1,tx_abcdef123456,97640,2025-01-02,CREDIT_CARD\n"
+        "4111111111111111,tx_abcdef123457,97640,2025-01-02,CREDIT_CARD\n"
+    )
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    with pytest.raises(vs.SettlementValidationError, match="PAN detected"):
+        vs.validate_latest_settlement(project_root=str(tmp_path), date_str="2025-01-02")
+
+
+def test_pan_guard_unit():
+    from src.validation.pan_guard import find_pans, scan_frame
+
+    assert find_pans("4111111111111111") == ["4111111111111111"]
+    assert find_pans("4111 1111 1111 1111") == ["4111111111111111"]
+    assert find_pans("tx_abcdef123456") == []
+    assert find_pans("12345") == []
+    import pandas as pd
+
+    df = pd.DataFrame({"transaction_id": ["tx_1", "4111111111111111"], "x": ["a", "b"]})
+    assert scan_frame(df, ["transaction_id"]) == {"transaction_id": 1}
+    assert scan_frame(df, ["x"]) == {}
+
+
+def test_file_registry_redelivery(tmp_path):
+    """Same bytes, different name: same hash, seen_before on second record."""
+    from src.validation.file_registry import load_registry, record_file
+
+    d = str(tmp_path)
+    a = tmp_path / "a.csv"
+    b = tmp_path / "b.csv"
+    a.write_text("same-bytes")
+    b.write_text("same-bytes")
+    first = record_file(d, str(a), "2025-01-01")
+    assert first["seen_before"] is False
+    second = record_file(d, str(b), "2025-01-01")
+    assert second["seen_before"] is True
+    assert second["sha256"] == first["sha256"]
+    assert len(load_registry(d)) == 1
+
+
+def test_file_registry_write_failure_warns_but_returns(tmp_path, caplog):
+    """Unwritable registry degrades to logging; validation itself continues."""
+    import logging
+
+    from src.validation.file_registry import record_file
+
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not-a-dir")
+    f = tmp_path / "a.csv"
+    f.write_text("bytes")
+    with caplog.at_level(logging.WARNING):
+        out = record_file(str(blocker), str(f), "2025-01-01")
+    assert out["seen_before"] is False
+    assert len(out["sha256"]) == 64
+
+
+def test_pan_guard_edge_cases():
+    from src.validation.pan_guard import find_pans, scan_frame
+
+    assert find_pans("") == []
+    assert find_pans("no digits here") == []
+    assert find_pans("411111111114") == []  # 12 digits: below PAN length floor
+    import pandas as pd
+
+    df = pd.DataFrame({"transaction_id": ["tx_1"]})
+    assert scan_frame(df, ["missing_col"]) == {}
+    assert scan_frame(df, []) == {}
+
+
+def test_adapter_failure_fails_closed(tmp_path, monkeypatch):
+    """Unparseable file: explicit error, never a raw-CSV fallback merge."""
+    import src.validation.validate_settlement as vs
+
+    d = tmp_path / "data"
+    d.mkdir()
+    (d / "settlement_20250102.csv").write_bytes(b"\xff\xfe\x00not-a-csv\xff")
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    with pytest.raises(vs.SettlementValidationError, match="Adapter normalization failed"):
+        vs.validate_latest_settlement(project_root=str(tmp_path), date_str="2025-01-02")
+
+
+def test_volume_shift_raises_when_strict(tmp_path):
+    """Strict mode turns a >50% drop from warning into batch failure."""
+    import pytest as _pytest
+
+    from src.validation.validate_settlement import SettlementValidationError
+
+    d = tmp_path / "data"
+    d.mkdir()
+    prev = d / "curated_settlement_20250101.csv"
+    prev.write_text("a\n" + "1\n" * 10)
+    cur = d / "settlement_20250102.csv"
+    cur.write_text("a\n1\n")
+    with _pytest.raises(SettlementValidationError, match="volume shift"):
+        _warn_volume_shift(str(d), str(cur), 2, strict=True)
