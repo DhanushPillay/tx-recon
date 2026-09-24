@@ -156,7 +156,8 @@ def test_build_real_files_bad_dataset():
         build_real_files("x", "y", "z", dataset="nope", spark=_fake_spark([]))
 
 
-def test_seed_real_webhooks_wiring():
+def test_seed_real_webhooks_wiring(monkeypatch):
+    monkeypatch.setenv("ALLOW_DESTRUCTIVE_SEED", "1")
     spark = MagicMock(name="spark")
     st = MagicMock(name="staged")
     st.count.return_value = 42
@@ -169,7 +170,15 @@ def test_seed_real_webhooks_wiring():
     assert any("2020-01-01T00:00:00" in s for s in sqls)
 
 
-def test_seed_real_webhooks_bad_inputs():
+def test_seed_real_webhooks_requires_opt_in(monkeypatch):
+    """Destructive seed refuses without explicit confirmation."""
+    monkeypatch.delenv("ALLOW_DESTRUCTIVE_SEED", raising=False)
+    with pytest.raises(RuntimeError, match="ALLOW_DESTRUCTIVE_SEED"):
+        seed_real_webhooks(MagicMock(), "nessie.db.webhooks", "hooks.csv", "2020-01-01")
+
+
+def test_seed_real_webhooks_bad_inputs(monkeypatch):
+    monkeypatch.setenv("ALLOW_DESTRUCTIVE_SEED", "1")
     spark = MagicMock(name="spark")
     with pytest.raises(ValueError):
         seed_real_webhooks(spark, "nessie.db.webhooks", "hooks.csv", "01/01/2020")
