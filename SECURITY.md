@@ -23,7 +23,10 @@ assessment. Expect an initial response within 7 days.
 ## Known Non-Goals (by design, not oversight)
 
 - Default credentials in `docker-compose.yml` / `.env.example` are local-only
-  placeholders. Never expose these ports beyond `localhost`.
+  placeholders. Never expose these ports beyond `localhost`. Secrets support
+  `*_FILE` (mounted-file) resolution; prod must set `REQUIRE_KAFKA_SASL=1`
+  (PLAINTEXT brokers trust forgeable records) and keep `ALLOW_DESTRUCTIVE_SEED`
+  unset outside explicitly confirmed seed runs.
 - Secret scanning runs in CI (`gitleaks/gitleaks-action`, detect on the
   working tree). No image scanning yet (tracked as future work).
 - `src/processing/residual.py` interpolates transaction IDs into SQL;
