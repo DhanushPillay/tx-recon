@@ -15,12 +15,14 @@ _VOLUME_DROP_WARN = 0.5  # warn if this batch has <50% of the previous curated r
 _STALE_FILE_HOURS = 48  # warn if the settlement file itself is older than this
 
 
-def _warn_volume_shift(data_dir: str, latest_file: str, n_rows: int) -> None:
-    """Warn-only volume guard: compare against the previous curated batch.
+def _warn_volume_shift(data_dir: str, latest_file: str, n_rows: int, strict: bool = False) -> None:
+    """Volume guard: compare against the previous curated batch.
 
-    Catches a truncated/partial PG drop before MERGE bakes it in. Never
-    raises — a first-ever run has no previous batch, and unreadable history
-    must not fail a valid batch."""
+    Catches a truncated/partial PG drop before MERGE bakes it in. Warn-only by
+    default; strict (prod) raises so a truncated drop can never merge green.
+    Never raises on missing history or unreadable files — only on a measured
+    breach.
+    """
     try:
         current = "curated_" + os.path.basename(latest_file)
         cands = [
@@ -34,16 +36,22 @@ def _warn_volume_shift(data_dir: str, latest_file: str, n_rows: int) -> None:
         with open(prev, encoding="utf-8") as fh:
             prev_n = sum(1 for _ in fh) - 1  # header
         if prev_n > 0 and n_rows < _VOLUME_DROP_WARN * prev_n:
-            logger.warning(
+            msg = (
                 f"volume shift: {n_rows} rows vs {prev_n} in {os.path.basename(prev)} "
                 f"(>{(1 - _VOLUME_DROP_WARN):.0%} drop) — verify the PG drop is complete"
             )
+            if strict:
+                raise SettlementValidationError(msg)
+            logger.warning(msg)
         age_h = (time.time() - os.path.getmtime(latest_file)) / 3600
         if age_h > _STALE_FILE_HOURS:
-            logger.warning(
+            msg = (
                 f"stale settlement file: {os.path.basename(latest_file)} is {age_h:.1f}h old "
                 f"(>{_STALE_FILE_HOURS}h) — verify the PG drop schedule"
             )
+            if strict:
+                raise SettlementValidationError(msg)
+            logger.warning(msg)
     except OSError as exc:
         logger.warning(f"volume check skipped: {exc}")
 
@@ -125,10 +133,29 @@ def validate_latest_settlement(
             df, pg_name = load_settlement_csv(latest_file)
             logger.info(f"Settlement adapter detected: {pg_name} -> {len(df)} rows normalized")
     except Exception as exc:
-        logger.warning(f"Adapter normalization failed ({exc}), falling back to raw CSV")
-        df = pd.read_csv(latest_file)
+        # Fail closed: raw fallback would lose PG INR->paise/date/instrument
+        # normalization and mis-price the MERGE. Fix the adapter, not the data.
+        raise SettlementValidationError(
+            f"Adapter normalization failed for {latest_file}: {exc}"
+        ) from exc
     if df.empty:
         raise SettlementValidationError(f"Settlement file is empty: {latest_file}")
+
+    # No-PAN gate before anything else touches the rows: one card number
+    # puts the whole lake in PCI scope. Last-4 + issuer only, ever.
+    from src.validation.pan_guard import scan_frame
+
+    pan_hits = scan_frame(
+        df, ["transaction_id", "bank_ref_id", "settlement_id", "utr", "merchant_id"]
+    )
+    if pan_hits:
+        raise SettlementValidationError(
+            f"PAN detected in {latest_file} {pan_hits}: refusing batch (store last-4 + issuer only)"
+        )
+
+    from src.validation.file_registry import record_file
+
+    record_file(data_dir, latest_file, date_str)
 
     _, invalid = validate_and_quarantine(df, settlement_schema)
     valid = df.drop(invalid.index) if not invalid.empty else df
@@ -142,7 +169,9 @@ def validate_latest_settlement(
 
     quarantine_rate = len(invalid) / len(df) * 100 if len(df) > 0 else 0
     logger.info(f"Quarantine rate: {quarantine_rate:.1f}% ({len(invalid)}/{len(df)} rows)")
-    _warn_volume_shift(data_dir, latest_file, len(valid))
+    from src.common.settings import get_settings
+
+    _warn_volume_shift(data_dir, latest_file, len(valid), strict=get_settings().strict_slo)
 
     if not invalid.empty:
         base, ext = os.path.splitext(latest_file)
