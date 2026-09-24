@@ -51,16 +51,18 @@ catalog `nessie`, schema `db`). Full setup: [docs/LOCAL_SETUP.md](docs/LOCAL_SET
 ```mermaid
 flowchart LR
     W([Gateway]) -->|Avro| K[Redpanda]
-    K -->|Structured Streaming| I[(Iceberg webhooks)]
-    C([Settlement CSV]) -->|Pandera| V{Valid?}
-    V -->|yes| N[Adapter]
+    K -->|Structured Streaming<br/>bucket 16| I[(Iceberg webhooks)]
+    C([Settlement CSV]) -->|PAN guard<br/>file registry| V{Valid?}
+    V -->|yes| N[Adapter<br/>provider batch]
     V -->|no| Q[(Quarantine)]
-    N --> M[MERGE INTO]
+    N -->|WAP branch| M[MERGE INTO]
     M --> I
+    B([Bank MT940]) -->|mt-940| BK[(bank_statements)]
+    BK -->|3rd leg| M
     I --> T[Trino / Metabase]
 ```
 
-Run modes (0$): `SPARK_MODE=local` (default, single node) · `SPARK_MODE=cluster` (spark:// 1+2) · `SPARK_MODE=yarn` (Hadoop YARN+HDFS, see `docs/HADOOP.md` + `docker-compose.hadoop.yml`). Terraform `infra/terraform/local` (LocalStack) proves cloud IaC without bill; same code deploys to `infra/terraform` (S3+Glue).
+Run modes (0$): `SPARK_MODE=local` (default, single node) · `SPARK_MODE=cluster` (spark:// 1+2) · `SPARK_MODE=yarn` (Hadoop YARN+HDFS, see `docs/HADOOP.md` + `docker-compose.hadoop.yml`). Terraform `infra/terraform/local` (LocalStack) proves cloud IaC without bill; same code deploys to `infra/terraform` (S3+Glue, KMS, lifecycle).
 
 3-way overlay examples:
 ```
@@ -70,7 +72,7 @@ docker compose -f docker-compose.yml -f docker-compose.hadoop.yml up -d  # + Had
 SPARK_MODE=yarn bash scripts/spark_submit_yarn.sh client src/pipeline.py
 ```
 
-Two paths converge on one table. The streaming path ingests webhooks continuously. The batch path merges settlements daily. Both use idempotent MERGE so re-runs are safe.
+Three legs converge on one table. Streaming ingests webhooks (bucket(16, transaction_id) to co-locate MERGE joins). Batch validates settlements (PAN guard + content-hash registry → WAP branch) and merges by provider batch, not calendar date. The bank leg (MT940 via `mt-940`) provides independent evidence for MATCHED rows — a gateway-consistent error is invisible without it. All merges are idempotent so re-runs converge.
 
 Full architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -79,10 +81,16 @@ Full architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - Integer-only paise math in both Python and Spark SQL, no floating-point drift (`src/processing/fee_engine.py`)
 - Versioned rate cards with effective-date ranges so historical settlements use the rates that were active when they settled (`config/fee_rates.yaml`)
 - Per-merchant negotiated rates that override instrument rates within each card
-- Merchant-aware MERGE SQL that checks `merchant_id` before `instrument_type`
-- PG settlement adapters that normalize Razorpay, Cashfree, and PayU CSVs to a canonical 12-column shape (`src/adapters/settlement.py`)
-- Pandera contract validation with quarantine of bad rows before they reach Spark
-- Streaming dedup via `dropDuplicates` + `MERGE WHEN NOT MATCHED` in `foreachBatch`
+- Merchant-aware MERGE SQL that checks `merchant_id` before `instrument_type` (`src/processing/reconcile.py: build_fee_case_sql`)
+- PG settlement adapters that normalize Razorpay, Cashfree, and PayU CSVs to a canonical 13-column shape including `provider` (`src/adapters/settlement.py`, `config/providers.yaml`)
+- Provider batch identity + per-provider lag/SLA (`config/providers.yaml`, `src/processing/batches.py`) — reconcile by `{provider}:{batch_date}` with `lag_days`/`late_sla_days`, not calendar date
+- Bank-statement third leg: MT940 parsing via `mt-940` (never hand-rolled) with independent credit evidence for MATCHED rows (`src/adapters/bank_statement.py`, `EXCEPTION_MISSING_BANK_STATEMENT`)
+- Pandera contract validation with quarantine + no-PAN gate (Luhn-checked scan) + content-hash file registry before Spark (`src/validation/pan_guard.py`, `file_registry.py`)
+- WAP branches (`src/processing/wap.py`): batches land on `ingest/YYYY-MM-DD`, merge to `main` only on gate pass (`spark.wap.branch` + `write.wap.enabled` both required, verified live against Nessie 0.107.9 API v2)
+- Bucket partitioning `PARTITIONED BY bucket(16, transaction_id)` + `WRITE ORDERED BY transaction_id` so MERGE prunes to file groups (`src/ingestion/ingest_webhooks.py: ensure_webhook_table`)
+- Streaming dedup via `dropDuplicates` + idempotent `MERGE WHEN NOT MATCHED` in `foreachBatch` with watermark-bounded state and schema-id drift detection
+- Append-only corrections journal with maker-checker (`src/processing/corrections.py`, `scripts/replay_dlq.py --reason/--approved-by`)
+- Strict fail-closed defaults (`strict_slo`, `REQUIRE_KAFKA_SASL`, `REQUIRE_SCHEMA_REGISTRY`, `ALLOW_DESTRUCTIVE_SEED`) — demo conveniences are opt-in
 - Downgrade-only residual scorer with a formal proof that false positives never increase (`docs/PROOF.md`)
 - Sealed accuracy harness that injects 7 break classes and asserts F1=1.0 with zero false positives (`tests/performance/recon_accuracy.py`)
 
@@ -109,26 +117,29 @@ Measured on real data: [thiru1711/Financial_Transactions](https://huggingface.co
 
 | Suite | Result |
 | :--- | :--- |
-| Iceberg MERGE (single-node, 8g driver) | 1M 50% **6.21s**, 5M 50% **11.38s**, 12M 50% **23.69s**, match ~94.7% throughout |
+| Iceberg MERGE (single-node, 8g driver, 128 shuffles ≥5M) | 1M 50% **6.21s**, 5M 50% **11.38s**, 12M 50% **23.69s** (bench slices ~94.7% due to tx-ordered sampling; end-to-end 89.98% — see below) |
 | Validation, 12.6M rows | polars **8.44M** / manual 3.63M / pandera 1.44M / pydantic 208k rows/sec |
 | Kafka producer (real ~150B records, acks=all, lz4) | **239,061 msgs/sec**; serial p50 0.98ms, p99 20.59ms |
-| End-to-end batch (12.6M rows: validate + MERGE) | ~5 min wall (173s validate, 105s MERGE) |
+| End-to-end batch (12.6M rows: validate + MERGE + mart) | **~5 min wall** (173s validate, 105s MERGE, 89.98% end-to-end) |
 
-Record: `tests/performance/results_real.json`. Match rate ~94.7% is the loader's
-~10%-exception mix working as designed (health gate ≥ 85%), not matcher error.
+Record: `tests/performance/results_real.json`. The loader injects ~10% exceptions by design (health gate ≥ 85%): bench slices show ~94.7% due to tx-ordered sampling, while the full 12.6M end-to-end run reports **89.98%** (11,368,871 / 12,635,227) — both are the mix working, not matcher error.
 Synthetic regression baselines are archived in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## Project structure
 
 ```
 src/
-  adapters/        PG settlement normalizers (Razorpay, Cashfree, PayU, Generic)
-  common/          Settings, Spark session, domain contracts
-  generators/      Webhook producer + settlement file generator
-  ingestion/       Spark streaming Kafka -> Iceberg (+DLQ)
-  processing/      FeeEngine + MERGE reconciliation + residual scorer
-  validation/      Pandera schemas + quarantine
-  pipeline.py      generate -> validate -> reconcile (cron entrypoint)
+  adapters/        PG settlement normalizers (Razorpay/Cashfree/PayU/Generic) + bank_statement MT940 + real_data loader
+  common/          Settings (strict flags, *_FILE secrets), Spark session, domain contracts
+  generators/      Webhook producer (HMAC) + settlement file generator
+  ingestion/       Spark streaming Kafka -> Iceberg (+DLQ, WAP table layout, bucket 16)
+  processing/      FeeEngine + MERGE reconciliation + residual scorer + batches (provider windows) + wap (branches) + corrections (journal)
+  validation/      Pandera schemas + quarantine + pan_guard (Luhn) + file_registry (sha256)
+  pipeline.py      generate -> validate (PAN/registry) -> reconcile (provider batch) -> metrics + maintenance
+config/
+  fee_rates.yaml   versioned rate cards (effective_from/to, merchant overrides)
+  providers.yaml   per-provider lag_days / late_sla_days / cutoff
+sql/marts/         fact_reconciliation mart (migrations/V*__fact_reconciliation.sql is source of truth)
 ```
 
 ## Contributing
@@ -140,9 +151,12 @@ PR checklist: `.github/PULL_REQUEST_TEMPLATE.md`.
 
 - Production Kubernetes manifest (the `k8s/` stub was removed; compose is the supported path).
 
-Shipped: materialized `fact_reconciliation` TABLE mart, DLQ replay script
-(`scripts/replay_dlq.py`), match-rate SLO warning (`MATCH_RATE_SLO`),
-late-resolution SLA (`LATE_SLA_DAYS` → `LATE_UNRESOLVED`).
+Shipped: `fact_reconciliation` TABLE mart (migration-sourced), DLQ replay with maker-checker
+(`scripts/replay_dlq.py --reason --approved-by`), match-rate SLO (`MATCH_RATE_SLO` strict fail-closed),
+per-provider late SLA (`LATE_SLA_DAYS` → `config/providers.yaml` per-provider `late_sla_days` → `LATE_UNRESOLVED`),
+bucket(16) partitioning, WAP branches (`src/processing/wap.py`), bank third leg (MT940 via `mt-940` → `EXCEPTION_MISSING_BANK_STATEMENT`),
+PAN guard + file registry, `provider` canonical column, bucketed maintenance order (expire → orphan 3d → binpack → manifests),
+real-data scale proof (12.6M, 90.65% branch coverage). CI: `pip-audit` blocking with 90 ignores (all pip-only locals).
 
 ## License
 
