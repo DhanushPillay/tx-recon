@@ -55,12 +55,15 @@ def test_assign_mix_tiles_and_generates(tmp_path):
     assert all(r["settlement_date"] >= "2026-09-07" for r in rows)  # ooo backdate bounded
 
 
-def test_main_drift_and_demo_warnings():
+def test_main_drift_and_demo_warnings(tmp_path):
     counts = {"settlement_rows_deduped": 10, "batch_MATCHED": 6, "batch_EXCEPTION_FEE_MISMATCH": 4}
     with (
         patch("src.pipeline._build_demo_plan", return_value=[]),
         patch("src.generators.settlement_generator.generate_settlement_file", return_value="f"),
-        patch("src.validation.validate_settlement.validate_latest_settlement"),
+        patch(
+            "src.validation.validate_settlement.validate_latest_settlement",
+            return_value=str(tmp_path / "curated_settlement_20250402.csv"),
+        ),
         patch("src.processing.reconcile.run_reconciliation", return_value=counts),
         patch("src.processing.reconcile.maintain_tables", return_value={"m": {}}),
     ):
@@ -68,6 +71,27 @@ def test_main_drift_and_demo_warnings():
             out = main()
         assert out["settlement_rows_deduped"] == 10
         assert out["maintenance"] == {"m": {}}
+        assert (tmp_path / "metrics_20250402.json").exists()
+
+
+def test_main_no_demo_never_synthesizes(tmp_path, monkeypatch):
+    """Without --demo/opt-in the pipeline merges the real file; generator stays idle."""
+    monkeypatch.delenv("GENERATE_DEMO_SETTLEMENT", raising=False)
+    counts = {"settlement_rows_deduped": 1, "batch_MATCHED": 1}
+    with (
+        patch("src.generators.settlement_generator.generate_settlement_file") as gen,
+        patch(
+            "src.validation.validate_settlement.validate_latest_settlement",
+            return_value=str(tmp_path / "curated_settlement_20250402.csv"),
+        ),
+        patch("src.processing.reconcile.run_reconciliation", return_value=counts),
+        patch("src.processing.reconcile.maintain_tables", return_value={}),
+        patch("sys.argv", ["pipeline", "--date", "2025-04-02"]),
+    ):
+        out = main()
+    gen.assert_not_called()
+    assert out["settlement_rows_deduped"] == 1
+    assert (tmp_path / "metrics_20250402.json").exists()
 
 
 def test_main_drift_raises():
@@ -79,8 +103,9 @@ def test_main_drift_raises():
         )
 
 
-def test_main_demo_zero_match_warns_but_returns():
+def test_main_demo_zero_match_warns_but_returns(monkeypatch):
     counts = {"settlement_rows_deduped": 5, "batch_MATCHED": 0, "batch_X": 5}
+    monkeypatch.setenv("ALLOW_DESTRUCTIVE_SEED", "1")
     with (
         patch("src.pipeline._build_demo_plan", return_value=[("tx_x", 1, "UPI", "m")]),
         patch("src.common.config.get_spark_session"),
@@ -91,5 +116,16 @@ def test_main_demo_zero_match_warns_but_returns():
         patch("src.processing.reconcile.maintain_tables", return_value={}),
         patch("sys.argv", ["pipeline", "--demo"]),
         pytest.raises(RuntimeError),
+    ):
+        main()
+
+
+def test_main_demo_requires_destructive_opt_in(monkeypatch):
+    """--demo without ALLOW_DESTRUCTIVE_SEED refuses before touching the table."""
+    monkeypatch.delenv("ALLOW_DESTRUCTIVE_SEED", raising=False)
+    with (
+        patch("src.pipeline._build_demo_plan", return_value=[("tx_x", 1, "UPI", "m")]),
+        patch("sys.argv", ["pipeline", "--demo", "--date", "2025-04-02"]),
+        pytest.raises(RuntimeError, match="ALLOW_DESTRUCTIVE_SEED"),
     ):
         main()
