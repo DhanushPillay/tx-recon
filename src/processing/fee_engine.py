@@ -55,17 +55,16 @@ class FeeEngine:
         path = config_path or os.path.join(settings.project_root, settings.fee_rate_config)
 
         self.config_version = "v1"
-        if os.path.exists(path):
-            with open(path) as f:
-                loaded = yaml.safe_load(f) or {}
-        else:
-            loaded = {}
+        if not os.path.exists(path):
+            # Fail closed: a missing rate card must never silently price money
+            # at hardcoded defaults. Point the operator at the real file.
+            raise FileNotFoundError(
+                f"fee rate config not found: {path} (set via fee_rate_config / FEE_RATE_CONFIG)"
+            )
+        with open(path) as f:
+            loaded = yaml.safe_load(f) or {}
         if not loaded:
-            loaded = {
-                "version": "v1.0.0",
-                "default": {"mdr_rate_bps": 150, "gst_on_mdr": 18.0, "tolerance_paise": 1},
-                "instruments": {},
-            }
+            raise ValueError(f"fee rate config is empty: {path}")
         self.config = loaded
         self._validate_config()
         self._build_rate_cards()
