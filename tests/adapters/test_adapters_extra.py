@@ -16,9 +16,11 @@ from src.adapters.settlement import (
 pytestmark = pytest.mark.unit
 
 
-def test_map_instrument_unknown_fallback():
-    assert _map_instrument("something-weird-xyz") == "CREDIT_CARD"
-    assert _map_instrument(None) == "CREDIT_CARD"
+def test_map_instrument_unknown_quarantined():
+    # Unknown methods map to UNKNOWN (not a real instrument): the Pandera isin
+    # check quarantines the row instead of mispricing it as CREDIT_CARD.
+    assert _map_instrument("something-weird-xyz") == "UNKNOWN"
+    assert _map_instrument(None) == "UNKNOWN"
     assert _map_instrument("card - visa credit") == "CREDIT_CARD"
 
 
@@ -100,4 +102,26 @@ def test_direct_alias_and_series_substring():
 
     assert _map_instrument("upi") == "UPI"
     out = _map_instrument_series(pd.Series(["upi", "card - visa credit", "mystery-xyz"]))
-    assert list(out) == ["UPI", "CREDIT_CARD", "CREDIT_CARD"]
+    assert list(out) == ["UPI", "CREDIT_CARD", "UNKNOWN"]
+
+
+def test_unknown_instrument_quarantined_by_schema():
+    """UNKNOWN is not in INSTRUMENT_TYPES: validation quarantines, never merges."""
+    import pandera.pandas as pa
+    from pandera.errors import SchemaErrors
+
+    from src.validation.settlement_schema import settlement_schema
+
+    df = pd.DataFrame(
+        [
+            {
+                "transaction_id": "tx_abcdef123456",
+                "bank_ref_id": "bnk_001",
+                "settled_amount_paise": 97640,
+                "settlement_date": "2025-04-02",
+                "instrument_type": "UNKNOWN",
+            }
+        ]
+    )
+    with pytest.raises((SchemaErrors, pa.errors.SchemaError)):
+        settlement_schema.validate(df, lazy=True)
