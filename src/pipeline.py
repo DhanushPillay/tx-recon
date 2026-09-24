@@ -8,6 +8,7 @@ Usage:
 
 import argparse
 import logging
+import os
 import random
 from datetime import UTC
 
@@ -142,7 +143,6 @@ def check_batch_drift(counts: dict, ds: str | None = None) -> None:
     must tile settlement_rows_deduped exactly. batch_EXCEPTION_DUPLICATE_SETTLEMENT
     is a diagnostic (rows collapsed), not an outcome — never subtract it.
     """
-    """Fail closed if batch statuses don't tile deduped rows (shared cron/DAG)."""
     batch_n = counts.get("settlement_rows_deduped", 0)
     batch_total = sum(
         v
@@ -158,6 +158,25 @@ def check_batch_drift(counts: dict, ds: str | None = None) -> None:
         )
 
 
+def _resolve_batch_date(validated_path: str, date_str: str | None) -> str:
+    """Batch date for MERGE/drift: explicit --date wins, else the validated filename.
+
+    Fail closed: reconcile must never silently merge every curated file when the
+    date is unknown (date-less runs re-merge all history).
+    """
+    import re
+
+    if date_str:
+        return date_str
+    m = re.search(r"(\d{8})", os.path.basename(validated_path))
+    if not m:
+        raise ValueError(
+            f"cannot resolve batch date from {validated_path!r}: pass --date YYYY-MM-DD"
+        )
+    stem = m.group(1)
+    return f"{stem[:4]}-{stem[4:6]}-{stem[6:]}"
+
+
 def run_daily(
     date_str: str | None = None,
     num_records: int = 500,
@@ -165,19 +184,34 @@ def run_daily(
     demo: bool = False,
     messy: bool = False,
 ) -> dict:
-    """Shared daily entrypoint for cron/main and Airflow DAG (single source of truth)."""
+    """Shared daily entrypoint for cron/main and Airflow DAG (single source of truth).
+
+    Fail-closed: without demo/opt-in the pipeline merges a real PG file and
+    never fabricates one (validate raises FileNotFoundError when absent).
+    Demo seeding is destructive (MERGE-DELETE) and requires
+    allow_destructive_seed.
+    """
+    import json
+
+    from src.common.settings import get_settings
     from src.generators.settlement_generator import generate_settlement_file
     from src.processing.reconcile import maintain_tables, run_reconciliation
     from src.validation.validate_settlement import validate_latest_settlement
 
+    settings = get_settings()
+    synth_opt_in = demo or os.environ.get("GENERATE_DEMO_SETTLEMENT") == "1"
     planned = _build_demo_plan(num_records, seed=seed) if demo else None
     row_opts, orphans = None, None
     if planned is not None and messy:
         planned, row_opts, orphans = _assign_mix(planned, seed=seed, batch_date=date_str)
     spark = None
     if planned is not None:
+        if not settings.allow_destructive_seed:
+            raise RuntimeError(
+                "demo seeding deletes existing webhook rows: set "
+                "ALLOW_DESTRUCTIVE_SEED=1 to confirm"
+            )
         from src.common.config import get_spark_session
-        from src.common.settings import get_settings
         from src.processing.reconcile import _qualified_table
 
         logger.info("Step 0/3: seeding demo webhooks (same plan as settlements)")
@@ -185,7 +219,7 @@ def run_daily(
         try:
             seeded = _seed_demo_webhooks(
                 spark,
-                _qualified_table(get_settings().webhook_table),
+                _qualified_table(settings.webhook_table),
                 planned,
                 skip=orphans,
                 ts=f"{date_str}T12:00:00+00:00" if date_str else None,
@@ -194,20 +228,34 @@ def run_daily(
             spark.stop()
             spark = None
         logger.info(f"Seeded {seeded} demo webhooks")
-    logger.info("Step 1/3: generating settlement file")
-    generate_settlement_file(
-        num_records=num_records,
-        seed=seed,
-        date_str=date_str,
-        planned=planned,
-        row_opts=row_opts,
-    )
+    if synth_opt_in:
+        logger.info("Step 1/3: generating settlement file")
+        generate_settlement_file(
+            num_records=num_records,
+            seed=seed,
+            date_str=date_str,
+            planned=planned,
+            row_opts=row_opts,
+        )
+    else:
+        logger.info("Step 1/3: using real PG settlement file (no synthesis)")
     logger.info("Step 2/3: validating settlement file")
-    validate_latest_settlement(date_str=date_str)
+    curated_path = validate_latest_settlement(date_str=date_str)
+    if not curated_path:
+        raise RuntimeError("validation returned no curated file")
+    batch_date = _resolve_batch_date(curated_path, date_str)
     logger.info("Step 3/3: running reconciliation MERGE")
-    counts: dict = run_reconciliation(date_str=date_str)
+    counts: dict = run_reconciliation(date_str=batch_date)
     logger.info(f"Pipeline done: {counts}")
-    check_batch_drift(counts, ds=date_str)
+    check_batch_drift(counts, ds=batch_date)
+    try:  # machine-readable ops record next to the curated file
+        metrics_path = os.path.join(
+            os.path.dirname(curated_path), f"metrics_{batch_date.replace('-', '')}.json"
+        )
+        with open(metrics_path, "w", encoding="utf-8") as fh:
+            json.dump({"batch_date": batch_date, "counts": counts}, fh, default=str)
+    except OSError as exc:
+        logger.warning(f"metrics file skipped: {exc}")
     batch_n = counts.get("settlement_rows_deduped", 0)
     batch_matched = counts.get("batch_MATCHED", counts.get("MATCHED", 0))
     if demo and batch_n and not batch_matched:
