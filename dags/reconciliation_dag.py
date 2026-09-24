@@ -30,10 +30,28 @@ default_args = {
 
 
 def generate_settlement_task(ds, **kwargs):
+    """Sense the real PG drop for ds; never fabricate a batch.
+
+    Prod merges bank files, not generator output. Local dev can opt back into
+    synthesis with GENERATE_DEMO_SETTLEMENT=1 (never set that in prod).
+    """
+    import glob
+
     from src.generators.settlement_generator import generate_settlement_file
 
-    seed = int(ds.replace("-", ""))
-    generate_settlement_file(num_records=500, seed=seed, date_str=ds)
+    root = os.getenv("PROJECT_ROOT", "/opt/airflow")
+    candidates = glob.glob(os.path.join(root, "data", f"settlement_{ds.replace('-', '')}.csv"))
+    if candidates:
+        logger.info(f"Using real PG settlement file: {candidates[0]}")
+        return candidates[0]
+    if os.getenv("GENERATE_DEMO_SETTLEMENT") == "1":
+        logger.warning("GENERATE_DEMO_SETTLEMENT=1: synthesizing batch (dev only)")
+        seed = int(ds.replace("-", ""))
+        return generate_settlement_file(num_records=500, seed=seed, date_str=ds)
+    raise FileNotFoundError(
+        f"No PG settlement file for ds={ds} under {root}/data "
+        f"(expected settlement_{ds.replace('-', '')}.csv); refusing to fabricate a batch"
+    )
 
 
 def validate_settlement_task(ds, **kwargs):
