@@ -1,10 +1,7 @@
 import os
-import platform
 import sys
 
 import pytest
-
-skip_pyspark = platform.system() == "Windows"
 
 
 @pytest.fixture(autouse=True)
@@ -40,24 +37,27 @@ def canonical_df():
 
 @pytest.fixture(scope="session")
 def spark():
-    if skip_pyspark:
-        pytest.skip("PySpark Python worker crashes on Windows with Python 3.13")
+    # Skip only when Spark is actually unavailable (the old blanket Windows
+    # skip hid real MERGE/dedup coverage on dev boxes that run it fine).
+    try:
+        from pyspark.sql import SparkSession
 
-    from pyspark.sql import SparkSession
+        old_spark_home = os.environ.pop("SPARK_HOME", None)
+        old_python = os.environ.get("PYSPARK_PYTHON")
+        old_driver = os.environ.get("PYSPARK_DRIVER_PYTHON")
+        os.environ["PYSPARK_PYTHON"] = sys.executable
+        os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
 
-    old_spark_home = os.environ.pop("SPARK_HOME", None)
-    old_python = os.environ.get("PYSPARK_PYTHON")
-    old_driver = os.environ.get("PYSPARK_DRIVER_PYTHON")
-    os.environ["PYSPARK_PYTHON"] = sys.executable
-    os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
-
-    session = (
-        SparkSession.builder.master("local[1]")
-        .config("spark.python.worker.reuse", "true")
-        .config("spark.sql.shuffle.partitions", "1")
-        .appName("TxRecon-Tests")
-        .getOrCreate()
-    )
+        session = (
+            SparkSession.builder.master("local[1]")
+            .config("spark.python.worker.reuse", "true")
+            .config("spark.sql.shuffle.partitions", "1")
+            .appName("TxRecon-Tests")
+            .getOrCreate()
+        )
+    except Exception as exc:
+        pytest.skip(f"Spark unavailable: {exc}")
+        return
     yield session
     session.stop()
     # restore caller env (never leak test config into other tests)
