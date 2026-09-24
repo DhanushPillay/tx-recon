@@ -28,13 +28,14 @@ def parse_watermark_delay(delay: str) -> tuple[int, str]:
     return int(m.group(1)), m.group(2).lower()
 
 
-def _registry_schema_id(settings) -> str | None:
+def _registry_schema_id(settings, required: bool = False) -> str | None:
     """Latest Avro schema id for the topic value-subject (warn-only if unreachable).
 
     The streaming parse uses a pinned local copy (WEBHOOK_AVRO_SCHEMA), so a
     producer-side evolution shows up as per-batch id drift in _write_batch
-    instead of a silent DLQ flood. Never raises: registry down must not block
-    ingestion, it just disables the drift comparison."""
+    instead of a silent DLQ flood. Never raises unless required: registry down
+    must not block ingestion, it just disables the drift comparison.
+    """
     try:
         from confluent_kafka.schema_registry import SchemaRegistryClient
 
@@ -42,7 +43,10 @@ def _registry_schema_id(settings) -> str | None:
         latest = client.get_latest_version(f"{settings.topic_name}-value")
         return str(latest.schema_id)
     except Exception as exc:
-        logger.warning(f"Schema-registry lookup skipped: {exc}")
+        msg = f"Schema-registry lookup skipped: {exc}"
+        if required:
+            raise RuntimeError(msg) from exc
+        logger.warning(msg)
         return None
 
 
@@ -85,6 +89,11 @@ def run_ingestion():
                 ),
             }
         )
+    elif settings.require_kafka_sasl:
+        raise RuntimeError(
+            "KAFKA_SECURITY_PROTOCOL=PLAINTEXT with REQUIRE_KAFKA_SASL=1: "
+            "forged Kafka records would be trusted — enable SASL"
+        )
     if settings.webhook_secret:
         logger.warning(
             "WEBHOOK_SECRET set but Kafka source exposes no headers: HMAC verify "
@@ -102,7 +111,7 @@ def run_ingestion():
     # the pinned local copy, so per-batch ids are the drift signal that catches
     # a producer-side evolution before it becomes a DLQ flood.
     df = df.withColumn("schema_id", expr("conv(hex(substring(value, 2, 4)), 16, 10)"))
-    _expected_schema_id = _registry_schema_id(settings)
+    _expected_schema_id = _registry_schema_id(settings, required=settings.require_schema_registry)
 
     parsed_df = df.select(
         from_avro(col("fixed_value"), WEBHOOK_AVRO_SCHEMA).alias("data"), col("schema_id")
@@ -193,7 +202,13 @@ def run_ingestion():
 
 def ensure_webhook_table(spark, table: str) -> None:
     """Create namespace + webhooks Iceberg table if missing (shared by the
-    streaming __main__ init and the pipeline demo seeder)."""
+    streaming __main__ init and the pipeline demo seeder).
+
+    Layout: bucket(16, transaction_id) co-locates MERGE join keys so batches
+    prune to file groups instead of full-scanning history (verified live).
+    Applies to NEW tables only (IF NOT EXISTS): existing unpartitioned tables
+    keep their spec — migrate via CREATE new + INSERT + swap, never in place.
+    """
     *parts, _ = table.split(".")
     spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {'.'.join(parts)}")
     spark.sql(
@@ -210,6 +225,7 @@ def ensure_webhook_table(spark, table: str) -> None:
             ingested_at timestamp,
             instrument_type string
         ) USING iceberg
+        PARTITIONED BY (bucket(16, transaction_id))
         TBLPROPERTIES (
             'write.target-file-size-bytes' = '134217728',
             'write.distribution-mode' = 'hash',
