@@ -20,7 +20,7 @@ Common causes: schema registry mismatch, producer emitting garbage, Kafka tombst
 
 ### Settlement quarantine
 
-Pandera validates settlement CSVs before they reach Spark. Rows that fail (negative amounts, duplicate `transaction_id`, bad dates, wrong instrument type) are written to `quarantine_YYYYMMDD.csv` and the pipeline raises `SettlementValidationError`.
+Pandera validates settlement CSVs before they reach Spark. Rows that fail (negative amounts, bad dates, unknown instrument type) are written to `quarantine_YYYYMMDD.csv` and the pipeline raises `SettlementValidationError`. Duplicate `transaction_id` rows pass validation and are collapsed pre-MERGE by `WINDOW row_number() ORDER BY settlement_date DESC` (deterministic tiebreak), counted as `duplicate_settlement_rows`.
 
 Validated rows are persisted as `curated_<basename>.csv` (PG-normalized: INR→paise, ISO dates, canonical instruments). Reconcile merges from the curated file when present, falling back to raw. When debugging a MERGE, inspect the curated file — it is what Spark actually read.
 
@@ -38,6 +38,26 @@ The MERGE wraps all SQL in a `RuntimeError`. Common causes:
 
 `check_batch_drift` raises `RuntimeError` when `settlement_rows_deduped != sum(batch_*)` (excluding the `batch_EXCEPTION_DUPLICATE_SETTLEMENT` diagnostic). This means the MERGE missed rows (NULL guards) or double-counted. Treat as P1: check the dedup window and `WHERE s.transaction_id IS NOT NULL` clause in `reconcile.py`. Both cron (`run_daily`) and Airflow enforce it, so drift pages instead of logging green.
 
+## Strict mode (fail-closed switches)
+
+Defaults are strict (`strict_slo=true`): a sub-SLO match rate, a stale mart,
+a >50% volume drop, or a >48h-old settlement file fails the batch instead of
+warning. Demo conveniences are opt-in and never inherited:
+
+| Env | Effect |
+| --- | ------ |
+| `GENERATE_DEMO_SETTLEMENT=1` | `run_daily` / DAG may synthesize a settlement file (local dev only) |
+| `ALLOW_DESTRUCTIVE_SEED=1` | demo + real-data webhook seeders may MERGE-DELETE existing rows |
+| `REQUIRE_KAFKA_SASL=1` | ingestion refuses `PLAINTEXT` brokers (forged records would be trusted) |
+| `REQUIRE_SCHEMA_REGISTRY=1` | unreachable registry fails ingestion instead of disabling drift check |
+| `MATCH_RATE_SLO`, `LATE_SLA_DAYS`, `MAINTAIN_RETAIN_LAST` | SLO knobs; malformed values fall back to defaults with a warning |
+
+Secrets follow the `*_FILE` convention (`MINIO_SECRET_KEY_FILE`,
+`WEBHOOK_SECRET_FILE`, `KAFKA_SASL_PASSWORD_FILE`): mounted file contents win
+over empty env, explicit env values win over files. Unknown PG instrument
+strings normalize to `UNKNOWN` and quarantine via the schema `isin` check —
+they are never silently priced as `CREDIT_CARD`.
+
 The `batch_*` keys in the counts dict scope the MERGE to this batch's settlement IDs (joined back to the target), so a stale cumulative `MATCHED` count cannot mask a failing batch.
 
 ## Failure injection (testing)
@@ -50,7 +70,7 @@ Replay the same `transaction_id` twice in a Kafka micro-batch. Streaming `dropDu
 
 ### Duplicate settlement
 
-Add two rows with the same `transaction_id` and different `settlement_date` in one CSV. Pandera quarantines intra-file duplicates via `unique=True`; pre-MERGE `WINDOW row_number() ORDER BY settlement_date DESC` keeps the latest. Check `count(batch_*) == settlement_rows_deduped`.
+Add two rows with the same `transaction_id` and different `settlement_date` in one CSV. Pandera quarantines schema-invalid rows; intra-file duplicates pass validation (`unique=False` by design — uniqueness would quarantine whole files) and pre-MERGE `WINDOW row_number() ORDER BY settlement_date DESC` keeps the latest. Check `count(batch_*) == settlement_rows_deduped`.
 
 ### Late correction
 
