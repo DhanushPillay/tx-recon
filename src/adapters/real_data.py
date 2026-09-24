@@ -181,12 +181,19 @@ def _flush_hooks_csv(hook_rows: list, cols: list, out_csv: str, first: bool) -> 
 def seed_real_webhooks(spark, table: str, staging_csv: str, batch_date: str) -> int:
     """Spark-native seed from staging CSV (JVM read; no driver-side 13M list).
 
-    Re-runnable: MERGE-DELETEs prior rows for the staged ids first.
+    Re-runnable: MERGE-DELETEs prior rows for the staged ids first. Destructive
+    by design — requires allow_destructive_seed like the demo seeder.
     """
     from pyspark.sql.types import LongType, StringType, StructField, StructType
 
+    from src.common.settings import get_settings
     from src.ingestion.ingest_webhooks import ensure_webhook_table
     from src.processing.reconcile import _qualified_table
+
+    if not get_settings().allow_destructive_seed:
+        raise RuntimeError(
+            "webhook seeding deletes existing rows: set ALLOW_DESTRUCTIVE_SEED=1 to confirm"
+        )
 
     if not re.match(r"^\d{4}-\d{2}-\d{2}$", batch_date):
         raise ValueError(f"bad batch_date {batch_date!r}: want YYYY-MM-DD")
