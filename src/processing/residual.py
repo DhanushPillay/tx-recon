@@ -12,9 +12,12 @@ but the wrapper and proof stay identical.
 
 from __future__ import annotations
 
+import logging
 import math
 
 from src.common.schemas import EXCEPTION_FEE_MISMATCH, MATCHED
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_TAU = 0.9
 
@@ -181,8 +184,10 @@ def apply_residual(
     )
     try:
         to_demote = spark.sql(f"SELECT COUNT(*) AS n FROM ({scored_source})").collect()[0]["n"]
-    except Exception:
-        return 0
+    except Exception as exc:
+        # Never report "0 demoted" on error: callers read 0 as a clean bill.
+        logger.exception(f"residual scoring failed for {table}")
+        raise RuntimeError(f"residual scoring failed for {table}: {exc}") from exc
     if not to_demote:
         return 0
 
