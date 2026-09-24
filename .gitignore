@@ -14,7 +14,8 @@ coverage.xml
 .env.local
 dbt_recon/target/
 dbt_recon/dbt_packages/
-infra/.terraform/
+**/.terraform/
+**/.terraform.lock.hcl
 infra/*.tfstate
 infra/*.tfstate.backup
 benchmarks/data/
