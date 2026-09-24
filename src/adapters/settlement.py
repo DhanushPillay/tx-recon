@@ -22,6 +22,9 @@ CANONICAL_COLS = [
     "utr",
     "currency",
     "gross_amount_paise",
+    # Provenance for batch-model recon (provider batch/cutoff config) and
+    # per-provider late SLA. Stamped by _finalize from the handling adapter.
+    "provider",
 ]
 
 # Mapping raw PG method strings -> canonical INSTRUMENT_TYPES
@@ -48,8 +51,14 @@ _INSTRUMENT_ALIASES: dict[str, str] = {
 
 
 def _map_instrument(raw: str | None) -> str:
+    """Map a PG method string to a canonical instrument.
+
+    Unknown strings map to "UNKNOWN" (not a real instrument): the Pandera
+    isin check quarantines the row. Silently defaulting to CREDIT_CARD would
+    price the row at the wrong MDR and MATCH it.
+    """
     if not raw:
-        return "CREDIT_CARD"
+        return "UNKNOWN"
     key = str(raw).strip().lower().replace("-", "_").replace(" ", "_")
     if key in _INSTRUMENT_ALIASES:
         return _INSTRUMENT_ALIASES[key]
@@ -57,7 +66,7 @@ def _map_instrument(raw: str | None) -> str:
     for alias, canonical in _INSTRUMENT_ALIASES.items():
         if alias in key:
             return canonical
-    return "CREDIT_CARD"
+    return "UNKNOWN"
 
 
 def _to_iso_date(value) -> str | None:
@@ -130,7 +139,7 @@ def _map_instrument_series(s: pd.Series) -> pd.Series:
     missing = mapped.isna()
     if missing.any():
         mapped.loc[missing] = s.loc[missing].apply(_map_instrument)
-    return mapped.fillna("CREDIT_CARD")
+    return mapped.fillna("UNKNOWN")
 
 
 def _lc(df: pd.DataFrame) -> dict[str, str]:
@@ -200,10 +209,15 @@ class BaseSettlementAdapter:
         raise NotImplementedError
 
     def _finalize(self, df: pd.DataFrame) -> pd.DataFrame:
-        # Ensure canonical columns exist, fill missing with NA, order
+        # Ensure canonical columns exist, fill missing with NA, order.
+        # Provenance stamp: which adapter (PG) produced this row — but an
+        # existing provider (e.g. re-validated curated file) always wins.
+        stamped = "provider" in df.columns
         for col in CANONICAL_COLS:
             if col not in df.columns:
                 df[col] = pd.NA
+        if not stamped:
+            df["provider"] = self.pg_name
         # Coerce types for required cols
         df["settled_amount_paise"] = pd.to_numeric(
             df["settled_amount_paise"], errors="coerce"
@@ -380,7 +394,7 @@ class PayUAdapter(BaseSettlementAdapter):
             ),
             None,
         )
-        out["instrument_type"] = _map_instrument_series(df[pm]) if pm else "CREDIT_CARD"
+        out["instrument_type"] = _map_instrument_series(df[pm]) if pm else "UNKNOWN"
         out["merchant_id"] = _merchant(df, lc)
         out["currency"] = _currency(df, lc)
         return self._finalize(out)
