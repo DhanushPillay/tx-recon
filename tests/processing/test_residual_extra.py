@@ -48,10 +48,12 @@ def test_apply_residual_demotes_via_merge():
     assert "IN (" not in merge_sql  # set-based: no tx-id literals
 
 
-def test_apply_residual_count_failure_returns_zero():
+def test_apply_residual_count_failure_raises():
+    """Scoring failure must fail the batch, never report '0 demoted' as clean."""
     spark = MagicMock()
     spark.sql.return_value.collect.side_effect = RuntimeError("boom")
-    assert apply_residual(spark, "nessie.db.webhooks") == 0
+    with pytest.raises(RuntimeError, match="residual scoring failed"):
+        apply_residual(spark, "nessie.db.webhooks")
 
 
 def test_score_match_sql_reuses_builders():
