@@ -14,6 +14,8 @@ Domain Contracts for TX Reconciliation
    - EXCEPTION_DUPLICATE_WEBHOOK: multiple webhooks for the same transaction.
    - EXCEPTION_INVALID: failed schema validation or quarantine.
    - EXCEPTION_LATE_UNRESOLVED: timebound SLA breached for resolution.
+   - EXCEPTION_MISSING_BANK_STATEMENT: gateway pair matched but no bank credit
+     found (third leg). A gateway-consistent error is invisible without this.
 
 3. Duplicate Policy & Lineage:
    - Deduplication happens at ingestion and pre-reconciliation using exact `transaction_id`.
@@ -35,6 +37,7 @@ EXCEPTION_DUPLICATE_SETTLEMENT = "EXCEPTION_DUPLICATE_SETTLEMENT"
 EXCEPTION_DUPLICATE_WEBHOOK = "EXCEPTION_DUPLICATE_WEBHOOK"
 EXCEPTION_INVALID = "EXCEPTION_INVALID"
 EXCEPTION_LATE_UNRESOLVED = "EXCEPTION_LATE_UNRESOLVED"
+EXCEPTION_MISSING_BANK_STATEMENT = "EXCEPTION_MISSING_BANK_STATEMENT"
 
 WEBHOOK_AVRO_SCHEMA_DICT = {
     "type": "record",
