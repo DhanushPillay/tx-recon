@@ -1,6 +1,7 @@
 import glob
 import logging
 import os
+import re
 import time
 
 import pandas as pd
@@ -104,6 +105,11 @@ def validate_latest_settlement(
     root = project_root or os.environ.get("PROJECT_ROOT", os.getcwd())
     data_dir = os.path.join(root, "data")
     if date_str:
+        # Same allowlist as reconcile._settlement_source: digit-only
+        # YYYY-MM-DD or YYYYMMDD. Anything else (.., /, glob chars) is
+        # rejected so date_str can never escape data_dir via the glob.
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}|\d{8}", date_str):
+            raise ValueError(f"Bad date_str (want YYYY-MM-DD): {date_str!r}")
         file_pattern = f"settlement_{date_str.replace('-', '')}.csv"
         files = glob.glob(os.path.join(data_dir, file_pattern))
     else:
@@ -153,10 +159,6 @@ def validate_latest_settlement(
             f"PAN detected in {latest_file} {pan_hits}: refusing batch (store last-4 + issuer only)"
         )
 
-    from src.validation.file_registry import record_file
-
-    record_file(data_dir, latest_file, date_str)
-
     _, invalid = validate_and_quarantine(df, settlement_schema)
     valid = df.drop(invalid.index) if not invalid.empty else df
 
@@ -188,6 +190,11 @@ def validate_latest_settlement(
         )
 
     logger.info("SUCCESS: Data Contract Validated successfully!")
+    # Record only on curated-write success: a quarantined/failed batch must
+    # never look processed to the redelivery guard.
+    from src.validation.file_registry import record_file
+
+    record_file(data_dir, latest_file, date_str)
     return curated_path
 
 
