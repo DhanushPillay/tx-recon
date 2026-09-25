@@ -174,7 +174,9 @@ def test_versioned_sql_routes_gap_to_prior():
             "default": {"mdr_rate_bps": 300, "gst_on_mdr": 18.0, "tolerance_paise": 1},
         },
     ]
-    (case,) = _versioned_wrap(cards, {}, "s.settlement_date", lambda c: (str(c["default"]["mdr_rate_bps"]),))
+    (case,) = _versioned_wrap(
+        cards, {}, "s.settlement_date", lambda c: (str(c["default"]["mdr_rate_bps"]),)
+    )
     assert "2024-12-31" not in case, "upper bound must not route gap dates to latest"
     assert "IS NULL" in case
     # Latest-first ordering: v2 WHEN precedes v1 WHEN.
