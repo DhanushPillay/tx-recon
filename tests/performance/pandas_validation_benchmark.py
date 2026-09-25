@@ -12,9 +12,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 
 from hardware import get_hardware_info
 
-from src.generators.settlement_generator import generate_settlement_file
-
-ROW_COUNTS = [10_000, 100_000, 1_000_000, 10_000_000]
+REAL_SETTLEMENT_CSV = os.path.join(
+    os.path.dirname(__file__), "../../data/real_thiru_full_settlement.csv"
+)
+SAMPLE_SETTLEMENT_CSV = os.path.join(
+    os.path.dirname(__file__), "../../data/samples/real_10k_settlement.csv"
+)
 
 
 def bench_pandera(df, schema):
@@ -67,15 +70,10 @@ def build_pydantic_model():
     return SettlementRow
 
 
-def run_single(rows, output_dir, warmup_runs=2, seed=7, iters=7, input_csv=None, dedup=False):
-    if input_csv is None:
-        generate_settlement_file(rows, output_dir=output_dir, seed=seed)
-        import glob
-
-        files = glob.glob(f"{output_dir}/settlement_*.csv")
-        latest = max(files, key=os.path.getctime)
-    else:
-        latest = input_csv
+def run_single(rows, output_dir, warmup_runs=2, iters=7, input_csv=None, dedup=False):
+    latest = input_csv or (
+        REAL_SETTLEMENT_CSV if os.path.exists(REAL_SETTLEMENT_CSV) else SAMPLE_SETTLEMENT_CSV
+    )
 
     # Warmup (load to memory)
     for _ in range(warmup_runs):
@@ -85,16 +83,15 @@ def run_single(rows, output_dir, warmup_runs=2, seed=7, iters=7, input_csv=None,
     import polars as pl
 
     pf = pl.read_csv(latest)
-    if input_csv is not None:
-        rows = len(df)
-        # Prod loads CSVs as dtype=str before validation; real numeric ids need
-        # the same cast or the bench's str schema rejects them (untimed setup).
-        df["transaction_id"] = df["transaction_id"].astype(str)
-        df["bank_ref_id"] = df["bank_ref_id"].astype(str)
-        pf = pf.with_columns(
-            pl.col("transaction_id").cast(pl.String),
-            pl.col("bank_ref_id").cast(pl.String),
-        )
+    rows = len(df)
+    # Prod loads CSVs as dtype=str before validation; real numeric ids need
+    # the same cast or the bench's str schema rejects them (untimed setup).
+    df["transaction_id"] = df["transaction_id"].astype(str)
+    df["bank_ref_id"] = df["bank_ref_id"].astype(str)
+    pf = pf.with_columns(
+        pl.col("transaction_id").cast(pl.String),
+        pl.col("bank_ref_id").cast(pl.String),
+    )
     if dedup:
         # Untimed setup: prod dedups post-validation (WINDOW latest-wins);
         # the bench schema demands unique ids, so collapse first and report
@@ -167,15 +164,12 @@ def run_single(rows, output_dir, warmup_runs=2, seed=7, iters=7, input_csv=None,
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Pandera Validation Benchmark")
-    parser.add_argument(
-        "--rows", type=int, default=None, help="Custom row count (overrides defaults)"
-    )
+    parser = argparse.ArgumentParser(description="Pandera Validation Benchmark (real data only)")
     parser.add_argument(
         "--input",
         type=str,
         default=None,
-        help="Real CSV to validate instead of generating (e.g. data/real_thiru_full_settlement.csv)",
+        help="Real CSV to validate (default: data/real_thiru_full_settlement.csv, fallback to data/samples/)",
     )
     parser.add_argument(
         "--dedup",
@@ -190,28 +184,15 @@ def main():
     output_dir = "benchmarks/data"
     os.makedirs(output_dir, exist_ok=True)
 
-    if args.input:
-        print(f"\n--- Benchmark: real input {args.input} ---")
-        results_list = [run_single(0, output_dir, input_csv=args.input, dedup=args.dedup)]
-        result = results_list[0]
-        for method, m in result["methods"].items():
-            print(f"  {method:<20} {m['mean_ms']:>10.2f}ms  ({m['rows_per_sec']:>12,} rows/sec)")
-        out_name = "results_pandera_real.json"
-    else:
-        row_counts = [args.rows] if args.rows else ROW_COUNTS
-        results_list = []
-
-        for rows in row_counts:
-            print(f"\n--- Benchmark: {rows:,} rows ---")
-            result = run_single(rows, output_dir)
-            results_list.append(result)
-
-            for method, m in result["methods"].items():
-                print(
-                    f"  {method:<20} {m['mean_ms']:>10.2f}ms  ({m['rows_per_sec']:>12,} rows/sec)"
-                )
-
-        out_name = "results_pandera.json"
+    target = args.input or (
+        REAL_SETTLEMENT_CSV if os.path.exists(REAL_SETTLEMENT_CSV) else SAMPLE_SETTLEMENT_CSV
+    )
+    print(f"\n--- Benchmark: real input {target} ---")
+    results_list = [run_single(0, output_dir, input_csv=target, dedup=args.dedup)]
+    result = results_list[0]
+    for method, m in result["methods"].items():
+        print(f"  {method:<20} {m['mean_ms']:>10.2f}ms  ({m['rows_per_sec']:>12,} rows/sec)")
+    out_name = "results_pandera_real.json"
 
     output = {"hardware": hw, "benchmarks": results_list}
 
