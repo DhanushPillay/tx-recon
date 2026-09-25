@@ -160,7 +160,7 @@ The MERGE mutates statuses in place by design; the audit counterweight is append
 | Redpanda | Amazon MSK / Confluent Cloud |
 | MinIO | Amazon S3 / GCS |
 | Nessie (API v2, Spark extensions v1) | AWS Glue Data Catalog / Nessie REST (Iceberg-native branches preferred) |
-| PySpark on host / `spark-master` | Amazon EMR / Dataproc |
+| PySpark single node (`local[*]`) | Amazon EMR (single-node dev) / Dataproc |
 | `pipeline.py` cron | MWAA / Cloud Composer |
 | Trino + Metabase | Athena / Looker |
 | `mt-940` (bank leg) | SWIFT MT940 / camt.053 parsers (never hand-rolled) |
