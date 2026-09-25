@@ -182,7 +182,7 @@ def seed_real_webhooks(spark, table: str, staging_csv: str, batch_date: str) -> 
     """Spark-native seed from staging CSV (JVM read; no driver-side 13M list).
 
     Re-runnable: MERGE-DELETEs prior rows for the staged ids first. Destructive
-    by design — requires allow_destructive_seed like the demo seeder.
+    by design — requires allow_destructive_seed.
     """
     from pyspark.sql.types import LongType, StringType, StructField, StructType
 
