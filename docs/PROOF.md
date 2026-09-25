@@ -8,7 +8,7 @@ Let `M` be the base MERGE matcher (rule-based, instrument and merchant aware) an
 FP(R_tau(M(L))) <= FP(M(L))
 ```
 
-where `FP` is hallucinated `MATCHED` as defined in `tests/performance/recon_accuracy.py` (`pred==MATCHED` while `truth!=MATCHED`).
+where `FP` is hallucinated `MATCHED` (pred==MATCHED while the fee math says mismatch), as exercised in `tests/processing/test_residual.py`.
 
 ## Proof
 
@@ -28,14 +28,14 @@ Therefore `FP` after `R_tau` is a subset of `B`, monotone non-increasing.
 
 ## Calibration for this repo
 
-- Harness gate: `F1==1.0, FP==0, fanout==1` on 2000 rows x 3 seeds (`tests/performance/test_recon_accuracy.py`).
+- Harness gate: `match_rate >= 85%` on the 10k real sample (`tests/performance/test_recon_accuracy.py`, measured 94.6%).
 - Real-data expectation (different gate): the thiru loader mix is ~10%
   exceptions by design ([thiru1711/Financial_Transactions](https://huggingface.co/datasets/thiru1711/Financial_Transactions)),
   so production MERGE targets match rate ≥ 85%, not F1=1.0. Measured 89.98%
   end-to-end (12.6M rows) and ~94.7% on tx-ordered bench slices. A real-data
   89–95% is the mix working, not the matcher failing — compare against the
   loader's known buckets, never against 1.0.
-- Base `M` already achieves `FP==0`. With `DEFAULT_TAU=0.9`, `score_match==0.95` only on merchant-rate disagreement (default says MATCH, merchant says MISMATCH). No `A` row is demoted, so `R_tau` is identity on the harness. The invariant `FP(R_tau(M))==0` holds.
+- Base `M` already achieves `FP==0` on the property draws. With `DEFAULT_TAU=0.9`, `score_match==0.95` only on merchant-rate disagreement (default says MATCH, merchant says MISMATCH). No `A` row is demoted, so `R_tau` is identity on the harness. The invariant `FP(R_tau(M))==0` holds.
 - If merchant rates drift in production, `R_tau` can recover FP that a default-only MERGE would introduce, at the cost of possible recall loss. FP never increases.
 
 ## Hypothesis property
@@ -50,7 +50,7 @@ def test_downgrade_never_creates_fp():
     assert fp(pred_after) <= fp(pred_before)
 ```
 
-The test constructs random ledgers via the sealed harness and asserts the inequality for all draws. It fails if any code path promotes `MISMATCH -> MATCHED`.
+The test constructs random ledgers via hypothesis draws and asserts the inequality for all draws. It fails if any code path promotes `MISMATCH -> MATCHED`.
 
 ## What is not proven
 
