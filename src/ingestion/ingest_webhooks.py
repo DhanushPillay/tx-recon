@@ -7,7 +7,11 @@ from pyspark.sql.functions import col, current_timestamp, expr, lit, to_timestam
 from pyspark.sql.streaming.listener import StreamingQueryListener
 
 from src.common.config import get_spark_session
-from src.common.schemas import EXCEPTION_MISSING_WEBHOOK, WEBHOOK_AVRO_SCHEMA
+from src.common.schemas import (
+    EXCEPTION_LATE_UNRESOLVED,
+    EXCEPTION_MISSING_WEBHOOK,
+    WEBHOOK_AVRO_SCHEMA,
+)
 from src.common.settings import get_settings
 from src.processing.reconcile import _qualified_table
 
@@ -230,7 +234,7 @@ def run_ingestion():
         spark.sql(
             f"MERGE INTO {webhook_table} t USING batch_valid s "
             "ON t.transaction_id = s.transaction_id "
-            f"WHEN MATCHED AND t.reconciliation_status = '{EXCEPTION_MISSING_WEBHOOK}' THEN "
+            f"WHEN MATCHED AND (t.reconciliation_status = '{EXCEPTION_MISSING_WEBHOOK}' OR t.reconciliation_status = '{EXCEPTION_LATE_UNRESOLVED}') THEN "
             "UPDATE SET t.amount_paise = s.amount_paise, t.gateway_status = s.gateway_status, "
             "t.timestamp_utc = s.timestamp_utc, t.merchant_id = s.merchant_id, "
             "t.processing_run_id = s.processing_run_id, "
