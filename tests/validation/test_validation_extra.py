@@ -301,3 +301,22 @@ def test_volume_shift_raises_when_strict(tmp_path):
     cur.write_text("a\n1\n")
     with _pytest.raises(SettlementValidationError, match="volume shift"):
         _warn_volume_shift(str(d), str(cur), 2, strict=True)
+
+
+def test_stale_file_raises_when_strict(tmp_path):
+    """Strict mode turns a >48h-old file from warning into batch failure."""
+    import os
+    import time
+
+    from src.validation.validate_settlement import SettlementValidationError
+
+    d = tmp_path / "data"
+    d.mkdir()
+    prev = d / "curated_settlement_20250101.csv"
+    prev.write_text("a\n" + "1\n" * 10)
+    cur = d / "settlement_20250102.csv"
+    cur.write_text("a\n" + "1\n" * 10)  # same volume: only the stale tripwire fires
+    old = time.time() - 72 * 3600
+    os.utime(cur, (old, old))
+    with pytest.raises(SettlementValidationError, match="stale settlement file"):
+        _warn_volume_shift(str(d), str(cur), 10, strict=True)
