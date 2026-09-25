@@ -7,6 +7,7 @@ import pytest
 from src.processing.fee_engine import FeeEngine
 from src.processing.reconcile import (
     _qualified_table,
+    build_bank_leg_sql,
     build_fee_case_sql,
     maintain_tables,
     reconcile_bank_leg,
@@ -282,6 +283,17 @@ def test_reconcile_bank_leg_counts():
     merge_sql = spark.sql.call_args_list[1][0][0]
     assert "MERGE INTO nessie.db.webhooks" in merge_sql
     assert "EXCEPTION_MISSING_BANK_STATEMENT" in merge_sql
+
+
+def test_bank_leg_tolerance_threaded():
+    """Bank evidence window uses the passed tolerance, defaulting to engine default."""
+    default_merge, default_orphan = build_bank_leg_sql("nessie.db.webhooks")
+    assert "<= 1" in default_merge  # engine default tolerance is 1 paise
+    assert "<= 1" in default_orphan
+    merge, orphan = build_bank_leg_sql("nessie.db.webhooks", lag_days=2, tolerance_paise=5)
+    assert "<= 5" in merge
+    assert "<= 5" in orphan
+    assert "<= 1" not in merge
 
 
 def test_maintain_tables_statement_order(monkeypatch):
