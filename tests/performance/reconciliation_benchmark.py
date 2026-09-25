@@ -5,13 +5,8 @@ import os
 import sys
 import time
 
-# YARN executors run in Linux containers; Windows venv path with spaces fails there.
-# Use python3 for YARN (containers must have python3), venv python for local.
-if os.environ.get("SPARK_MODE") == "yarn" or os.environ.get("SPARK_MASTER") == "yarn":
-    os.environ["PYSPARK_PYTHON"] = "python3"
-    os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
-else:
-    os.environ["PYSPARK_PYTHON"] = sys.executable
+# Single node: executors run in-process, always use the current interpreter.
+os.environ["PYSPARK_PYTHON"] = sys.executable
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
@@ -385,11 +380,9 @@ def run_benchmark(scale=None, catalog="nessie", merge_mode="mor", cluster=False,
     results = {}
     output = {"hardware": hw, "benchmarks": results, "catalog": catalog}
 
-    # Real-only: nessie -> results_iceberg_real.json (s3a), nessie_hdfs -> _yarn_hdfs variant.
+    # Single node: nessie -> results_iceberg_real.json (s3a).
     # CoW runs get their own file so they never overwrite the cited MoR record.
-    if catalog == "nessie_hdfs":
-        out_name = "results_iceberg_yarn_hdfs.json"
-    elif merge_mode == "cow":
+    if merge_mode == "cow":
         out_name = "results_iceberg_cow.json"
     else:
         out_name = "results_iceberg_real.json"
@@ -465,7 +458,7 @@ def run_benchmark(scale=None, catalog="nessie", merge_mode="mor", cluster=False,
 def main():
     parser = argparse.ArgumentParser(description="Reconciliation Benchmark (real data only)")
     parser.add_argument("--scale", type=int, default=None)
-    parser.add_argument("--catalog", type=str, default="nessie", choices=["nessie", "nessie_hdfs"])
+    parser.add_argument("--catalog", type=str, default="nessie", choices=["nessie"])
     parser.add_argument("--merge-mode", type=str, default="mor", choices=["mor", "cow"])
     parser.add_argument(
         "--hooks-csv",
