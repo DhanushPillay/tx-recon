@@ -90,9 +90,9 @@ Full architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - Bucket partitioning `PARTITIONED BY bucket(16, transaction_id)` + `WRITE ORDERED BY transaction_id` so MERGE prunes to file groups (`src/ingestion/ingest_webhooks.py: ensure_webhook_table`)
 - Streaming dedup via `dropDuplicates` + idempotent `MERGE WHEN NOT MATCHED` in `foreachBatch` with watermark-bounded state and schema-id drift detection
 - Append-only corrections journal with maker-checker (`src/processing/corrections.py`, `scripts/replay_dlq.py --reason/--approved-by`)
-- Strict fail-closed defaults (`strict_slo`, `REQUIRE_KAFKA_SASL`, `REQUIRE_SCHEMA_REGISTRY`, `ALLOW_DESTRUCTIVE_SEED`) — demo conveniences are opt-in
+- Strict fail-closed defaults (`strict_slo`, `REQUIRE_KAFKA_SASL`, `REQUIRE_SCHEMA_REGISTRY`, `ALLOW_DESTRUCTIVE_SEED`) — real-data seeding is opt-in
 - Downgrade-only residual scorer with a formal proof that false positives never increase (`docs/PROOF.md`)
-- Sealed accuracy harness that injects 7 break classes and asserts F1=1.0 with zero false positives (`tests/performance/recon_accuracy.py`)
+- Real-data accuracy gate: 10k sample joined through `FeeEngine.check_match`, match_rate >= 85% (`tests/performance/recon_accuracy.py`, measured 94.6%)
 
 ## Dashboard
 
@@ -113,13 +113,13 @@ Full tour of all 11 cards: [docs/DASHBOARD.md](docs/DASHBOARD.md).
 ## Benchmarks
 
 Measured on real data: [thiru1711/Financial_Transactions](https://huggingface.co/datasets/thiru1711/Financial_Transactions)
-(13,305,915 card transactions) on 23 Sep 2026. Method, repro commands, and full tables: [docs/REAL_DATA.md](docs/REAL_DATA.md).
+(13,305,915 card transactions) on 25 Sep 2026. Method, repro commands, and full tables: [docs/REAL_DATA.md](docs/REAL_DATA.md).
 
 | Suite | Result |
 | :--- | :--- |
-| Iceberg MERGE (single-node, 8g driver, 128 shuffles ≥5M) | 1M 50% **6.21s**, 5M 50% **11.38s**, 12M 50% **23.69s** (bench slices ~94.7% due to tx-ordered sampling; end-to-end 89.98% — see below) |
-| Validation, 12.6M rows | polars **8.44M** / manual 3.63M / pandera 1.44M / pydantic 208k rows/sec |
-| Kafka producer (real ~150B records, acks=all, lz4) | **239,061 msgs/sec**; serial p50 0.98ms, p99 20.59ms |
+| Iceberg MERGE (single-node, 8g driver, 128 shuffles ≥5M) | 1M 50% **13.25s**, 5M 50% **11.61s**, 12M 50% **56.73s** (10%: 6.0 / 6.83 / 10.32s; bench slices ~94.7% due to tx-ordered sampling; end-to-end 89.98% — see below) |
+| Validation, 12.9M rows | polars **9.43M** / manual 3.34M / pandera 763k / pydantic 178k rows/sec |
+| Kafka producer (real ~150B records, acks=all, lz4) | **225,123 msgs/sec**; serial p50 0.65ms, p99 3.97ms |
 | End-to-end batch (12.6M rows: validate + MERGE + mart) | **~5 min wall** (173s validate, 105s MERGE, 89.98% end-to-end) |
 
 Record: `tests/performance/results_real.json`. The loader injects ~10% exceptions by design (health gate ≥ 85%): bench slices show ~94.7% due to tx-ordered sampling, while the full 12.6M end-to-end run reports **89.98%** (11,368,871 / 12,635,227) — both are the mix working, not matcher error.
@@ -131,11 +131,10 @@ Synthetic regression baselines are archived in [docs/BENCHMARKS.md](docs/BENCHMA
 src/
   adapters/        PG settlement normalizers (Razorpay/Cashfree/PayU/Generic) + bank_statement MT940 + real_data loader
   common/          Settings (strict flags, *_FILE secrets), Spark session, domain contracts
-  generators/      Webhook producer (HMAC) + settlement file generator
   ingestion/       Spark streaming Kafka -> Iceberg (+DLQ, WAP table layout, bucket 16)
   processing/      FeeEngine + MERGE reconciliation + residual scorer + batches (provider windows) + wap (branches) + corrections (journal)
   validation/      Pandera schemas + quarantine + pan_guard (Luhn) + file_registry (sha256)
-  pipeline.py      generate -> validate (PAN/registry) -> reconcile (provider batch) -> metrics + maintenance
+  pipeline.py      validate (PAN/registry) -> reconcile (provider batch) -> metrics + maintenance (real data only, fail-closed)
 config/
   fee_rates.yaml   versioned rate cards (effective_from/to, merchant overrides)
   providers.yaml   per-provider lag_days / late_sla_days / cutoff
