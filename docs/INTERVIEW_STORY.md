@@ -12,7 +12,7 @@
 5. **Prove it.** The 10k real sample joins through `FeeEngine.check_match`:
    94.6% match with orphans visible, gated at >= 85% — a drop means fee
    miscalibration or drift, not a bad seed.
-   `make accuracy` runs it in ~10 seconds, no infra. Real thiru scale (12.6M, 89.98% on ~10% mix, 90.65% branch coverage) proves it at size.
+   `make accuracy` runs it in ~10 seconds, no infra. Real thiru scale (12.6M, 89.98% on ~10% mix, 91.7% coverage) proves it at size.
 
 ## Live demo (clean checkout, <5 min with docker)
 
