@@ -1,12 +1,15 @@
 import argparse
 import json
+import os
 import statistics
 import time
-import uuid
 from datetime import UTC, datetime
 
 from confluent_kafka import Producer
 from hardware import get_hardware_info
+
+REAL_HOOKS_CSV = os.path.join(os.path.dirname(__file__), "../../data/real_thiru_full_hooks.csv")
+SAMPLE_HOOKS_CSV = os.path.join(os.path.dirname(__file__), "../../data/samples/real_10k_hooks.csv")
 
 WARMUP_MESSAGES = 5000
 LATENCY_SAMPLE = 1000
@@ -22,24 +25,8 @@ def percentile(data, p):
     return data[f] + (k - f) * (data[c] - data[f])
 
 
-def generate_webhook_event(record_size=1024):
-    payload = "x" * max(0, record_size - 120)
-    return {
-        "transaction_id": f"tx_{uuid.uuid4().hex[:12]}",
-        "amount_paise": 1000,
-        "gateway_status": "SUCCESS",
-        "timestamp_utc": datetime.now(UTC).isoformat(),
-        "merchant_id": "merch_12345",
-        "payload": payload,
-    }
-
-
 def load_replay_events(csv_path, count):
-    """Preload real hook rows (untimed setup); returns a cycling event fn.
-
-    Real records carry no padding (~150B Avro-size) with true amount/merchant
-    distributions — the honest counterpart to the 1KB-padded synthetic.
-    """
+    """Preload real hook rows (untimed setup); returns a cycling event fn."""
     import pandas as pd
 
     df = pd.read_csv(
@@ -84,9 +71,9 @@ def delivery_callback(err, msg):
     pass
 
 
-def measure_throughput(broker, count, acks, compression, record_size, event_fn=None):
+def measure_throughput(broker, count, acks, compression, record_size, event_fn):
     producer = create_producer(broker, acks, compression)
-    gen = event_fn or generate_webhook_event
+    gen = event_fn
 
     for _ in range(WARMUP_MESSAGES):
         event = gen(record_size)
@@ -116,9 +103,9 @@ def measure_throughput(broker, count, acks, compression, record_size, event_fn=N
     return count / elapsed if elapsed > 0 else 0
 
 
-def measure_latency(broker, count, acks, compression, record_size, event_fn=None):
+def measure_latency(broker, count, acks, compression, record_size, event_fn):
     producer = create_producer(broker, acks, compression)
-    gen = event_fn or generate_webhook_event
+    gen = event_fn
 
     for _ in range(min(WARMUP_MESSAGES, count)):
         event = gen(record_size)
@@ -152,7 +139,7 @@ def measure_latency(broker, count, acks, compression, record_size, event_fn=None
     }
 
 
-def run(broker, count, acks, compression, record_size, mode, event_fn=None):
+def run(broker, count, acks, compression, record_size, mode, event_fn):
     hw = get_hardware_info()
     print(f"Hardware: {hw['platform']}, {hw['cpu_count']} cores, Python {hw['python_version']}")
     print(f"Broker: {broker}, acks={acks}, compression={compression}, record_size={record_size}")
@@ -186,22 +173,16 @@ def run(broker, count, acks, compression, record_size, mode, event_fn=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Kafka Producer Benchmark")
+    parser = argparse.ArgumentParser(description="Kafka Producer Benchmark (real replay only)")
     parser.add_argument("--count", type=int, default=1000000)
     parser.add_argument("--mode", choices=["throughput", "latency", "both"], default="both")
     parser.add_argument("--acks", choices=["0", "1", "all"], default="all")
     parser.add_argument("--compression", choices=["lz4", "gzip", "snappy", "none"], default="lz4")
     parser.add_argument(
-        "--record-size",
-        type=int,
-        default=1024,
-        help="bytes per record; real Avro webhooks are ~150B, default pads to 1KB with filler",
-    )
-    parser.add_argument(
         "--replay-csv",
         type=str,
         default=None,
-        help="Replay real hook rows instead of synthetic (e.g. data/real_thiru_full_hooks.csv)",
+        help="Real hook rows to replay (default: data/real_thiru_full_hooks.csv, fallback to data/samples/)",
     )
     parser.add_argument(
         "--replay-count",
@@ -218,12 +199,12 @@ def main():
 
     brokers = ["localhost:9092", "localhost:19092"] if args.compare else ["localhost:19092"]
 
-    event_fn = None
-    record_size = args.record_size
-    if args.replay_csv:
-        event_fn = load_replay_events(args.replay_csv, args.replay_count)
-        record_size = "real"
-        print(f"Replaying {event_fn.replay_rows:,} real rows from {args.replay_csv}")
+    target = args.replay_csv or (
+        REAL_HOOKS_CSV if os.path.exists(REAL_HOOKS_CSV) else SAMPLE_HOOKS_CSV
+    )
+    event_fn = load_replay_events(target, args.replay_count)
+    record_size = "real"
+    print(f"Replaying {event_fn.replay_rows:,} real rows from {target}")
 
     results = {}
     for broker in brokers:
