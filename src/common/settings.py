@@ -53,15 +53,9 @@ class Settings(BaseSettings):
 
     # Iceberg
     iceberg_warehouse: str = "s3a://lakehouse/warehouse"
-    iceberg_warehouse_hdfs: str = "hdfs://namenode:8020/warehouse"
     nessie_api_version: str = "v2"
-    hadoop_conf_dir: str = ""
-    yarn_resourcemanager_address: str = "resourcemanager:8032"
-    spark_yarn_staging_dir: str = "hdfs://namenode:8020/tmp/spark-staging"
     webhook_table: str = "nessie.db.webhooks"
-    webhook_table_hdfs: str = "nessie_hdfs.db.webhooks"
     dlq_table: str = "nessie.db.webhooks_dlq"
-    dlq_table_hdfs: str = "nessie_hdfs.db.webhooks_dlq"
     # Cloud targeting without fork: TABLE_PREFIX=glue rewrites nessie.db.* to
     # glue.db.* (Glue catalog), so run_reconciliation() runs unchanged on AWS.
     table_prefix: str = ""
@@ -129,37 +123,6 @@ class Settings(BaseSettings):
         return cls(**cls._docker_common(base))
 
     @classmethod
-    def _docker_mode(cls, _base: "Settings | None", master: str) -> "Settings":
-        base = _base.model_dump() if _base else {}
-        base = cls._docker_common(base)
-        base.update(
-            spark_master=master,
-            spark_shuffle_partitions=32,
-            spark_executor_cores=2,
-            load_csv_on_driver=False,
-        )
-        return cls(**base)
-
-    @classmethod
-    def for_cluster(cls, _base: "Settings | None" = None) -> "Settings":
-        """Free local multinode: driver on host, 1 master + 2 workers in compose.
-
-        Requires hosts entries (minio/nessie/redpanda/spark-master -> 127.0.0.1)
-        and SPARK_MODE=cluster. See docker-compose.spark.yml header.
-        """
-        return cls._docker_mode(_base, "spark://spark-master:7077")
-
-    @classmethod
-    def for_yarn(cls, _base: "Settings | None" = None) -> "Settings":
-        """Hadoop YARN mode: Spark --master yarn, s3a primary + HDFS secondary.
-
-        Requires docker-compose.hadoop.yml up, hosts entries for namenode/resourcemanager,
-        and HADOOP_CONF_DIR on driver. See docker-compose.hadoop.yml header.
-        Keeps s3a://lakehouse as primary warehouse (nessie), adds hdfs:// secondary (nessie_hdfs).
-        """
-        return cls._docker_mode(_base, "yarn")
-
-    @classmethod
     def for_local(cls, _base: "Settings | None" = None) -> "Settings":
         """Single-node bench: driver-heavy, file warehouse, low shuffle.
 
@@ -198,13 +161,9 @@ def get_settings() -> Settings:
         base = Settings()
         is_airflow = os.environ.get("AIRFLOW_HOME") is not None
         bench_local = os.environ.get("BENCH_MODE") == "local"
-        # BENCH_MODE=local takes precedence even over yarn/cluster for single-node file warehouse
-        if bench_local and base.spark_mode not in ("yarn", "cluster"):
+        # Single node only: local file warehouse or default s3a.
+        if bench_local:
             _settings = Settings.for_local(base)
-        elif base.spark_mode == "yarn":
-            _settings = Settings.for_yarn(base)
-        elif base.spark_mode == "cluster":
-            _settings = Settings.for_cluster(base)
         else:
             _settings = Settings.for_airflow(base) if is_airflow else base
             # Apply bench shuffle/memory tuning even on default local[*] when BENCH_MODE not set?
