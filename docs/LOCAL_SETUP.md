@@ -87,7 +87,7 @@ pytest tests/ -m "not integration" -v
 pytest tests/ -m integration -v
 
 # One date's file registry / PAN guard in isolation:
-pytest tests/validation/test_file_registry.py tests/validation/test_pan_guard.py -v
+pytest tests/validation/test_validation_extra.py -k "registry or pan" -v
 # WAP branch lifecycle (requires Docker for live table ops):
 pytest tests/processing/test_wap.py -v
 ```
