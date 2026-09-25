@@ -35,16 +35,27 @@ def find_pans(text: str) -> list[str]:
     return hits
 
 
-def scan_frame(df, columns: list[str]) -> dict[str, int]:
-    """Count PAN hits per column in a pandas frame. Empty dict = clean."""
+def scan_frame(df, columns: list[str] | None = None) -> dict[str, int]:
+    """Count PAN hits per column in a pandas frame. Empty dict = clean.
+
+    columns=None scans every object-dtype column (a PAN in any free-text
+    field enters the lake otherwise). Vectorized prefilter: str.contains
+    (C-level) selects candidate rows, Luhn verification runs only on those,
+    so clean batches never materialize full Python lists.
+    """
+    if columns is None:
+        columns = [c for c in df.columns if str(df[c].dtype) == "object"]
     found: dict[str, int] = {}
     for col in columns:
         if col not in df.columns:
             continue
-        n = 0
-        for v in df[col].dropna().astype(str).tolist():
-            if find_pans(v):
-                n += 1
+        s = df[col].dropna().astype(str)
+        if s.empty:
+            continue
+        cands = s[s.str.contains(_PAN_RUN, regex=True, na=False)]
+        if cands.empty:
+            continue
+        n = sum(1 for v in cands.tolist() if find_pans(v))
         if n:
             found[col] = n
     return found
