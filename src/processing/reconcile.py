@@ -359,13 +359,18 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
         F.col("settlement_id").asc(),
     )
     # Cache once: total + dedup counts share one CSV scan instead of two.
-    bank_df_valid = bank_df.filter(F.col("transaction_id").isNotNull()).cache()
+    # Repartition BEFORE the window on the same key: the window then needs no
+    # exchange (was window-shuffle + repartition-shuffle = 2x on 13M rows).
+    bank_df_valid = (
+        bank_df.filter(F.col("transaction_id").isNotNull())
+        .repartition(settings.spark_shuffle_partitions, "transaction_id")
+        .cache()
+    )
     settlement_rows_total = bank_df_valid.count()
     bank_df_dedup = (
         bank_df_valid.withColumn("row_num", F.row_number().over(window_spec))
         .filter(F.col("row_num") == 1)
         .drop("row_num")
-        .repartition(settings.spark_shuffle_partitions, "transaction_id")
     )
     bank_df_dedup.cache()
     settlement_rows_deduped = bank_df_dedup.count()  # warm cache before MERGE; reuse below
@@ -619,6 +624,17 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
     return counts
 
 
+def _bank_orphan_where(tol: int, lag_days: int) -> str:
+    """Shared orphan core: bank rows matching no settlement (link or window)."""
+    return (
+        "FROM bank_statements b "
+        "WHERE NOT EXISTS (SELECT 1 FROM bank_settlements s "
+        "WHERE s.transaction_id = b.link_tx "
+        f"OR (ABS(b.amount_paise - s.settled_amount_paise) <= {tol} "
+        f"AND ABS(DATEDIFF(b.value_date, s.settlement_date)) <= {int(lag_days)}))"
+    )
+
+
 def build_bank_leg_sql(
     table: str, lag_days: int = 2, tolerance_paise: int | None = None
 ) -> tuple[str, str]:
@@ -651,13 +667,7 @@ def build_bank_leg_sql(
         f"WHEN MATCHED AND t.reconciliation_status = '{MATCHED}' THEN "
         f"UPDATE SET t.reconciliation_status = '{EXCEPTION_MISSING_BANK_STATEMENT}'"
     )
-    orphan_sql = (
-        "SELECT COUNT(*) AS n FROM bank_statements b "
-        "WHERE NOT EXISTS (SELECT 1 FROM bank_settlements s "
-        "WHERE s.transaction_id = b.link_tx "
-        f"OR (ABS(b.amount_paise - s.settled_amount_paise) <= {tol} "
-        f"AND ABS(DATEDIFF(b.value_date, s.settlement_date)) <= {int(lag_days)}))"
-    )
+    orphan_sql = f"SELECT COUNT(*) AS n {_bank_orphan_where(tol, lag_days)}"
     return merge_sql, orphan_sql
 
 
@@ -671,15 +681,30 @@ def reconcile_bank_leg(
     """
     table = _qualified_table(table)
     bank_df.createOrReplaceTempView("bank_statements")
-    merge_sql, orphan_sql = build_bank_leg_sql(table, lag_days, tolerance_paise)
-    before = spark.sql(
-        f"SELECT COUNT(*) AS n FROM {table} WHERE reconciliation_status = '{MATCHED}'"
-    ).collect()[0]["n"]
+    merge_sql, _ = build_bank_leg_sql(table, lag_days, tolerance_paise)
+    # One action for both pre-MERGE gauges: before-MATCHED and orphan counts
+    # share nothing but single-row shape, so UNION ALL collapses two full
+    # scans into one (was 4 scans across the leg; the post-MERGE count must
+    # stay separate — it reads post-write state).
+    tol = (
+        int(tolerance_paise)
+        if tolerance_paise is not None
+        else get_fee_engine().default_tolerance_paise
+    )
+    pre = {
+        r["k"]: r["n"]
+        for r in spark.sql(
+            f"SELECT 'matched' AS k, COUNT(*) AS n FROM {table} "
+            f"WHERE reconciliation_status = '{MATCHED}' "
+            f"UNION ALL SELECT 'orphans' AS k, COUNT(*) AS n "
+            f"{_bank_orphan_where(tol, lag_days)}"
+        ).collect()
+    }
+    before, orphans = int(pre["matched"]), int(pre["orphans"])
     spark.sql(merge_sql)
     after = spark.sql(
         f"SELECT COUNT(*) AS n FROM {table} WHERE reconciliation_status = '{MATCHED}'"
     ).collect()[0]["n"]
-    orphans = spark.sql(orphan_sql).collect()[0]["n"]
     out = {
         "bank_evidence": int(after),
         "bank_missing": int(before - after),
