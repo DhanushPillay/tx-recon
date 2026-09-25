@@ -3,7 +3,7 @@ __pycache__/
 *.pyc
 *.pyo
 warehouse/
-data/
+data/*
 !data/samples/
 !data/samples/*.csv
 .pytest_cache/
