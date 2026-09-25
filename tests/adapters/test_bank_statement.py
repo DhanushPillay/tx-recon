@@ -90,3 +90,20 @@ def test_parse_mt940_missing_value_date_fails_closed():
         pytest.raises(ValueError, match="missing value date"),
     ):
         parse_mt940("dummy.sta")
+
+
+def test_parse_mt940_pan_in_narration_fails_closed(tmp_path):
+    """Card number in free-text narration: refuse the file (PCI scope)."""
+    p = tmp_path / "pan.sta"
+    p.write_text(
+        ":20:STARTUMS\n"
+        ":25:12345678901234567890\n"
+        ":28C:00001/001\n"
+        ":60F:C160401INR100000,00\n"
+        ":61:1604020402C9764,00NTRFREF000000000001\n"
+        "TXN000000001\n"
+        ":86:NEFT Cr card 4111111111111111 TXN000000001\n"
+        ":62F:C160402INR100000,00\n"
+    )
+    with pytest.raises(ValueError, match="PAN detected"):
+        parse_mt940(str(p))
