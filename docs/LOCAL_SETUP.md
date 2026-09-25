@@ -52,25 +52,20 @@ python -m venv .venv
 No Docker needed for this step:
 
 ```bash
-make demo
+make accuracy
 # or: python tests/performance/quick_perf.py
 ```
 
-This runs the sealed accuracy harness (2000 rows x 3 seeds) and writes `tests/performance/results_accuracy.json`.
+This runs the real-data accuracy gate (10k sample, match_rate >= 85%) and writes `tests/performance/results_accuracy.json`.
 
 ## 5. Run the full pipeline
 
 ```bash
-# Demo (synthetic, matches by construction):
-ALLOW_DESTRUCTIVE_SEED=1 python -m src.pipeline --date 2026-09-04 --demo
-# Messy mix (duplicates, mismatches, orphans, late) — still demo-seeded:
-ALLOW_DESTRUCTIVE_SEED=1 python -m src.pipeline --date 2026-09-04 --demo --messy
 # Real PG file (fail-closed, no synthesis):
 python -m src.pipeline --date 2026-09-04
 ```
 
-`--demo` seeds the webhooks table from the same plan as the settlement CSV so the MERGE matches; it is destructive (`MERGE-DELETE` prior rows) and requires `ALLOW_DESTRUCTIVE_SEED=1` (fail-closed). Without it, a fresh stack has no webhooks table and every row lands in `EXCEPTION_MISSING_WEBHOOK`. The validated file is written as `curated_*.csv`; reruns merge from curated, never `quarantine_*`. To fetch a provider FAQ-real file use `data/settlement_YYYYMMDD.csv` and omit `--demo`.
-Set `GENERATE_DEMO_SETTLEMENT=1` to allow `run_daily` to synthesize a file when invoked without `--demo` (e.g. in Airflow local dev); otherwise absence of a file raises `FileNotFoundError`.
+The pipeline refuses to run without a real settlement CSV (`FileNotFoundError`); nothing is ever synthesized. A fresh stack with no webhooks table lands every row in `EXCEPTION_MISSING_WEBHOOK`. The validated file is written as `curated_*.csv`; reruns merge from curated, never `quarantine_*`. To fetch a provider FAQ-real file use `data/settlement_YYYYMMDD.csv`.
 
 Additional fail-closed switches (see `src/common/settings.py` and RUNBOOK):
 
@@ -125,8 +120,8 @@ python tests/performance/pandas_validation_benchmark.py
 # Kafka producer (needs Redpanda)
 python tests/performance/kafka_producer_benchmark.py --count 5000
 
-# Iceberg MERGE (needs MinIO + Nessie)
-python tests/performance/run_benchmarks.py --suite iceberg --scale 100000
+# Iceberg MERGE (needs MinIO + Nessie; scales: 10000 sample, 1000000, 5000000, 12000000)
+python tests/performance/run_benchmarks.py --suite iceberg
 ```
 
 Full benchmark details: [BENCHMARKS.md](BENCHMARKS.md).
