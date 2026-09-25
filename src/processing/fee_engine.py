@@ -50,6 +50,17 @@ def _check_tol(tol, label: str) -> int:
     return _check_int(tol, 0, None, "tolerance_paise", label)
 
 
+def _check_gst(gst, label: str) -> float:
+    """GST percent must be numeric and non-negative (mis-prices every row)."""
+    try:
+        v = float(gst)
+    except (TypeError, ValueError):
+        raise ValueError(f"invalid gst_on_mdr {label}: {gst!r}") from None
+    if v < 0:
+        raise ValueError(f"invalid gst_on_mdr {label}: {gst!r}")
+    return v
+
+
 def gst_pct_to_bps(gst_pct: float | int | str) -> int:
     """GST percent -> basis points, HALF_UP (bank_statement.py convention).
 
@@ -93,8 +104,7 @@ class FeeEngine:
                 raise ValueError(
                     f"invalid {label} default mdr_rate_bps: {default['mdr_rate_bps']!r}"
                 )
-            if float(default["gst_on_mdr"]) < 0:
-                raise ValueError(f"invalid {label} default gst_on_mdr: {default['gst_on_mdr']!r}")
+            _check_gst(default["gst_on_mdr"], f"{label} default")
             if int(default["tolerance_paise"]) < 0:
                 raise ValueError(
                     f"invalid {label} default tolerance_paise: {default['tolerance_paise']!r}"
@@ -103,6 +113,7 @@ class FeeEngine:
                 _check_bps(
                     rate.get("mdr_rate_bps", default["mdr_rate_bps"]), f"for {inst} in {label}"
                 )
+                _check_gst(rate.get("gst_on_mdr", default["gst_on_mdr"]), f"for {inst} in {label}")
                 _check_tol(
                     rate.get("tolerance_paise", default["tolerance_paise"]),
                     f"for {inst} in {label}",
@@ -113,6 +124,10 @@ class FeeEngine:
                 for inst, rate in inst_map.items():
                     _check_bps(
                         rate.get("mdr_rate_bps", default["mdr_rate_bps"]),
+                        f"for merchants.{merch}.{inst} in {label}",
+                    )
+                    _check_gst(
+                        rate.get("gst_on_mdr", default["gst_on_mdr"]),
                         f"for merchants.{merch}.{inst} in {label}",
                     )
                     _check_tol(
