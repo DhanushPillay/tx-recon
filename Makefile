@@ -1,4 +1,4 @@
-.PHONY: up down install clean format lint test bench accuracy pipeline
+.PHONY: up down install clean format lint test coverage typecheck integration bench accuracy regression pipeline
 
 accuracy:
 	python tests/performance/quick_perf.py
@@ -21,8 +21,7 @@ down:
 	docker compose down -v
 
 clean:
-	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
-	find . -type f -name "*.pyc" -delete 2>/dev/null || true
+	python -c "import pathlib, shutil; [shutil.rmtree(p, ignore_errors=True) for p in pathlib.Path('.').rglob('__pycache__')]; [p.unlink(missing_ok=True) for p in pathlib.Path('.').rglob('*.pyc')]"
 
 format:
 	ruff format src/ tests/ dags/
@@ -30,8 +29,17 @@ format:
 lint:
 	ruff check src/ tests/ dags/
 
+typecheck:
+	mypy src/ --ignore-missing-imports
+
 test:
 	pytest tests/ -m "not integration" -n auto --benchmark-disable
+
+coverage:
+	pytest tests/ -m "not integration" -n auto --benchmark-disable --cov=src --cov-branch --cov-report=term-missing:skip-covered --cov-report=xml --cov-fail-under=90
+
+integration:
+	pytest tests/ -m "integration" --no-cov --benchmark-disable
 
 bench:
 	python tests/performance/run_benchmarks.py --suite iceberg
