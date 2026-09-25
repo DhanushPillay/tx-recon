@@ -113,6 +113,34 @@ def test_quarantine_path_nonstandard_basename(tmp_path, monkeypatch):
     assert (d / "quarantine_20250402.csv").exists()
 
 
+def test_bad_date_str_rejected_before_glob(tmp_path, monkeypatch):
+    """Path traversal / glob chars in date_str fail closed, never reach the glob."""
+    import src.validation.validate_settlement as vs
+
+    d = tmp_path / "data"
+    d.mkdir()
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    for bad in ("../secret", "/abs/path", "2025-04*", "2025-04-02;rm", "2025040x"):
+        with pytest.raises(ValueError, match="Bad date_str"):
+            vs.validate_latest_settlement(project_root=str(tmp_path), date_str=bad)
+
+
+def test_quarantined_batch_not_recorded_in_registry(tmp_path, monkeypatch):
+    """A quarantined batch must not look processed to the redelivery guard."""
+    import src.validation.validate_settlement as vs
+    from src.validation.file_registry import load_registry
+
+    d = tmp_path / "data"
+    d.mkdir()
+    (d / "settlement_20250402.csv").write_text(
+        "transaction_id,settled_amount_paise,bank_ref_id,settlement_date,instrument_type\ntx_abcdef123456,-5,b1,2025-04-02,UPI\n"
+    )
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    with pytest.raises(SettlementValidationError):
+        vs.validate_latest_settlement(project_root=str(tmp_path), date_str="2025-04-02")
+    assert load_registry(str(d)) == {}
+
+
 def test_warn_volume_shift_flags_collapse(tmp_path, caplog):
     """Previous curated batch 10 rows, current 2 -> >50% drop warning."""
     import logging
