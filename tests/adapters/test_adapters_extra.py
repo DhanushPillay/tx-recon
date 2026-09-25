@@ -8,12 +8,48 @@ from hypothesis import strategies as st
 from src.adapters.settlement import (
     _map_instrument,
     _paise_inr_series,
+    _to_iso_date,
     _to_iso_series,
     load_settlement_csv,
     normalize_settlement_df,
 )
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("2025-04-01", "2025-04-01"),
+        ("02/04/2025", "2025-04-02"),
+        ("02-04-2025", "2025-04-02"),
+        ("2025-04-01T10:00:00Z", "2025-04-01"),
+        ("2025-04-01 10:00:00", "2025-04-01"),
+        ("not-a-date", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_to_iso_date_formats(raw, expected):
+    assert _to_iso_date(raw) == expected
+
+
+def test_to_iso_series_row_fallback():
+    out = _to_iso_series(pd.Series(["2025-04-01", "02/04/2025", "junk"])).tolist()
+    assert out[0] == "2025-04-01"
+    assert out[1] == "2025-04-02"
+    assert out[2] is None or pd.isna(out[2])
+
+
+def test_unknown_provider_falls_back_to_generic(tmp_path):
+    f = tmp_path / "weird_pg.csv"
+    f.write_text(
+        "transaction_id,bank_ref_id,settled_amount_paise,settlement_date,instrument_type\n"
+        "tx_abcdef123456,b1,100000,2025-04-02,UPI\n"
+    )
+    df, pg_name = load_settlement_csv(str(f))
+    assert pg_name == "generic"
+    assert df["provider"].iloc[0] == "generic"
 
 
 def test_map_instrument_unknown_quarantined():
