@@ -139,6 +139,15 @@ def run_ingestion():
         # Empty triggers are common: limit-1 check skips count + MERGE planning.
         if batch_df.isEmpty():
             return
+        # Cache once: this batch otherwise gets re-scanned from the source on
+        # every action below (schema-id distinct, late count, MERGE, DLQ count).
+        batch_df = batch_df.cache()
+        try:
+            _write_batch_cached(batch_df)
+        finally:
+            batch_df.unpersist()
+
+    def _write_batch_cached(batch_df) -> None:
         # Schema-id drift: writer evolved without updating the pinned copy.
         # Warn-only (parse still runs); the oncall checks the registry diff.
         try:
