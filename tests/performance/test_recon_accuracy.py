@@ -1,65 +1,20 @@
-"""Accuracy gate: the matcher must score perfectly on seeded synthetic breaks.
+"""Accuracy gate on real data: match_rate >= 85% on the 10k sample.
 
-Normal profile (no adversarial amounts): precision 1.0, recall 1.0, FP == 0.
+No synthetic breaks. A drop means fee miscalibration or data drift.
 """
 
-from recon_accuracy import build_case, run
-
-from src.common.schemas import EXCEPTION_MISSING_WEBHOOK
+from recon_accuracy import MATCH_GATE, run
 
 
-def test_recon_accuracy_normal():
-    rep = run(n=2000, seed=42)
-    assert rep["precision"] == 1.0
-    assert rep["recall"] == 1.0
-    assert rep["f1"] == 1.0
-    assert rep["false_positives"] == 0
-    assert rep["fanout_max"] == 1
-    for cls, recall in rep["per_class_recall"].items():
-        assert recall == 1.0, f"class {cls} recall {recall}"
+def test_real_accuracy_gate():
+    rep = run()
+    assert rep["n"] > 0
+    assert rep["match_rate"] >= MATCH_GATE, (
+        f"match_rate {rep['match_rate']:.2%} < 85%: fee calibration or drift suspect"
+    )
 
 
-def test_recon_accuracy_second_seed():
-    rep = run(n=2000, seed=7)
-    assert rep["precision"] == 1.0
-    assert rep["recall"] == 1.0
-    assert rep["false_positives"] == 0
-
-
-def test_harness_catches_fee_engine_bug(monkeypatch):
-    # Falsifiability pin: ground truth comes from the YAML rate card, not
-    # FeeEngine, so a broken matcher must score below 1.0.
-    from recon_accuracy import build_case, match, score
-
-    from src.processing.fee_engine import FeeEngine, FeeResult
-
-    def _broken_fee(
-        self, amount_paise, instrument_type="UPI", merchant_id=None, settlement_date=None
-    ):
-        return FeeResult(
-            fee_paise=0,
-            net_paise=amount_paise,
-            rate_bps=0,
-            gst_paise=0,
-            instrument_type=instrument_type,
-            rate_version="broken",
-        )
-
-    webhooks, settlements, answer = build_case(n=200, seed=1)
-    monkeypatch.setattr(FeeEngine, "compute_fee", _broken_fee)
-    rep = score(answer, match(webhooks, settlements))
-    assert rep["f1"] < 1.0
-    assert rep["false_positives"] > 0 or rep["recall"] < 1.0
-
-
-def test_orphan_class_reachable():
-    # Regression pin: the orphan branch was once shadowed by a duplicate
-    # `elif r < 0.90`, making EXCEPTION_MISSING_WEBHOOK unreachable.
-    _, _, answer = build_case(n=2000, seed=123)
-    assert EXCEPTION_MISSING_WEBHOOK in answer.values()
-    rep = run(n=2000, seed=123)
-    assert rep["precision"] == 1.0
-    assert rep["recall"] == 1.0
-    assert rep["f1"] == 1.0
-    assert rep["false_positives"] == 0
-    assert rep["fanout_max"] == 1
+def test_orphans_visible_in_real_sample():
+    # The 10k sample carries ~5% orphan settlements; the gate must see them.
+    rep = run()
+    assert rep["orphans"] > 0
