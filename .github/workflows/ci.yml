@@ -132,6 +132,18 @@ jobs:
         run: |
           python tests/performance/quick_perf.py
 
+      - name: Regression gate vs checked-in baseline
+        env:
+          PYTHONPATH: .
+          PROJECT_ROOT: ${{ github.workspace }}
+        run: |
+          # Blocking: accuracy match_rate < 85% or >15% throughput / >20% p99
+          # movement vs tests/performance/baseline_real.json fails the build.
+          # A hardware fingerprint mismatch only warns (CI runners differ).
+          python tests/performance/check_regression.py \
+            --results tests/performance/results_accuracy.json \
+            --baseline tests/performance/baseline_real.json
+
       - name: Run Pytest with Coverage
         env:
           PYTHONPATH: .
