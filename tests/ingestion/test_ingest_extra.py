@@ -299,6 +299,20 @@ def test_count_spark_pan_hits_luhn_verifies(mocker):
     assert count_spark_pan_hits(df, ["transaction_id", "merchant_id"]) == 0
 
 
+def test_write_batch_late_rows_rescued_by_webhook(mocker):
+    """Late-arriving webhooks rescue LATE_UNRESOLVED rows (not just MISSING)."""
+    import src.ingestion.ingest_webhooks as ing
+    from src.common.schemas import EXCEPTION_LATE_UNRESOLVED
+
+    spark, parsed, ws, captured = MagicMock(), MagicMock(), MagicMock(), {}
+    _mock_stream(spark, parsed, ws, captured)
+    _patch_ingest(ing, mocker, spark)
+    ing.run_ingestion()
+    _run_batch(ing, mocker, captured)
+    merge_sql = spark.sql.call_args_list[0][0][0]
+    assert EXCEPTION_LATE_UNRESOLVED in merge_sql
+
+
 def _run_batch(ing, mocker, captured, *, empty=False, late_n=0, select_side_effect=None):
     """Drive the captured foreachBatch fn with a canned batch."""
     batch = MagicMock(name="batch")
