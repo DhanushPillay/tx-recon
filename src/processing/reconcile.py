@@ -554,35 +554,36 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
             f"t.reconciliation_status = '{EXCEPTION_MISSING_WEBHOOK}' "
             f"AND to_date(t.timestamp_utc) < date_sub(current_date(), ({_days_case}))"
         )
-        # Side-output count first: the MERGE below returns no row count, and
+        # Side-output counts first: the MERGE below returns no row count, and
         # the oncall alert (runbook) keys off late_unresolved_marked > 0.
-        counts["late_unresolved_marked"] = spark.sql(
-            f"SELECT COUNT(*) AS n FROM {table} t "
-            f"JOIN bank_settlements s ON s.transaction_id = t.transaction_id "
-            f"WHERE {_late_where}"
-        ).collect()[0]["n"]
-        if counts["late_unresolved_marked"]:
-            logger.warning(
-                "late-SLA: %d placeholders past provider windows -> %s",
-                counts["late_unresolved_marked"],
-                EXCEPTION_LATE_UNRESOLVED,
-            )
-        # Within-lag gauge BEFORE the MERGE below (it consumes MISSING rows):
-        # missing-but-expected vs truly-missing triage. NOT batch_-prefixed:
-        # it overlaps MISSING and must not enter the drift tile.
+        # One job: both gauges share the same join, split by conditional sums
+        # (was two full join scans). Both read pre-MERGE state: the MERGE
+        # below consumes MISSING rows, so the lag gauge must run before it.
         _lag_whens = " ".join(
             f"WHEN '{p}' THEN {int(provider_spec(_pcfg, p).get('lag_days', 2))}"
             for p in _known
             if p != "None"
         )
         _lag_case = f"CASE s.provider {_lag_whens} ELSE 2 END"
-        counts["missing_within_lag"] = spark.sql(
-            f"SELECT COUNT(*) AS n FROM {table} t "
-            f"JOIN bank_settlements s ON s.transaction_id = t.transaction_id "
-            f"WHERE t.reconciliation_status = '{EXCEPTION_MISSING_WEBHOOK}' "
+        _late_lag = spark.sql(
+            f"SELECT "
+            f"SUM(CASE WHEN {_late_where} THEN 1 ELSE 0 END) AS late_n, "
+            f"SUM(CASE WHEN t.reconciliation_status = '{EXCEPTION_MISSING_WEBHOOK}' "
             f"AND DATEDIFF(s.settlement_date, to_date(t.timestamp_utc)) "
-            f"BETWEEN 0 AND ({_lag_case})"
-        ).collect()[0]["n"]
+            f"BETWEEN 0 AND ({_lag_case}) THEN 1 ELSE 0 END) AS lag_n "
+            f"FROM {table} t "
+            f"JOIN bank_settlements s ON s.transaction_id = t.transaction_id "
+        ).collect()[0]
+        counts["late_unresolved_marked"] = int(_late_lag["late_n"] or 0)
+        # Within-lag gauge (missing-but-expected vs truly-missing triage).
+        # NOT batch_-prefixed: it overlaps MISSING and must not enter the drift tile.
+        counts["missing_within_lag"] = int(_late_lag["lag_n"] or 0)
+        if counts["late_unresolved_marked"]:
+            logger.warning(
+                "late-SLA: %d placeholders past provider windows -> %s",
+                counts["late_unresolved_marked"],
+                EXCEPTION_LATE_UNRESOLVED,
+            )
         if counts["late_unresolved_marked"]:
             spark.sql(
                 f"MERGE INTO {table} t USING bank_settlements s "
@@ -718,6 +719,13 @@ def maintain_tables(
             )
             retain = retain_last or 7
         out: dict = {}
+        # Explicit retention bound: without older_than, maintenance can sweep
+        # files from in-flight writes (or never clean, depending on default).
+        import datetime as _dt
+
+        _orphan_older_than = (_dt.datetime.now(_dt.UTC) - _dt.timedelta(days=3)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
         for raw in targets:
             tbl = _qualified_table(raw)
             parts = tbl.split(".")
@@ -731,7 +739,8 @@ def maintain_tables(
                 ),
                 (
                     None,
-                    f"CALL {catalog}.system.remove_orphan_files(table => '{rest}')",
+                    f"CALL {catalog}.system.remove_orphan_files(table => '{rest}', "
+                    f"older_than => TIMESTAMP '{_orphan_older_than}')",
                 ),
                 (
                     None,
