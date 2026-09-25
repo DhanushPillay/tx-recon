@@ -616,21 +616,30 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
     return counts
 
 
-def build_bank_leg_sql(table: str, lag_days: int = 2) -> tuple[str, str]:
+def build_bank_leg_sql(
+    table: str, lag_days: int = 2, tolerance_paise: int | None = None
+) -> tuple[str, str]:
     """Third-leg SQL: bank evidence for MATCHED rows.
 
-    Evidence = exact narration link OR (net within 1 paise AND value date
-    within lag). Rows without evidence demote to EXCEPTION_MISSING_BANK_STATEMENT;
-    bank rows matching nothing are counted as orphans (logged, not statused).
+    Evidence = exact narration link OR (net within tolerance AND value date
+    within lag). Tolerance defaults to the fee engine default (same rounding
+    allowance the MERGE uses) instead of a hardcoded 1 paise. Rows without
+    evidence demote to EXCEPTION_MISSING_BANK_STATEMENT; bank rows matching
+    nothing are counted as orphans (logged, not statused).
     Pure builder (unit-tested); executed by reconcile_bank_leg.
     """
     table = _qualified_table(table)
+    tol = (
+        int(tolerance_paise)
+        if tolerance_paise is not None
+        else get_fee_engine().default_tolerance_paise
+    )
     missing = (
         "SELECT s.transaction_id AS tid FROM bank_settlements s "
         "WHERE NOT EXISTS (SELECT 1 FROM bank_statements b WHERE "
         "b.link_tx = s.transaction_id "
         "OR (b.link_tx IS NULL "
-        "AND ABS(b.amount_paise - s.settled_amount_paise) <= 1 "
+        f"AND ABS(b.amount_paise - s.settled_amount_paise) <= {tol} "
         f"AND ABS(DATEDIFF(b.value_date, s.settlement_date)) <= {int(lag_days)}))"
     )
     merge_sql = (
@@ -643,13 +652,15 @@ def build_bank_leg_sql(table: str, lag_days: int = 2) -> tuple[str, str]:
         "SELECT COUNT(*) AS n FROM bank_statements b "
         "WHERE NOT EXISTS (SELECT 1 FROM bank_settlements s "
         "WHERE s.transaction_id = b.link_tx "
-        "OR (ABS(b.amount_paise - s.settled_amount_paise) <= 1 "
+        f"OR (ABS(b.amount_paise - s.settled_amount_paise) <= {tol} "
         f"AND ABS(DATEDIFF(b.value_date, s.settlement_date)) <= {int(lag_days)}))"
     )
     return merge_sql, orphan_sql
 
 
-def reconcile_bank_leg(spark, table: str, bank_df, lag_days: int = 2) -> dict:
+def reconcile_bank_leg(
+    spark, table: str, bank_df, lag_days: int = 2, tolerance_paise: int | None = None
+) -> dict:
     """Run the bank-statement leg. Returns {bank_evidence, bank_missing, bank_orphans}.
 
     bank_df: Spark frame with (bank_ref, amount_paise, value_date, link_tx).
@@ -657,7 +668,7 @@ def reconcile_bank_leg(spark, table: str, bank_df, lag_days: int = 2) -> dict:
     """
     table = _qualified_table(table)
     bank_df.createOrReplaceTempView("bank_statements")
-    merge_sql, orphan_sql = build_bank_leg_sql(table, lag_days)
+    merge_sql, orphan_sql = build_bank_leg_sql(table, lag_days, tolerance_paise)
     before = spark.sql(
         f"SELECT COUNT(*) AS n FROM {table} WHERE reconciliation_status = '{MATCHED}'"
     ).collect()[0]["n"]
