@@ -139,9 +139,10 @@ def test_write_batch_merges_and_dlqs(mocker):
     # filter(valid_cond) -> valid; valid.dropDuplicates -> valid
     valid.dropDuplicates.return_value = valid
     # valid.withColumn x3 -> enriched (has createOrReplaceTempView)
-    valid.withColumn.return_value.withColumn.return_value.withColumn.return_value = enriched
+    valid.withColumn.return_value.withColumn.return_value.withColumn.return_value.withColumn.return_value = enriched
     invalid = MagicMock(name="invalid")
     invalid.dropDuplicates.return_value = invalid
+    invalid.select.return_value = invalid
     invalid.count.return_value = 1
     late = MagicMock(name="late")
     late.count.return_value = 0
@@ -175,7 +176,7 @@ def test_write_batch_warns_on_schema_id_drift(mocker, caplog):
     batch.select.return_value.distinct.return_value.collect.return_value = [{"schema_id": "999"}]
     valid = MagicMock(name="valid")
     valid.dropDuplicates.return_value = valid
-    valid.withColumn.return_value.withColumn.return_value.withColumn.return_value = MagicMock()
+    valid.withColumn.return_value.withColumn.return_value.withColumn.return_value.withColumn.return_value = MagicMock()
     invalid = MagicMock(name="invalid")
     invalid.dropDuplicates.return_value = invalid
     invalid.count.return_value = 0
@@ -191,6 +192,61 @@ def test_write_batch_warns_on_schema_id_drift(mocker, caplog):
     spark.sql.assert_called_once()  # warn-only: the MERGE still ran
 
 
+def test_write_batch_uses_explicit_columns(mocker):
+    """MERGE INSERT lists columns (never positional *); DLQ selects its 6 cols.
+
+    batch carries schema_id/event_time extras vs the 10-col webhooks table
+    and 6-col DLQ table — positional writes mis-align on any drift.
+    """
+    import src.ingestion.ingest_webhooks as ing
+
+    spark, parsed, ws, captured = MagicMock(), MagicMock(), MagicMock(), {}
+    _mock_stream(spark, parsed, ws, captured)
+    _patch_ingest(ing, mocker, spark)
+    ing.run_ingestion()
+    batch = MagicMock(name="batch")
+    batch.isEmpty.return_value = False
+    batch.cache.return_value = batch
+    valid = MagicMock(name="valid")
+    valid.dropDuplicates.return_value = valid
+    valid.withColumn.return_value.withColumn.return_value.withColumn.return_value.withColumn.return_value = MagicMock()
+    invalid = MagicMock(name="invalid")
+    invalid.dropDuplicates.return_value = invalid
+    invalid.select.return_value = invalid
+    invalid.count.return_value = 1
+    late = MagicMock(name="late")
+    late.count.return_value = 0
+    batch.filter.side_effect = [late, valid, invalid]
+    mocker.patch.object(ing, "lit", return_value=MagicMock())
+    mocker.patch.object(ing, "current_timestamp", return_value=MagicMock())
+    mocker.patch.object(ing, "F", new=MagicMock())
+    captured["fn"](batch, 0)
+    merge_sql = spark.sql.call_args_list[0][0][0]
+    assert "INSERT *" not in merge_sql
+    assert "INSERT (transaction_id, amount_paise" in merge_sql
+    invalid.select.assert_called_once_with(*ing._DLQ_COLS)
+    assert ing._WEBHOOK_COLS == [
+        "transaction_id",
+        "amount_paise",
+        "gateway_status",
+        "timestamp_utc",
+        "merchant_id",
+        "processing_run_id",
+        "reconciliation_status",
+        "bank_ref_id",
+        "ingested_at",
+        "instrument_type",
+    ]
+    assert ing._DLQ_COLS == [
+        "transaction_id",
+        "amount_paise",
+        "gateway_status",
+        "timestamp_utc",
+        "merchant_id",
+        "processing_run_id",
+    ]
+
+
 def _run_batch(ing, mocker, captured, *, empty=False, late_n=0, select_side_effect=None):
     """Drive the captured foreachBatch fn with a canned batch."""
     batch = MagicMock(name="batch")
@@ -204,7 +260,7 @@ def _run_batch(ing, mocker, captured, *, empty=False, late_n=0, select_side_effe
         ]
     valid = MagicMock(name="valid")
     valid.dropDuplicates.return_value = valid
-    valid.withColumn.return_value.withColumn.return_value.withColumn.return_value = MagicMock()
+    valid.withColumn.return_value.withColumn.return_value.withColumn.return_value.withColumn.return_value = MagicMock()
     invalid = MagicMock(name="invalid")
     invalid.dropDuplicates.return_value = invalid
     invalid.count.return_value = 0
@@ -304,7 +360,7 @@ def test_write_batch_merge_failure_propagates(mocker):
     batch.select.return_value.distinct.return_value.collect.return_value = [{"schema_id": "123"}]
     valid = MagicMock(name="valid")
     valid.dropDuplicates.return_value = valid
-    valid.withColumn.return_value.withColumn.return_value.withColumn.return_value = MagicMock()
+    valid.withColumn.return_value.withColumn.return_value.withColumn.return_value.withColumn.return_value = MagicMock()
     invalid = MagicMock(name="invalid")
     invalid.dropDuplicates.return_value = invalid
     invalid.count.return_value = 0
