@@ -202,7 +202,7 @@ def run_ingestion():
 
 def ensure_webhook_table(spark, table: str) -> None:
     """Create namespace + webhooks Iceberg table if missing (shared by the
-    streaming __main__ init and the pipeline demo seeder).
+    streaming __main__ init and the pipeline real-data seeder).
 
     Layout: bucket(16, transaction_id) co-locates MERGE join keys so batches
     prune to file groups instead of full-scanning history (verified live).
