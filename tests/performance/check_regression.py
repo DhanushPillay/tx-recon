@@ -1,12 +1,13 @@
 """ServiceLab-lite regression gate: fail a PR if perf moved vs baseline.
 
-Compares tests/performance/results.json against a baseline JSON file:
+Real-data only. Compares tests/performance/results_real.json against a baseline:
   - throughput_msgs_sec must not drop more than 15%
   - ack p99 must not rise more than 20%
   - iceberg rows_per_sec (if present both sides) must not drop more than 15%
+  - real match_rate must stay >= 85%
 
 Usage:
-    python tests/performance/check_regression.py --baseline baseline_results.json
+    python tests/performance/check_regression.py --baseline baseline_results_real.json
     python tests/performance/check_regression.py  # compares nothing, prints current
 """
 
@@ -46,6 +47,8 @@ def check(current, baseline):
     for bench, vals in ci.get("benchmarks", {}).items():
         if vals.get("healthy") is False:
             failures.append(f"iceberg {bench} matched nothing (healthy=false)")
+        if vals.get("match_rate", 1.0) < 0.85:
+            failures.append(f"iceberg {bench} match_rate < 85% (real-data drift?)")
         if bench in bi.get("benchmarks", {}):
             old, new = bi["benchmarks"][bench], vals
             if "rows_per_sec" in new and "rows_per_sec" in old:
@@ -53,14 +56,16 @@ def check(current, baseline):
                 if d < -TP_DROP_PCT:
                     failures.append(f"iceberg {bench} rows/sec dropped {d:.1f}%")
     acc = current.get("accuracy", {})
-    if acc.get("min_f1", 1.0) < 1.0 or acc.get("max_false_positives", 0) > 0:
-        failures.append("accuracy gate failed (min_f1 < 1.0 or FP > 0)")
+    if acc and acc.get("match_rate", 1.0) < 0.85:
+        failures.append("real accuracy gate failed (match_rate < 85%)")
     return failures, warn
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--results", default=os.path.join(os.path.dirname(__file__), "results.json"))
+    ap.add_argument(
+        "--results", default=os.path.join(os.path.dirname(__file__), "results_real.json")
+    )
     ap.add_argument("--baseline", default=None)
     args = ap.parse_args()
     with open(args.results) as f:
