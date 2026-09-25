@@ -151,9 +151,7 @@ def validate_latest_settlement(
     # puts the whole lake in PCI scope. Last-4 + issuer only, ever.
     from src.validation.pan_guard import scan_frame
 
-    pan_hits = scan_frame(
-        df, ["transaction_id", "bank_ref_id", "settlement_id", "utr", "merchant_id"]
-    )
+    pan_hits = scan_frame(df)
     if pan_hits:
         raise SettlementValidationError(
             f"PAN detected in {latest_file} {pan_hits}: refusing batch (store last-4 + issuer only)"
