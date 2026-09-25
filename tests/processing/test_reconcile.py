@@ -205,8 +205,8 @@ def test_run_reconciliation_wiring(
     assert "JOIN" not in using_clause
     assert "IS NOT NULL" in merge_sql, "null guards required on both branches"
     assert (
-        merge_sql.count("UPDATE SET") == 4
-    )  # placeholder-keep + late-keep + null-amount + single-pass CASE (matched/mismatched)
+        merge_sql.count("UPDATE SET") == 3
+    )  # placeholder-keep (MISSING+LATE) + null-amount + single-pass CASE (matched/mismatched)
     assert merge_sql.count("WHEN NOT MATCHED") == 1
     assert "CASE WHEN ABS(" in merge_sql, "single-pass CASE replaces double ABS eval"
     # Placeholder rows (inserted by WHEN NOT MATCHED on an earlier run) must
@@ -301,6 +301,22 @@ def test_bank_leg_tolerance_threaded():
     assert "<= 5" in merge
     assert "<= 5" in orphan
     assert "<= 1" not in merge
+
+
+def test_late_rows_preserved_not_self_assigned():
+    """LATE shares the MISSING preserve clause (no self-assign rewrite)."""
+    from src.common.schemas import EXCEPTION_LATE_UNRESOLVED, EXCEPTION_MISSING_WEBHOOK
+
+    counts, mock_spark = _run_with_collects(
+        batch_collect=[{"st": "MATCHED", "n": 4}],
+        table_collect=[{"reconciliation_status": "MATCHED", "n": 4}],
+    )
+    merges = [c[0][0] for c in mock_spark.sql.call_args_list if "MERGE INTO" in c[0][0]]
+    assert merges, "expected a batch MERGE"
+    assert not any("t.bank_ref_id = t.bank_ref_id" in m for m in merges)
+    assert any(EXCEPTION_MISSING_WEBHOOK in m and EXCEPTION_LATE_UNRESOLVED in m for m in merges), (
+        "MISSING + LATE must share one preserve clause"
+    )
 
 
 def test_maintain_tables_statement_order(monkeypatch):
