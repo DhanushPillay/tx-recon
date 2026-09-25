@@ -68,3 +68,25 @@ def test_bank_leg_sql_shape():
 def test_bank_leg_sql_rejects_injection():
     with pytest.raises(ValueError):
         build_bank_leg_sql("x; DROP TABLE y --")
+
+
+def test_parse_mt940_missing_package_fails_closed(monkeypatch):
+    """mt940 not installed: explicit error, never a silent empty leg."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "mt940", None)
+    with pytest.raises(RuntimeError, match="mt-940 package required"):
+        parse_mt940(FIXTURE)
+
+
+def test_parse_mt940_missing_value_date_fails_closed():
+    """Statement line without a date: fail loudly, never match by amount alone."""
+    from unittest.mock import MagicMock, patch
+
+    txn = MagicMock()
+    txn.data = {"status": "C", "amount": 100}
+    with (
+        patch("mt940.parse", return_value=[txn]),
+        pytest.raises(ValueError, match="missing value date"),
+    ):
+        parse_mt940("dummy.sta")
