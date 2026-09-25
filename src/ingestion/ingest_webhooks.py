@@ -195,6 +195,26 @@ def run_ingestion():
         ).count()
         if _late_n:
             logger.warning(f"late-data: {_late_n} rows older than {_wm_n} {_wm_unit} in batch")
+        # No-PAN gate before any write (MERGE or DLQ): a card number in the
+        # batch would put the lake in PCI scope. JVM prefilter + driver Luhn,
+        # collect bounded by candidate rows (normally zero).
+        from src.validation.pan_guard import count_spark_pan_hits
+
+        _pan_n = count_spark_pan_hits(
+            batch_df,
+            [
+                "transaction_id",
+                "gateway_status",
+                "timestamp_utc",
+                "merchant_id",
+                "processing_run_id",
+            ],
+        )
+        if _pan_n:
+            raise RuntimeError(
+                f"PAN detected in streaming batch ({_pan_n} rows): refusing batch "
+                "(store last-4 + issuer only)"
+            )
         v = batch_df.filter(valid_cond).dropDuplicates(["transaction_id"])
         v = (
             v.withColumn("reconciliation_status", col("gateway_status"))
