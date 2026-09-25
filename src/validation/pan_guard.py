@@ -12,6 +12,39 @@ logger = logging.getLogger(__name__)
 # 13-19 digit runs, allowing spaces/dashes inside (stripped before Luhn).
 _PAN_RUN = re.compile(r"\d(?:[ \-]?\d){12,18}")
 
+# Same 13-19 digit run for the JVM side (Java regex compatible).
+_SPARK_PAN_PATTERN = r"\d(?:[ \-]?\d){12,18}"
+
+
+def spark_pan_candidate_filter(df, cols: list[str]):
+    """Distributed prefilter: rows where any listed column holds a PAN-like run.
+
+    Luhn verification still runs on the driver (count_spark_pan_hits), so the
+    collect is bounded by candidate rows (normally zero).
+    """
+    from pyspark.sql import functions as _F
+
+    cond = None
+    for c in cols:
+        if c not in df.columns:
+            continue
+        f = _F.col(c).cast("string").rlike(_SPARK_PAN_PATTERN)
+        cond = f if cond is None else (cond | f)
+    return df.filter(cond) if cond is not None else df.limit(0)
+
+
+def count_spark_pan_hits(df, cols: list[str]) -> int:
+    """Luhn-verified PAN row count in a Spark frame (fail-closed gate input)."""
+    present = [c for c in cols if c in df.columns]
+    cands = spark_pan_candidate_filter(df, cols).select(*present).collect()
+    n = 0
+    for row in cands:
+        for v in row:
+            if v is not None and find_pans(str(v)):
+                n += 1
+                break
+    return n
+
 
 def _luhn_ok(digits: str) -> bool:
     total = 0
