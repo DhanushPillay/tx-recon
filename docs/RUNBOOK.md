@@ -42,12 +42,11 @@ The MERGE wraps all SQL in a `RuntimeError`. Common causes:
 
 Defaults are strict (`strict_slo=true`): a sub-SLO match rate, a stale mart,
 a >50% volume drop, or a >48h-old settlement file fails the batch instead of
-warning. Demo conveniences are opt-in and never inherited:
+warning. Real-data conveniences are opt-in and never inherited:
 
 | Env | Effect |
 | --- | ------ |
-| `GENERATE_DEMO_SETTLEMENT=1` | `run_daily` / DAG may synthesize a settlement file (local dev only) |
-| `ALLOW_DESTRUCTIVE_SEED=1` | demo + real-data webhook seeders may MERGE-DELETE existing rows |
+| `ALLOW_DESTRUCTIVE_SEED=1` | real-data webhook seeders may MERGE-DELETE existing rows |
 | `REQUIRE_KAFKA_SASL=1` | ingestion refuses `PLAINTEXT` brokers (forged records would be trusted) |
 | `REQUIRE_SCHEMA_REGISTRY=1` | unreachable registry fails ingestion instead of disabling drift check |
 | `MATCH_RATE_SLO`, `LATE_SLA_DAYS`, `MAINTAIN_RETAIN_LAST` | SLO knobs; malformed values fall back to defaults with a warning |
@@ -133,7 +132,7 @@ Batch gauges are `batch_*` (scoped to this settlement's ids); `missing_within_la
 | Symptom | Cause | Fix |
 | :--- | :--- | :--- |
 | `docker compose up` fails with `MINIO_ROOT_PASSWORD` | Missing from `.env` | Set `MINIO_ROOT_PASSWORD=password` in `.env` |
-| `FileNotFoundError` in pipeline | No settlement CSV in `data/` | Generate one: `python src/generators/settlement_generator.py` |
+| `FileNotFoundError` in pipeline | No settlement CSV in `data/` | Place the real PG file at `data/settlement_YYYYMMDD.csv` (pipeline never synthesizes input) |
 | `AnalysisException: Table not found` | Nessie namespace/table missing | Run `python -m src.ingestion.ingest_webhooks` to create DDL |
 | `ValueError: run_reconciliation requires date_str` | Date-less `run_daily`/`run_reconciliation` called (would re-merge all history) | Pass `--date YYYY-MM-DD` (single source; `pipeline.py: _resolve_batch_date`) |
 | `EXCEPTION_MISSING_BANK_STATEMENT` spiking | MT940 not fetched or `lag_days` wrong | Check `config/providers.yaml` lag, bank file dates, `link_tx` regex |
