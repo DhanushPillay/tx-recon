@@ -47,6 +47,13 @@ def main() -> dict:
     )
     logger.info(f"Replayed {n} rows into {target}")
     if args.delete:
+        # Validate BEFORE the purge: journal_correction also refuses empty
+        # reason/approver, but only after the DELETE already ran — rows would
+        # be gone with no journal record. Fail fast instead.
+        if not (args.reason or "").strip():
+            raise ValueError("--delete requires --reason (ticket/cause)")
+        if not (args.approved_by or "").strip():
+            raise ValueError("--delete requires --approved-by (second pair of eyes)")
         spark.sql(
             f"MERGE INTO {dlq} t USING dlq_replay s "
             "ON t.transaction_id = s.transaction_id "
