@@ -1,0 +1,43 @@
+{
+  "_note": "Checked-in regression baseline (25 Sep 2026, single node, 28 cores, d2e5f67d5861). check_regression.py compares these headline numbers: kafka throughput/p99, iceberg rows_per_sec per label, accuracy match_rate. A hardware fingerprint mismatch only warns (different machine = noisy), metric movement fails.",
+  "hardware": {"fingerprint": "d2e5f67d5861"},
+  "kafka": {
+    "throughput_msgs_sec": 225123.39,
+    "ack_latency": {"p50": 0.65, "p95": 1.11, "p99": 3.97}
+  },
+  "iceberg": {
+    "benchmarks": {
+      "1000k_rows_10pct_update_mor_real": {
+        "rows_per_sec": 16666.7,
+        "match_rate": 0.9467,
+        "healthy": true
+      },
+      "1000k_rows_50pct_update_mor_real": {
+        "rows_per_sec": 37735.8,
+        "match_rate": 0.9466,
+        "healthy": true
+      },
+      "5000k_rows_10pct_update_mor_real": {
+        "rows_per_sec": 73206.4,
+        "match_rate": 0.9466,
+        "healthy": true
+      },
+      "5000k_rows_50pct_update_mor_real": {
+        "rows_per_sec": 215331.6,
+        "match_rate": 0.9471,
+        "healthy": true
+      },
+      "12000k_rows_10pct_update_mor_real": {
+        "rows_per_sec": 116335.4,
+        "match_rate": 0.9469,
+        "healthy": true
+      },
+      "12000k_rows_50pct_update_mor_real": {
+        "rows_per_sec": 105773.5,
+        "match_rate": 0.9471,
+        "healthy": true
+      }
+    }
+  },
+  "accuracy": {"match_rate": 0.9463}
+}
