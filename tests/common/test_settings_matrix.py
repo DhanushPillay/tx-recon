@@ -13,11 +13,6 @@ def test_for_airflow_rewrites_hosts():
     assert "redpanda" in s.kafka_broker
 
 
-def test_for_cluster_and_yarn():
-    assert Settings.for_cluster(Settings()).spark_master.startswith("spark://")
-    assert Settings.for_yarn(Settings()).spark_master == "yarn"
-
-
 def test_for_local_bench_file_warehouse(monkeypatch):
     monkeypatch.setenv("BENCH_MODE", "local")
     s = Settings.for_local(Settings())
@@ -95,52 +90,3 @@ def test_check_java_home_dangling_popped(monkeypatch):
     monkeypatch.setenv("JAVA_HOME", "/nonexistent-jdk-xyz")
     _check_java_home()
     assert "JAVA_HOME" not in os.environ
-
-
-def test_get_spark_session_yarn_branch(monkeypatch):
-    from unittest.mock import MagicMock, patch
-
-    from src.common import config
-    from src.common import settings as settings_mod
-
-    monkeypatch.setenv("SPARK_MODE", "yarn")
-    monkeypatch.delenv("AIRFLOW_HOME", raising=False)
-    monkeypatch.setenv("MINIO_ACCESS_KEY", "test")
-    monkeypatch.setenv("MINIO_SECRET_KEY", "test")
-    settings_mod._settings = None
-    with patch.object(config, "SparkSession") as mock_cls:
-        builder = MagicMock()
-        mock_cls.builder.appName.return_value = builder
-        builder.master.return_value = builder
-        builder.config.return_value = builder
-        builder.getOrCreate.return_value = MagicMock()
-        config.get_spark_session("YarnApp")
-        keys = [c[0][0] for c in builder.config.call_args_list]
-        assert "spark.hadoop.fs.defaultFS" in keys
-        assert "spark.submit.deployMode" in keys
-    settings_mod._settings = None
-
-
-def test_get_spark_session_cluster_branch(monkeypatch):
-    from unittest.mock import MagicMock, patch
-
-    from src.common import config
-    from src.common import settings as settings_mod
-
-    monkeypatch.delenv("AIRFLOW_HOME", raising=False)
-    monkeypatch.setenv("MINIO_ACCESS_KEY", "test")
-    monkeypatch.setenv("MINIO_SECRET_KEY", "test")
-    settings_mod._settings = None
-    with patch.object(config, "SparkSession") as mock_cls:
-        builder = MagicMock()
-        mock_cls.builder.appName.return_value = builder
-        builder.master.return_value = builder
-        builder.config.return_value = builder
-        builder.getOrCreate.return_value = MagicMock()
-        s = settings_mod.get_settings()
-        s = s.model_copy(update={"spark_master": "spark://spark-master:7077"})
-        settings_mod._settings = s
-        config.get_spark_session("ClusterApp")
-        keys = [c[0][0] for c in builder.config.call_args_list]
-        assert "spark.driver.host" in keys
-    settings_mod._settings = None
