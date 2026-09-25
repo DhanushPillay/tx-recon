@@ -175,23 +175,29 @@ jobs:
 
       - name: Wait for services to initialize
         run: |
+          ready=0
           for i in $(seq 1 30); do
-            docker compose exec -T redpanda rpk cluster health 2>/dev/null && break
+            if docker compose exec -T redpanda rpk cluster health 2>/dev/null; then ready=1; break; fi
             sleep 2
           done
+          [ "$ready" = "1" ] || { echo "redpanda never became healthy"; docker compose ps; exit 1; }
           # 403 = bucket exists but needs auth; anything else = keep waiting.
           # `|| true`: curl recv-failure (exit 56) mid-boot must retry, not kill the step under set -e.
+          ready=0
           for i in $(seq 1 30); do
             code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9000/lakehouse/ || true)
-            [ "$code" = "403" ] && break
+            if [ "$code" = "403" ]; then ready=1; break; fi
             sleep 2
           done
+          [ "$ready" = "1" ] || { echo "minio lakehouse bucket never became reachable"; docker compose ps; exit 1; }
           # Trino is slow to boot (~2-4 min); /v1/info 200 = coordinator ready
+          ready=0
           for i in $(seq 1 60); do
             code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/v1/info || true)
-            [ "$code" = "200" ] && break
+            if [ "$code" = "200" ]; then ready=1; break; fi
             sleep 5
           done
+          [ "$ready" = "1" ] || { echo "trino coordinator never became ready"; docker compose ps; exit 1; }
 
       - name: Run Integration Tests
         env:
