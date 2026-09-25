@@ -4,6 +4,8 @@ __pycache__/
 *.pyo
 warehouse/
 data/
+!data/samples/
+!data/samples/*.csv
 .pytest_cache/
 .DS_Store
 .agents/
@@ -25,7 +27,6 @@ benchmarks/data/
 *.egg-info/
 tests/performance/scaling_curve.png
 tests/performance/results_iceberg.json
-tests/performance/results_pandera.json
 logs.txt
 .omo/
 .opencode/
