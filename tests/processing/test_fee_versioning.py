@@ -83,8 +83,6 @@ def test_backward_compat_single_card_file(tmp_path):
 
 def test_gap_date_uses_prior_card(tmp_path):
     """Gap dates price with the last-prior card (mirrors SQL _versioned_wrap)."""
-    import pytest
-
     cfg = {
         "version": "v2.0.0",
         "default": {"mdr_rate_bps": 150, "gst_on_mdr": 18.0, "tolerance_paise": 1},
