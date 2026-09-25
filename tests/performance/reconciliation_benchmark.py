@@ -382,10 +382,7 @@ def run_benchmark(scale=None, catalog="nessie", merge_mode="mor", cluster=False,
 
     # Single node: nessie -> results_iceberg_real.json (s3a).
     # CoW runs get their own file so they never overwrite the cited MoR record.
-    if merge_mode == "cow":
-        out_name = "results_iceberg_cow.json"
-    else:
-        out_name = "results_iceberg_real.json"
+    out_name = "results_iceberg_cow.json" if merge_mode == "cow" else "results_iceberg_real.json"
     out_path = os.path.join(os.path.dirname(__file__), out_name)
 
     def _dump():
