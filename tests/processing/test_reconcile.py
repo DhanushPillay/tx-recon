@@ -328,3 +328,40 @@ def test_maintain_tables_statement_order(monkeypatch):
         "rewrite_data_files",
         "rewrite_manifests",
     ] * 2  # once per table (webhooks + dlq)
+
+
+def test_fee_sql_gst_zero_branch():
+    """Zero-GST card emits THEN 0 (no DIV-by-zero-fee math in the MERGE)."""
+    from src.processing.reconcile import _build_single_card_fee_sql
+
+    card = {"default": {"mdr_rate_bps": 150, "gst_on_mdr": 0, "tolerance_paise": 1}}
+    _fee, gst, _tol = _build_single_card_fee_sql(
+        card, "t.amount_paise", "s.instrument_type", "s.merchant_id"
+    )
+    assert "THEN 0" in gst
+
+
+def test_maintain_tables_records_statement_failure(monkeypatch):
+    """A throwing statement is recorded (status failed + error), never raised."""
+    monkeypatch.setenv("MAINTAIN_RETAIN_LAST", "7")
+    with (
+        patch("src.common.config.get_spark_session") as mock_get_spark,
+        patch("src.common.settings.get_settings") as mock_get_settings,
+    ):
+        mock_get_settings.return_value = MagicMock(
+            webhook_table="nessie.db.webhooks", dlq_table="nessie.db.webhooks_dlq"
+        )
+        mock_spark = MagicMock()
+        mock_get_spark.return_value = mock_spark
+        ok = MagicMock(collect=MagicMock(return_value=[{"n": 5}]))
+
+        def _sql(q):
+            if "expire_snapshots" in q:
+                raise RuntimeError("boom")
+            return ok
+
+        mock_spark.sql.side_effect = _sql
+        out = maintain_tables()
+    assert out["nessie.db.webhooks"]["status"] == "failed"
+    assert out["nessie.db.webhooks"]["error"] == "statement: boom"
+    assert out["nessie.db.webhooks_dlq"]["status"] == "failed"
