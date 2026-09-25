@@ -13,6 +13,30 @@ from src.processing.reconcile import _qualified_table
 
 logger = logging.getLogger(__name__)
 
+# Target-table column orders (mirror ensure_webhook_table / DLQ DDL below).
+# The batch carries schema_id/event_time extras, so both writes name their
+# columns explicitly: positional INSERT * / append mis-align on any drift.
+_WEBHOOK_COLS = [
+    "transaction_id",
+    "amount_paise",
+    "gateway_status",
+    "timestamp_utc",
+    "merchant_id",
+    "processing_run_id",
+    "reconciliation_status",
+    "bank_ref_id",
+    "ingested_at",
+    "instrument_type",
+]
+_DLQ_COLS = [
+    "transaction_id",
+    "amount_paise",
+    "gateway_status",
+    "timestamp_utc",
+    "merchant_id",
+    "processing_run_id",
+]
+
 _WATERMARK_RE = re.compile(r"^(\d+)\s+(seconds?|minutes?|hours?|days?)$", re.IGNORECASE)
 
 
@@ -176,8 +200,13 @@ def run_ingestion():
             v.withColumn("reconciliation_status", col("gateway_status"))
             .withColumn("bank_ref_id", lit(None).cast("string"))
             .withColumn("ingested_at", current_timestamp())
+            .withColumn("instrument_type", lit(None).cast("string"))
         )
         v.createOrReplaceTempView("batch_valid")
+        _cols = ", ".join(_WEBHOOK_COLS)
+        _vals = ", ".join(f"s.{c}" for c in _WEBHOOK_COLS)
+        # Table via _qualified_table, columns are module constants:
+        # injection-safe by construction (file-level S608 ignore, like reconcile).
         spark.sql(
             f"MERGE INTO {webhook_table} t USING batch_valid s "
             "ON t.transaction_id = s.transaction_id "
@@ -186,10 +215,12 @@ def run_ingestion():
             "t.timestamp_utc = s.timestamp_utc, t.merchant_id = s.merchant_id, "
             "t.processing_run_id = s.processing_run_id, "
             "t.reconciliation_status = s.gateway_status, t.ingested_at = s.ingested_at "
-            "WHEN NOT MATCHED THEN INSERT *"
+            f"WHEN NOT MATCHED THEN INSERT ({_cols}) VALUES ({_vals})"
         )
-        inv = batch_df.filter(~F.coalesce(valid_cond, F.lit(False))).dropDuplicates(
-            ["transaction_id"]
+        inv = (
+            batch_df.filter(~F.coalesce(valid_cond, F.lit(False)))
+            .dropDuplicates(["transaction_id"])
+            .select(*_DLQ_COLS)
         )
         # Single count: isEmpty()+count() was two jobs per microbatch.
         n_inv = inv.count()
