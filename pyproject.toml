@@ -58,6 +58,7 @@ ignore = ["E501", "S101"]
 "scripts/replay_dlq.py" = ["S608"]
 "tests/**/test_fee_spark_golden.py" = ["S608"]
 "tests/**/test_schema_evolution.py" = ["S608"]
+"tests/**/test_idempotency.py" = ["S608"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
