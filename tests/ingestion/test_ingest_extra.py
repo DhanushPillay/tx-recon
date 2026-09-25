@@ -30,6 +30,15 @@ class _FakeCol:
     def isNotNull(self):
         return _FakeCol()
 
+    def cast(self, *a):
+        return _FakeCol()
+
+    def rlike(self, *a):
+        return _FakeCol()
+
+    def __or__(self, other):
+        return _FakeCol()
+
     def alias(self, *a):
         return _FakeCol()
 
@@ -111,6 +120,9 @@ def _patch_ingest(ing, mocker, spark):
     # Registry lookup is a live HTTP call: pin it, the drift logic is
     # exercised through _ids, not through the network.
     mocker.patch.object(ing, "_registry_schema_id", return_value="123")
+    # PAN gate is a live Spark collect: pin it clean here, refusal is
+    # covered by test_write_batch_pan_refuses_batch.
+    mocker.patch("src.validation.pan_guard.count_spark_pan_hits", return_value=0)
 
 
 def test_run_ingestion_wiring(mocker):
@@ -245,6 +257,46 @@ def test_write_batch_uses_explicit_columns(mocker):
         "merchant_id",
         "processing_run_id",
     ]
+
+
+def test_write_batch_pan_refuses_batch(mocker):
+    """PAN hits in the streaming batch: refuse before any MERGE/DLQ write."""
+    import src.ingestion.ingest_webhooks as ing
+
+    spark, parsed, ws, captured = MagicMock(), MagicMock(), MagicMock(), {}
+    _mock_stream(spark, parsed, ws, captured)
+    _patch_ingest(ing, mocker, spark)
+    mocker.patch("src.validation.pan_guard.count_spark_pan_hits", return_value=2)
+    ing.run_ingestion()
+    batch = MagicMock(name="batch")
+    batch.isEmpty.return_value = False
+    batch.cache.return_value = batch
+    mocker.patch.object(ing, "F", new=MagicMock())
+    with pytest.raises(RuntimeError, match="PAN detected"):
+        captured["fn"](batch, 0)
+    spark.sql.assert_not_called()
+    batch.unpersist.assert_called_once()
+
+
+def test_count_spark_pan_hits_luhn_verifies(mocker):
+    """Candidates from the JVM prefilter are Luhn-checked on the driver."""
+    from unittest.mock import MagicMock
+
+    from src.validation.pan_guard import count_spark_pan_hits
+
+    mocker.patch("pyspark.sql.functions.col", side_effect=lambda *a, **k: _FakeCol())
+
+    df = MagicMock()
+    df.columns = ["transaction_id", "merchant_id"]
+    cands = MagicMock()
+    df.filter.return_value = cands
+    cands.select.return_value.collect.return_value = [
+        ("4111111111111111", "m1"),
+        ("TXN000000001", "m2"),
+    ]
+    assert count_spark_pan_hits(df, ["transaction_id", "merchant_id"]) == 1
+    cands.select.return_value.collect.return_value = [("TXN000000001", "m2")]
+    assert count_spark_pan_hits(df, ["transaction_id", "merchant_id"]) == 0
 
 
 def _run_batch(ing, mocker, captured, *, empty=False, late_n=0, select_side_effect=None):
