@@ -410,13 +410,10 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
         WHERE s.transaction_id IS NOT NULL AND s.settled_amount_paise IS NOT NULL
     ) s
     ON t.transaction_id = s.transaction_id
-    WHEN MATCHED AND t.reconciliation_status = '{EXCEPTION_MISSING_WEBHOOK}' THEN
+    WHEN MATCHED AND (t.reconciliation_status = '{EXCEPTION_MISSING_WEBHOOK}' OR t.reconciliation_status = '{EXCEPTION_LATE_UNRESOLVED}') THEN
         UPDATE SET
             t.bank_ref_id = s.bank_ref_id,
             t.instrument_type = s.instrument_type
-    WHEN MATCHED AND t.reconciliation_status = '{EXCEPTION_LATE_UNRESOLVED}' THEN
-        UPDATE SET
-            t.bank_ref_id = t.bank_ref_id
     WHEN MATCHED AND t.amount_paise IS NULL THEN
         UPDATE SET
             t.reconciliation_status = '{EXCEPTION_FEE_MISMATCH}',
