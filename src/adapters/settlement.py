@@ -150,7 +150,12 @@ def _map_instrument_series(s: pd.Series) -> pd.Series:
 
 
 def _lc(df: pd.DataFrame) -> dict[str, str]:
-    return {c.strip().lower(): c for c in df.columns}
+    """Lowercased header lookup with separators normalized to underscores.
+
+    'Settlement Amount' / 'settlement-amount' / 'settlement_amount' all map
+    to 'settlement_amount', so every adapter looks keys up underscore-style.
+    """
+    return {re.sub(r"[\s\-]+", "_", c.strip().lower()): c for c in df.columns}
 
 
 def _col(df: pd.DataFrame, lc: dict[str, str], name: str) -> pd.Series:
@@ -176,13 +181,13 @@ def _date_with_fallback(
 ) -> pd.Series:
     out = _iso_col(df, lc, *primary)
     for fb in fallbacks:
-        if fb in lc and out.isna().all():
+        if fb in lc:
             out = out.fillna(_iso_col(df, lc, fb))
     return out
 
 
 def _merchant(df: pd.DataFrame, lc: dict[str, str]) -> pd.Series:
-    for cand in ("merchant_id", "merchant id", "account id"):
+    for cand in ("merchant_id", "account_id"):
         if cand in lc:
             s = df[lc[cand]].astype(str).str.strip()
             break
@@ -291,22 +296,22 @@ class RazorpayAdapter(BaseSettlementAdapter):
         lc = _lc(df)
 
         out = pd.DataFrame()
-        out["transaction_id"] = _col(df, lc, "payment id").astype(str).str.strip()
-        out["settlement_id"] = _col(df, lc, "settlement id").astype(str).str.strip()
+        out["transaction_id"] = _col(df, lc, "payment_id").astype(str).str.strip()
+        out["settlement_id"] = _col(df, lc, "settlement_id").astype(str).str.strip()
         out["bank_ref_id"] = (
-            _col(df, lc, "settlement utr").astype(str).str.strip().replace("nan", pd.NA)
+            _col(df, lc, "settlement_utr").astype(str).str.strip().replace("nan", pd.NA)
         )
         out["utr"] = out["bank_ref_id"]
         # Settlement Amount is INR decimal -> paise
-        out["settled_amount_paise"] = _paise_col(df, lc, "settlement amount")
+        out["settled_amount_paise"] = _paise_col(df, lc, "settlement_amount")
         # Fallback to Amount - Fee - Tax if settlement amount missing
         # gross
         out["gross_amount_paise"] = _paise_col(df, lc, "amount")
         out["fee_paise"] = _paise_col(df, lc, "fee")
         out["gst_paise"] = _paise_col(df, lc, "tax")
         # Dates: prefer Settlement Date, fallback Created At
-        out["settlement_date"] = _date_with_fallback(df, lc, ("settlement date",), ("created at",))
-        out["instrument_type"] = _map_instrument_series(_col(df, lc, "payment method"))
+        out["settlement_date"] = _date_with_fallback(df, lc, ("settlement_date",), ("created_at",))
+        out["instrument_type"] = _map_instrument_series(_col(df, lc, "payment_method"))
         # Merchant: Razorpay files are per-account; column may not exist
         out["merchant_id"] = _merchant(df, lc)
         out["currency"] = _currency(df, lc)
@@ -440,6 +445,11 @@ def normalize_settlement_df(
     return adapter.normalize(df), adapter.pg_name
 
 
+# Null spellings shared by both readers: the chunked (>256MB) and direct
+# paths must tokenize the same bytes identically (was: chunked passed none).
+_CSV_NA_VALUES = ["", "NA", "null", "NULL"]
+
+
 def load_settlement_csv(path: str, pg_hint: str | None = None) -> tuple[pd.DataFrame, str]:
     """Read CSV at path and normalize. Returns (canonical_df, pg_name)."""
     # sep=None sniffs comma vs semicolon PG dialects in one read.
@@ -449,7 +459,7 @@ def load_settlement_csv(path: str, pg_hint: str | None = None) -> tuple[pd.DataF
         sep=None,
         engine="python",
         keep_default_na=False,
-        na_values=["", "NA", "null", "NULL"],
+        na_values=_CSV_NA_VALUES,
     )
     # Replace empty strings with NA for normalization
     df = df.replace(r"^\s*$", pd.NA, regex=True)
