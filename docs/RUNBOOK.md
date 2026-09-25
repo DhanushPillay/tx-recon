@@ -139,7 +139,6 @@ Batch gauges are `batch_*` (scoped to this settlement's ids); `missing_within_la
 | `redelivery: ... sha256 matches known` | Same file re-dropped under new name | Expected: idempotent re-merge via file registry |
 | `AnalysisException: UNRESOLVED_COLUMN s.settlement_date` | Old `build_fee_case_sql` without `settlement_date_col` | Pull latest `main` |
 | `ImportError: cannot import name UTC` | Python 3.10 missing `datetime.UTC` | Upgrade to Python 3.11 or set `SPARK_PYTHON` to 3.11 |
-| Spark `UnknownHostException spark-master` | Hosts file missing entry | Add `127.0.0.1 spark-master` to hosts file |
 | `pyarrow` not found | PySpark CSV read needs Arrow | `pip install pyarrow` |
 | Integration tests hang on Ivy | First run downloading jars | Wait; subsequent runs use cached jars |
 
