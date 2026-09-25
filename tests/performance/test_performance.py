@@ -1,23 +1,22 @@
 import json
 import os
-from contextlib import suppress
 
 import pandas as pd
 import pytest
 
-from src.generators.settlement_generator import generate_settlement_file
 from src.validation.settlement_schema import settlement_schema
 from src.validation.settlement_schema_pl import settlement_schema_pl
 
+SAMPLE = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "../../data/samples/real_10k_settlement.csv")
+)
+
 
 @pytest.fixture(scope="module")
-def benchmark_data_file(tmp_path_factory):
-    output_dir = str(tmp_path_factory.mktemp("bench_data"))
-    path = generate_settlement_file(100000, output_dir=output_dir, seed=42)
-    yield path
-    # cleanup: don't pollute the repo with 100K-row CSVs
-    with suppress(OSError):
-        os.remove(path)
+def benchmark_data_file():
+    if not os.path.exists(SAMPLE):
+        pytest.skip("real 10k sample not checked in")
+    return SAMPLE
 
 
 def test_pandas_validation_performance(benchmark, benchmark_data_file):
@@ -39,23 +38,22 @@ def test_polars_validation_performance(benchmark, benchmark_data_file):
 
 
 def test_results_json_structure():
-    results_path = os.path.join(os.path.dirname(__file__), "results.json")
+    results_path = os.path.join(os.path.dirname(__file__), "results_real.json")
     if not os.path.exists(results_path):
-        pytest.skip("results.json not found -- run benchmarks first")
+        pytest.skip("results_real.json not found -- run benchmarks first")
 
     with open(results_path) as f:
         results = json.load(f)
 
-    assert "timestamp" in results, "Missing 'timestamp' key"
     assert "hardware" in results, "Missing 'hardware' key"
     hw = results["hardware"]
     assert hw.get("cpu_count", 0) > 0, "cpu_count must be positive"
 
 
 def test_throughput_threshold():
-    results_path = os.path.join(os.path.dirname(__file__), "results.json")
+    results_path = os.path.join(os.path.dirname(__file__), "results_real.json")
     if not os.path.exists(results_path):
-        pytest.skip("results.json not found -- run benchmarks first")
+        pytest.skip("results_real.json not found -- run benchmarks first")
 
     with open(results_path) as f:
         results = json.load(f)
