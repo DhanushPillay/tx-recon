@@ -147,7 +147,7 @@ Shipped: `fact_reconciliation` TABLE mart (migration-sourced), DLQ replay with m
 per-provider late SLA (`LATE_SLA_DAYS` → `config/providers.yaml` per-provider `late_sla_days` → `LATE_UNRESOLVED`),
 bucket(16) partitioning, WAP branches (`src/processing/wap.py`), bank third leg (MT940 via `mt-940` → `EXCEPTION_MISSING_BANK_STATEMENT`),
 PAN guard + file registry, `provider` canonical column, bucketed maintenance order (expire → orphan 3d → binpack → manifests),
-real-data scale proof (12.6M, 90.65% branch coverage). CI: `pip-audit` blocking with 90 ignores (all pip-only locals).
+real-data scale proof (12.6M, 91.7% coverage). CI: `pip-audit` blocking with 92 ignores (all pip-only locals).
 
 ## License
 
