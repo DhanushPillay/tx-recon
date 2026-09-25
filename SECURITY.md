@@ -45,7 +45,7 @@ assessment. Expect an initial response within 7 days.
   enter the pipeline. Amounts are USD magnitudes treated as notional paise
   (ledger stays INR-only via NULL currency). Provenance is recorded in this file.
 - Deps are range-pinned (`pyproject.toml`); reproduce exact builds with
-  `uv lock` and run `pip-audit`. CI gates blocking on `pip-audit` with 90 ignores (all pip-only locals — no prod service/network exposure; see `pyproject.toml: [tool.pip-audit]`). Re-audit on `uv lock` bumps; overrides live in `pyproject.toml`, not in docs.
+  `uv lock` and run `pip-audit`. CI gates blocking on `pip-audit` with 92 ignores (all pip-only locals — no prod service/network exposure; see `.github/workflows/ci.yml`). Re-audit on `uv lock` bumps; overrides live in `ci.yml`, not in docs.
 - Corrections are append-only with maker-checker (`src/processing/corrections.py: journal_correction` requires `reason` + `approved_by`; `scripts/replay_dlq.py` requires the same flags and journals the purge). No mutation without two eyes.
 - Webhook authenticity: producer signs `x-tx-sig: HMAC(transaction_id|amount)`
   when `WEBHOOK_SECRET` is set; broker trust comes from SASL
