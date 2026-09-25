@@ -146,6 +146,7 @@ def test_write_batch_merges_and_dlqs(mocker):
     late = MagicMock(name="late")
     late.count.return_value = 0
     batch.isEmpty.return_value = False
+    batch.cache.return_value = batch
     # _write_batch filters 3x: late-data count, valid split, invalid split
     batch.filter.side_effect = [late, valid, invalid]
     mocker.patch.object(ing, "lit", return_value=MagicMock())
@@ -170,6 +171,7 @@ def test_write_batch_warns_on_schema_id_drift(mocker, caplog):
     ing.run_ingestion()
     batch = MagicMock(name="batch")
     batch.isEmpty.return_value = False
+    batch.cache.return_value = batch
     batch.select.return_value.distinct.return_value.collect.return_value = [{"schema_id": "999"}]
     valid = MagicMock(name="valid")
     valid.dropDuplicates.return_value = valid
@@ -193,6 +195,7 @@ def _run_batch(ing, mocker, captured, *, empty=False, late_n=0, select_side_effe
     """Drive the captured foreachBatch fn with a canned batch."""
     batch = MagicMock(name="batch")
     batch.isEmpty.return_value = empty
+    batch.cache.return_value = batch
     if select_side_effect is not None:
         batch.select.side_effect = select_side_effect
     else:
@@ -297,6 +300,7 @@ def test_write_batch_merge_failure_propagates(mocker):
     ing.run_ingestion()
     batch = MagicMock(name="batch")
     batch.isEmpty.return_value = False
+    batch.cache.return_value = batch
     batch.select.return_value.distinct.return_value.collect.return_value = [{"schema_id": "123"}]
     valid = MagicMock(name="valid")
     valid.dropDuplicates.return_value = valid
