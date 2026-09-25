@@ -141,14 +141,13 @@ class FeeEngine:
             # the engines cannot diverge.
             ordered = sorted(
                 enumerate(history),
-                key=lambda t: _parse_iso_date(str(t[1].get("effective_from", "1970-01-01")))
-                or date.min,
+                key=lambda t: (
+                    _parse_iso_date(str(t[1].get("effective_from", "1970-01-01"))) or date.min
+                ),
             )
             for (prev_idx, prev), (next_idx, nxt) in zip(ordered, ordered[1:], strict=False):
                 prev_to = (
-                    _parse_iso_date(str(prev["effective_to"]))
-                    if prev.get("effective_to")
-                    else None
+                    _parse_iso_date(str(prev["effective_to"])) if prev.get("effective_to") else None
                 )
                 next_from = _parse_iso_date(str(nxt.get("effective_from", "1970-01-01")))
                 if prev_to is not None and next_from is not None and next_from <= prev_to:
