@@ -44,6 +44,27 @@ def test_reconciliation_is_idempotent():
         ) USING iceberg"""
     )
 
+    # Seed matching webhooks: the seed settlements carry NULL instrument, so
+    # the MERGE prices them at the default 150bps/18% card. These amounts net
+    # to the settled paise exactly (FeeEngine v1 == v2 defaults). Without
+    # webhooks every row lands MISSING_WEBHOOK, batch_MATCHED is 0, and the
+    # strict match-rate SLO (on by default) fails the batch before the
+    # idempotency comparison below can run.
+    spark.sql(
+        f"""INSERT INTO {settings.webhook_table} (
+            transaction_id, amount_paise, gateway_status, timestamp_utc,
+            merchant_id, processing_run_id, reconciliation_status,
+            bank_ref_id, ingested_at, instrument_type
+        ) VALUES
+        ('tx_idem_001', 101802, 'SUCCESS', '1999-01-01T00:00:00', 'UNKNOWN',
+         'idem-seed', 'PENDING_SETTLEMENT', NULL, current_timestamp(), 'UPI'),
+        ('tx_idem_002', 99399, 'SUCCESS', '1999-01-01T00:00:00', 'UNKNOWN',
+         'idem-seed', 'PENDING_SETTLEMENT', NULL, current_timestamp(), 'UPI'),
+        ('tx_idem_003', 50902, 'SUCCESS', '1999-01-01T00:00:00', 'UNKNOWN',
+         'idem-seed', 'PENDING_SETTLEMENT', NULL, current_timestamp(), 'UPI')
+        """
+    )
+
     # Run once
     data_dir = os.path.join(settings.project_root, "data")
     os.makedirs(data_dir, exist_ok=True)
