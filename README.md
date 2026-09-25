@@ -62,15 +62,7 @@ flowchart LR
     I --> T[Trino / Metabase]
 ```
 
-Run modes (0$): `SPARK_MODE=local` (default, single node) · `SPARK_MODE=cluster` (spark:// 1+2) · `SPARK_MODE=yarn` (Hadoop YARN+HDFS, see `docs/HADOOP.md` + `docker-compose.hadoop.yml`). Terraform `infra/terraform/local` (LocalStack) proves cloud IaC without bill; same code deploys to `infra/terraform` (S3+Glue, KMS, lifecycle).
-
-3-way overlay examples:
-```
-docker compose up -d                                   # base (MinIO/Nessie/Redpanda/Trino)
-docker compose -f docker-compose.yml -f docker-compose.spark.yml up -d   # + standalone 2 workers
-docker compose -f docker-compose.yml -f docker-compose.hadoop.yml up -d  # + Hadoop YARN 2 NMs (yarn mode)
-SPARK_MODE=yarn bash scripts/spark_submit_yarn.sh client src/pipeline.py
-```
+Single node (0$): `SPARK_MODE=local` (`local[*]`, host driver + MinIO/Nessie/Redpanda/Trino via `docker compose up -d`). Terraform `infra/terraform/local` (LocalStack) proves cloud IaC without bill; same code deploys to `infra/terraform` (S3+Glue, KMS, lifecycle).
 
 Three legs converge on one table. Streaming ingests webhooks (bucket(16, transaction_id) to co-locate MERGE joins). Batch validates settlements (PAN guard + content-hash registry → WAP branch) and merges by provider batch, not calendar date. The bank leg (MT940 via `mt-940`) provides independent evidence for MATCHED rows — a gateway-consistent error is invisible without it. All merges are idempotent so re-runs converge.
 
