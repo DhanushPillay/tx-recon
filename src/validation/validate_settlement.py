@@ -84,9 +84,17 @@ def _validate_large_file(path: str, normalize_fn, chunksize: int = 100_000) -> t
     """Stream a large settlement CSV in chunks; returns (canonical_df, pg_name)."""
     import pandas as _pd
 
+    from src.adapters.settlement import _CSV_NA_VALUES
+
     _parts, _pg = [], "generic"
     for _chunk in _pd.read_csv(
-        path, dtype=str, sep=None, engine="python", keep_default_na=False, chunksize=chunksize
+        path,
+        dtype=str,
+        sep=None,
+        engine="python",
+        keep_default_na=False,
+        na_values=_CSV_NA_VALUES,
+        chunksize=chunksize,
     ):
         _chunk = _chunk.replace(r"^\s*$", _pd.NA, regex=True)
         _norm, _pg = normalize_fn(_chunk)
