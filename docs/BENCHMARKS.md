@@ -70,10 +70,10 @@ Compares validation paths at the batch boundary on the same in-memory DataFrame.
 
 ## Iceberg MERGE
 
-Measures the `MERGE INTO nessie.db.webhooks` (and `nessie_hdfs.db.webhooks` for YARN) across 1M/5M/12M real rows (10k sample smoke). Iceberg 1.11.0 / Nessie 0.107.9 / Spark 3.5.1 JDK 17 / py 3.11, median of 4 repeats. See `HADOOP.md` for YARN wiring.
+Measures the `MERGE INTO nessie.db.webhooks` across 1M/5M/12M real rows (10k sample smoke). Iceberg 1.11.0 / Nessie 0.107.9 / Spark 3.5.1 JDK 17 / py 3.11, median of 4 repeats.
 
-- **Script:** `tests/performance/reconciliation_benchmark.py --catalog nessie|nessie_hdfs`, orchestrated by `run_benchmarks.py --suite iceberg`
-- **Method:** real thiru hooks + settlements (dedup via `WINDOW row_number()` semi-joined to target ids), fee CASE from live `FeeEngine.get_rate`, `MERGE ... ABS((amount - fee - gst) - settled) <= tolerance`. `rows_per_sec = (matched + mismatched) / median_write_sec`, `healthy = rows_per_sec > 0 and matched > 0`, plus a fail-closed gate: `match_rate < 85%` raises. Timers use `perf_counter` (monotonic). Files via `files_before/files_after`. `--catalog` selects `s3://lakehouse/warehouse` (S3FileIO) vs `hdfs://namenode:8020/warehouse` (HadoopFileIO). `--hooks-csv` overrides the input (default: full real file, 10k sample fallback).
+- **Script:** `tests/performance/reconciliation_benchmark.py --catalog nessie`, orchestrated by `run_benchmarks.py --suite iceberg`
+- **Method:** real thiru hooks + settlements (dedup via `WINDOW row_number()` semi-joined to target ids), fee CASE from live `FeeEngine.get_rate`, `MERGE ... ABS((amount - fee - gst) - settled) <= tolerance`. `rows_per_sec = (matched + mismatched) / median_write_sec`, `healthy = rows_per_sec > 0 and matched > 0`, plus a fail-closed gate: `match_rate < 85%` raises. Timers use `perf_counter` (monotonic). Files via `files_before/files_after`. `s3://lakehouse/warehouse` (S3FileIO). `--hooks-csv` overrides the input (default: full real file, 10k sample fallback).
 - **Repro (single-node):**
   ```bash
   docker compose up -d minio nessie
@@ -99,43 +99,6 @@ Measures the `MERGE INTO nessie.db.webhooks` (and `nessie_hdfs.db.webhooks` for 
 2. **Write tuning:** `merge-on-read` for data and deletes (rewrites become delete files instead of full rewrites), `snappy` instead of `zstd` (cheaper encode on this host), 64MB target files, `hash` distribution, shuffle partitions 400 -> 32, AQE partition coalescing, settlement side persisted + warmed so the 4 repeats don't recompute the LIMIT + fee math.
 3. **Partition-count fix (found by the re-run, not assumed).** `761c37c` raised table-build partitions 4 -> 8 for scales >= 500k, intending bigger files — but tables are built in 50k-row batches, so it doubled file count instead (500k: 40 -> 80 files). The fresh 500k run regressed 20-46% vs baseline, which caught it. Reverted to 4 partitions; with file layout held equal the real optimizations show. Lesson recorded: partition count and batch size multiply — tune total files, not partitions alone.
 4. **Read the pattern honestly:** 10%-update MERGEs gained 17-71% (scan-dominated: they read the whole table but rewrite little, so MoR + cheaper CPU wins big). 50%-update MERGEs are flat (write-dominated: rewriting half the table costs what it costs). The tuning moved the bottleneck, it didn't remove writes.
-
-## YARN (Hadoop) bench — measured
-
-Same suite on `hdfs://namenode:8020/warehouse` via `nessie_hdfs` (HDFS proof). Driver runs inside `tx-recon_default` (`tx-recon-driver:bench`, Python 3.11.16 Linux, JDK 17) because Windows host driver cannot fetch executor blocks over Docker Desktop bridge (host.docker.internal callback).
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.hadoop.yml up -d --wait
-bash scripts/hdfs_init.sh
-# single command per scale (driver inside network):
-docker run --rm --platform linux/amd64 --network tx-recon_default -v "E:\Personal Projects\tx-recon:/opt/tx-recon" tx-recon-driver:bench bash -c 'export PYTHONPATH=/opt/tx-recon; export SPARK_MODE=yarn; python /opt/tx-recon/tests/performance/reconciliation_benchmark.py --scale 100000 --catalog nessie_hdfs'
-# or helpers: bash scripts/driver_bench.sh       # 100k
-#            bash scripts/driver_bench_scale.sh  # 500k 1M (same, pip baked)
-```
-
-- **Measured result YARN (`results_iceberg_yarn_hdfs.json`, SPARK_MODE=yarn, 14 cores, 7af266c58991, 7-service Hadoop 4096MB/4vcores per NM):**
-
-  | Scale | Update | Median write | rows/sec | matched | mismatched | files | healthy |
-  | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-  | 100k | 10% | 2.09s | 4,776 | 10,000 | 0 | 8 -> 1 | true |
-  | 100k | 50% | 2.11s | 23,710 | 50,000 | 0 | 1 -> 1 | true |
-  | 500k | 10% | 3.59s | 13,911 | 50,000 | 0 | 40 -> 1 | true |
-  | 500k | 50% | 5.71s | 43,810 | 250,000 | 0 | 1 -> 4 | true |
-  | 1M | 10% | 4.74s | 21,114 | 100,000 | 0 | 80 -> 1 | true |
-  | 1M | 50% | 7.02s | 71,207 | 500,000 | 0 | 1 -> 4 | true |
-
-- **Comparison single vs YARN (median write, same 4 repeats, same code):**
-
-  | Scale | Update | Single (s) | YARN (s) | Δ | Single rows/s | YARN rows/s |
-  | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-  | 100k | 10% | 0.95 | 2.09 | +120% YARN slower | 10,498 | 4,776 |
-  | 100k | 50% | 0.84 | 2.11 | +151% | 59,381 | 23,710 |
-  | 500k | 10% | 2.04 | 3.59 | +76% | 24,510 | 13,911 |
-  | 500k | 50% | 1.96 | 5.71 | +191% | 127,551 | 43,810 |
-  | 1M | 10% | 2.66 | 4.74 | +78% | 37,647 | 21,114 |
-  | 1M | 50% | 3.07 | 7.02 | +129% | 162,856 | 71,207 |
-
-  YARN slower on small scales due to staging/YARN AM startup (~1s) and constrained NM (4096MB/4vcores, driver 5.61GB image vs 15.8GB host, files `1->4` vs `1->20/13->28` due to fewer tasks). Proves true distributed scheduling on `hdfs://` (2 NMs, HDFS Live 1/2 DNs, YARN UI :8088, History :19888) — not raw speed. Source JSONs are `results_iceberg.json` and `results_iceberg_yarn_hdfs.json`.
 
 ## Real-data benchmarks ([thiru1711/Financial_Transactions](https://huggingface.co/datasets/thiru1711/Financial_Transactions))
 
