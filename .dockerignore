@@ -1,0 +1,16 @@
+# Keep the Airflow image build context small and hermetic: code only,
+# never local state, secrets, or the lake.
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+data/
+warehouse/
+.env
+.env.local
+.git/
+airflow/
+coverage.xml
+htmlcov/
+.benchmarks/
+.pytest_cache/
