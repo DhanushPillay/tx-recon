@@ -7,6 +7,14 @@ RUN apt-get update \
   && apt-get autoremove -yqq --purge \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
+# Ship the code the image must import: pip install alone only carries
+# package metadata. dags/ rides along so the scheduler sees the DAG
+# (dags_folder wiring itself is a mount/compose concern).
+# Installed as airflow (the image hard-blocks pip-as-root); --chown so the
+# build can write egg-info next to src/. Runtime stays airflow.
+COPY --chown=airflow:root pyproject.toml /opt/airflow/pyproject.toml
+COPY --chown=airflow:root src/ /opt/airflow/src/
+COPY --chown=airflow:root config/ /opt/airflow/config/
+COPY --chown=airflow:root dags/ /opt/airflow/dags/
 USER airflow
-COPY pyproject.toml /opt/airflow/pyproject.toml
 RUN pip install --no-cache-dir /opt/airflow
