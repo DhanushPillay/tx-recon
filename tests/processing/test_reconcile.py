@@ -16,7 +16,13 @@ from src.processing.reconcile import (
 
 
 def _run_with_collects(
-    batch_collect, table_collect, late_n=0, dlq_n=0, late_total_n=0, strict_slo=False
+    batch_collect,
+    table_collect,
+    late_n=0,
+    dlq_n=0,
+    late_total_n=0,
+    strict_slo=False,
+    lag_n=0,
 ):
     """Drive run_reconciliation with a mocked Spark; returns (counts, mock_spark)."""
     with (
@@ -57,8 +63,8 @@ def _run_with_collects(
             MagicMock(collect=MagicMock(return_value=table_collect)),  # table-level
             MagicMock(collect=MagicMock(return_value=batch_collect)),  # batch-scoped
             MagicMock(collect=MagicMock(return_value=[{"provider": "generic"}])),
-            MagicMock(collect=MagicMock(return_value=[{"n": late_n}])),  # late-SLA side count
-            MagicMock(collect=MagicMock(return_value=[{"n": 0}])),  # within-lag gauge
+            # Late + within-lag gauges share one conditional-aggregation job.
+            MagicMock(collect=MagicMock(return_value=[{"late_n": late_n, "lag_n": lag_n}])),
         ]
         if late_n:
             _side.append(MagicMock())  # late-SLA MERGE
@@ -172,8 +178,9 @@ def test_run_reconciliation_wiring(
         MagicMock(collect=MagicMock(return_value=table_collect)),  # table-level
         MagicMock(collect=MagicMock(return_value=batch_collect)),  # batch-scoped
         MagicMock(collect=MagicMock(return_value=[{"provider": "generic"}])),
-        MagicMock(collect=MagicMock(return_value=[{"n": 2}])),  # late-SLA side count
-        MagicMock(collect=MagicMock(return_value=[{"n": 1}])),  # within-lag gauge
+        MagicMock(
+            collect=MagicMock(return_value=[{"late_n": 2, "lag_n": 1}])
+        ),  # late+lag gauges, one job
         MagicMock(),  # late-SLA MERGE (late_n=2 > 0)
         MagicMock(
             collect=MagicMock(return_value=[{"k": "dlq", "n": 1}, {"k": "late", "n": 2}])
