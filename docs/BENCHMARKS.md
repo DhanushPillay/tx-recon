@@ -13,38 +13,37 @@ Services: Redpanda, MinIO, Nessie via Docker Compose; Hadoop 3.3.6 (namenode+2NM
 Spark: 3.5.1, JDK 17 (host 17.0.13 Temurin, NMs 17.0.15 openjdk)
 ```
 
-Each suite writes a per-suite file (`results_accuracy.json`, `results_pandera.json`, `results_iceberg.json`). Real-data runs write separate files (`results_iceberg_real.json`, `results_pandera_real.json`, `results_kafka_real.json`, combined `results_real.json`) so synthetic baselines are never overwritten. The orchestrator `tests/performance/run_benchmarks.py` aggregates them into `tests/performance/results.json` (`--real` writes `results_real.json`). Treat the per-suite files as the cited source; `results.json` is a convenience copy.
+Each suite writes a per-suite file (`results_accuracy.json`, `results_pandera_real.json`, `results_iceberg_real.json`, combined `results_real.json`). All suites are real-data only: the orchestrator `tests/performance/run_benchmarks.py` runs kafka replay, pandera validation, and Iceberg MERGE against the thiru CSVs (10k sample fallback when the full files are absent). Treat the per-suite files as the cited source; `results_real.json` is a convenience copy.
 
-Last-verified status (18 Sep 2026): the figures below were measured 13-16 Sep 2026 on Python 3.11. The per-suite JSON files are gitignored, so this prose is the record. A same-host spot-check on 18 Sep 2026 under Python 3.10 (within the supported `>=3.10,<3.13` range) reproduced the tuned 100k MERGE rows (10%: 0.87s; 50%: 0.94s, broadcast join); 500k/1M re-runs are pending, so treat all figures as last-known, not current.
+Last-verified status (25 Sep 2026): the figures below were measured 25 Sep 2026 on Python 3.11 (full run: unit tests, accuracy gate, kafka replay, pandera validation, MERGE 1M/5M/12M, regression gate, integration). The per-suite JSON files are gitignored, so this prose is the record.
 
-## Accuracy harness (sealed key)
+## Accuracy gate (real data)
 
 Correctness first. A fast matcher that categorizes records incorrectly corrupts the ledger.
 
 - **Script:** `tests/performance/recon_accuracy.py`
-- **Gate:** `tests/performance/test_recon_accuracy.py` requires `precision == recall == F1 == 1.0`, `FP == 0`, `fanout == 1`.
-- **Method:** Synthetic webhooks and settlements with a fixed break mix: 70% EXACT, 10% ROUNDING, 5% FEE_MISMATCH, 5% ORPHAN, 5% DUPLICATE, 2.5% OUT_OF_ORDER, 2.5% LATE_CORRECTION. Dedup by `seq` mirrors the `WINDOW row_number() ORDER BY settlement_date DESC` in `reconcile.py`. The answer key (`_expected_net_raw`) reads `config/fee_rates.yaml` directly and never imports `FeeEngine`.
-- **Run:** `python tests/performance/quick_perf.py` or `make demo` — 2000 rows x 3 seeds (7, 42, 123) — or `pytest tests/performance/test_recon_accuracy.py -v`.
-- **Result:** `min_f1=1.0`, `max_false_positives=0`, per-class recall `1.0` across `MATCHED / FEE_MISMATCH / MISSING_WEBHOOK`. Source: `tests/performance/results_accuracy.json`.
+- **Gate:** `tests/performance/test_recon_accuracy.py` requires `match_rate >= 85%` on the checked-in 10k real sample (`data/samples/real_10k_*.csv`).
+- **Method:** Real hooks + settlements joined through `FeeEngine.check_match` (dedup latest-wins mirrors the `WINDOW row_number() ORDER BY settlement_date DESC` in `reconcile.py`). No synthetic breaks, no answer key: the loader mix targets ~90% matched, so a drop below 85% means fee miscalibration or drift.
+- **Run:** `python tests/performance/quick_perf.py` or `make accuracy` — or `pytest tests/performance/test_recon_accuracy.py -v`.
+- **Result:** `match_rate=94.6%` (8813 matched / 500 mismatched / 492 orphans on 9805 settlement ids). Source: `tests/performance/results_accuracy.json`.
 
 ## Kafka producer
 
 Measures sustained throughput and serial flush latency against a local Redpanda.
 
 - **Scripts:** `tests/performance/kafka_producer_benchmark.py` (module), `tests/performance/run_benchmarks.py --suite kafka`
-- **Config:** `bootstrap.servers=localhost:19092`, `acks=all`, `compression=lz4`, `linger.ms=20`, `batch 131072`, `queue 2M`, `record_size=1024` (real Avro is about 150 bytes; 1KB pads with filler `x * 904`). `WARMUP_MESSAGES=5000`, `LATENCY_SAMPLE=1000`.
+- **Config:** `bootstrap.servers=localhost:19092`, `acks=all`, `compression=lz4`, `linger.ms=20`, `batch 131072`, `queue 2M`, `record_size=real` (real Avro rows ~150 bytes). `WARMUP_MESSAGES=5000`, `LATENCY_SAMPLE=1000`.
 - **Throughput:** async produce of `count` messages then `flush`; elapsed via `perf_counter`.
 - **Latency:** serial `produce + flush` per message; p50/p95/p99 from sorted latencies.
 - **Repro:**
   ```bash
   docker compose up -d redpanda
-  python tests/performance/kafka_producer_benchmark.py --count 5000 --acks all --compression lz4
-  python tests/performance/run_benchmarks.py --suite kafka --kafka-count 5000 --kafka-acks all
+  python tests/performance/run_benchmarks.py --suite kafka
   ```
-- **Measured result (Redpanda `localhost:19092`, last verified 13 Sep 2026; an 18 Sep 2026 same-host spot-check measured ~107k msgs/sec, full re-run pending):**
-  - Throughput: **131,887 msgs/sec** (async, 5000 msgs after 5000 warmup)
-  - Ack latency (serial flush, single sample of 1000): **p50 0.73ms / p95 0.94ms / p99 1.31ms**, mean 0.77ms, max 10.06ms
-  - Config: `acks=all`, `lz4`, 1KB records. Broker, tuning, and `WARMUP` are part of the claim.
+- **Measured result (Redpanda `localhost:19092`, 25 Sep 2026, 1M real rows):**
+  - Throughput: **225,123 msgs/sec** (async, 1M msgs after 5000 warmup)
+  - Ack latency (serial flush, single sample of 1000): **p50 0.65ms / p95 1.11ms / p99 3.97ms**, mean 0.78ms, max 9.15ms
+  - Config: `acks=all`, `lz4`, real records. Broker, tuning, and `WARMUP` are part of the claim.
 
 ## Validation
 
@@ -52,57 +51,47 @@ Compares validation paths at the batch boundary on the same in-memory DataFrame.
 
 - **Script:** `tests/performance/pandas_validation_benchmark.py`
 - **Paths:** Pandera (via `settlement_schema`), manual pandas checks, Polars (via `settlement_schema_pl`), and a row-loop Pydantic baseline.
-- **Method:** `generate_settlement_file` -> `pd.read_csv` once -> each path validates the same `DataFrame` in memory (Polars also validates in memory; the reported time excludes the single shared CSV load). `rows` in `[10_000, 100_000, 1_000_000, 10_000_000]`, `iterations=7`, seeded.
+- **Method:** real settlement CSV -> `pd.read_csv` once -> each path validates the same `DataFrame` in memory (Polars also validates in memory; the reported time excludes the single shared CSV load). Full file when present, 10k sample fallback; `iterations=7`.
 - **Repro:**
   ```bash
   python tests/performance/pandas_validation_benchmark.py
-  # writes tests/performance/results_pandera.json
+  # writes tests/performance/results_pandera_real.json
   ```
-- **Measured result (`results_pandera.json`, 7 iterations, seed 7, last verified 13 Sep 2026; an 18 Sep 2026 spot-check matched or beat these at ≤1M rows but measured ~62% lower manual-pandas throughput at 10M rows on this host, full re-run pending):**
+- **Measured result (`results_pandera_real.json`, 7 iterations, 25 Sep 2026, full 12.9M-row file):**
 
-  | Rows | Manual pandas | Polars | Pandera | Pydantic |
-  | :--- | :--- | :--- | :--- | :--- |
-  | 10,000 | 8.4M rows/sec (1.19ms, std 0.14) | 4.4M rows/sec (2.25ms, std 0.85) | 439K rows/sec (22.77ms, std 43.51) | 371K rows/sec (26.95ms) |
-  | 100,000 | 10.4M rows/sec (9.55ms, std 0.55) | 15.8M rows/sec (6.31ms, std 1.28) | 2.57M rows/sec (38.82ms, std 2.25) | 415K rows/sec (240.87ms) |
-  | 1,000,000 | 7.9M rows/sec (125.32ms, std 3.75) | 14.7M rows/sec (67.58ms, std 9.28) | 2.66M rows/sec (375.64ms, std 3.54) | 412K rows/sec (2425.59ms) |
-  | 10,000,000 | 2.6M rows/sec (3832.9ms, std 52.09) | 9.0M rows/sec (1108.64ms, std 103.43) | 1.53M rows/sec (6522.49ms, std 132.34) | 369K rows/sec (27105.93ms) |
+  | Path | rows/sec | mean |
+  | :--- | :--- | :--- |
+  | Manual pandas | 3.34M rows/sec | 3779.09ms |
+  | Polars | 9.43M rows/sec | 1339.65ms |
+  | Pandera | 763K rows/sec | 16567.25ms |
+  | Pydantic (row loop) | 178K rows/sec | 71120.27ms |
 
-  Manual pandas leads below 100k rows due to lower overhead. Polars leads at 100k and above. Pandera sustains 1.5-2.66M rows/sec at 100k+ scales; the declarative cost is covered at the batch boundary. The old footnote about Polars "cold-start overhead on the first run" no longer applies — the current run validates from a shared in-memory frame.
+  Polars leads; manual pandas is second on lower overhead. Pandera sustains 763K rows/sec on the full file; the declarative cost is covered at the batch boundary. Pydantic is the row-at-a-time reference baseline, not the validation path.
 
 ## Iceberg MERGE
 
-Measures the `MERGE INTO nessie.db.webhooks` (and `nessie_hdfs.db.webhooks` for YARN) across 100k/500k/1M. Iceberg 1.11.0 / Nessie 0.107.9 / Spark 3.5.1 JDK 17 / py 3.11, median of 4 repeats. See `HADOOP.md` for YARN wiring.
+Measures the `MERGE INTO nessie.db.webhooks` (and `nessie_hdfs.db.webhooks` for YARN) across 1M/5M/12M real rows (10k sample smoke). Iceberg 1.11.0 / Nessie 0.107.9 / Spark 3.5.1 JDK 17 / py 3.11, median of 4 repeats. See `HADOOP.md` for YARN wiring.
 
 - **Script:** `tests/performance/reconciliation_benchmark.py --catalog nessie|nessie_hdfs`, orchestrated by `run_benchmarks.py --suite iceberg`
-- **Method:** seeded synthetic webhooks and settlements, dedup via `WINDOW row_number()`, fee CASE from live `FeeEngine.get_rate`, `MERGE ... ABS((amount - fee - gst) - settled) <= 1`. `rows_per_sec = (matched + mismatched) / median_write_sec`, `healthy = rows_per_sec > 0 and matched > 0`. Timers use `perf_counter` (monotonic). Files via `files_before/files_after`. `--catalog` selects `s3://lakehouse/warehouse` (S3FileIO) vs `hdfs://namenode:8020/warehouse` (HadoopFileIO). No 2M/5M runs yet; do not extrapolate YARN wins beyond 1M.
+- **Method:** real thiru hooks + settlements (dedup via `WINDOW row_number()` semi-joined to target ids), fee CASE from live `FeeEngine.get_rate`, `MERGE ... ABS((amount - fee - gst) - settled) <= tolerance`. `rows_per_sec = (matched + mismatched) / median_write_sec`, `healthy = rows_per_sec > 0 and matched > 0`, plus a fail-closed gate: `match_rate < 85%` raises. Timers use `perf_counter` (monotonic). Files via `files_before/files_after`. `--catalog` selects `s3://lakehouse/warehouse` (S3FileIO) vs `hdfs://namenode:8020/warehouse` (HadoopFileIO). `--hooks-csv` overrides the input (default: full real file, 10k sample fallback).
 - **Repro (single-node):**
   ```bash
   docker compose up -d minio nessie
-  SPARK_MODE=local .venv/Scripts/python tests/performance/reconciliation_benchmark.py --scale 100000 --catalog nessie
-  SPARK_MODE=local .venv/Scripts/python tests/performance/reconciliation_benchmark.py --scale 500000 --catalog nessie
-  SPARK_MODE=local .venv/Scripts/python tests/performance/reconciliation_benchmark.py --scale 1000000 --catalog nessie
+  SPARK_MODE=local .venv/Scripts/python tests/performance/reconciliation_benchmark.py --scale 10000 --catalog nessie
   ```
-- **Measured result single-node, baseline (`results_iceberg.json`, SPARK_MODE=local, 28 cores, d2e5f67d5861, 15 Sep 2026, pre-tuning):**
+  Full scales (`--scale 1000000|5000000|12000000`) need `data/real_thiru_full_*.csv` plus an 8g driver at 12M.
+- **Measured result single-node, real data (`results_iceberg_real.json`, 8g bench driver via `BENCH_SHUFFLE=1`, 32 partitions, 128 shuffles ≥5M, 28 cores, d2e5f67d5861, 25 Sep 2026):**
 
-  | Scale | Update | Median write | rows/sec | matched | mismatched | files | healthy |
+  | Scale | Update | Median write | rows/sec | matched | mismatched | match rate | healthy |
   | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-  | 100k | 10% | 0.95s | 10,498 | 10,000 | 0 | 8 -> 1 | true |
-  | 100k | 50% | 0.84s | 59,381 | 50,000 | 0 | 1 -> 1 | true |
-  | 500k | 10% | 2.04s | 24,510 | 50,000 | 0 | 40 -> 1 | true |
-  | 500k | 50% | 1.96s | 127,551 | 250,000 | 0 | 1 -> 20 | true |
-  | 1M | 10% | 2.66s | 37,647 | 100,000 | 0 | 80 -> 28 | true |
-  | 1M | 50% | 3.07s | 162,856 | 500,000 | 0 | 13 -> 28 | true |
+  | 1M | 10% | 6.0s | 16,667 | 94,671 | 5,329 | 94.67% | true |
+  | 1M | 50% | 13.25s | 37,736 | 473,293 | 26,707 | 94.66% | true |
+  | 5M | 10% | 6.83s | 73,206 | 473,293 | 26,707 | 94.66% | true |
+  | 5M | 50% | 11.61s | 215,332 | 2,367,662 | 132,338 | 94.71% | true |
+  | 12M | 10% | 10.32s | 116,335 | 1,136,314 | 63,686 | 94.69% | true |
+  | 12M | 50% | 56.73s | 105,774 | 5,682,415 | 317,585 | 94.71% | true |
 
-- **Measured result single-node, tuned (same machine/commit `9b61903` tree, 16 Sep 2026, includes `761c37c` + partition fix):**
-
-  | Scale | Update | Median write | rows/sec | matched | mismatched | files | healthy |
-  | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-  | 100k | 10% | 0.81s | 12,337 | 10,000 | 0 | 8 -> 4 | true |
-  | 100k | 50% | 0.87s | 57,582 | 50,000 | 0 | 2 -> 5 | true |
-  | 500k | 10% | 1.19s | 42,074 | 50,000 | 0 | 40 -> 9 | true |
-  | 500k | 50% | 1.93s | 129,766 | 250,000 | 0 | 6 -> 4 | true |
-  | 1M | 10% | 1.66s | 60,268 | 100,000 | 0 | 80 -> 12 | true |
-  | 1M | 50% | 3.05s | 163,747 | 500,000 | 0 | 9 -> 5 | true |
+  Match rate is stable at ~94.7% across all scales (tx-ordered bench slices sample the loader mix unevenly; the gate is ≥85%). Earlier synthetic baselines (100k–1M, 13–16 Sep) are archived in git history (`results_iceberg.baseline.json`); real-data runs never overwrite them. Operational notes from this run: Spark needs an explicit `PYSPARK_PYTHON` (venv interpreter) on this host, the default 2g driver OOMs at 5M+ (use `BENCH_SHUFFLE=1` for the 8g bench driver), and the 12M warmup needs host RAM headroom (stop idle services first).
 
 ### What changed between the two single-node runs, and why
 
@@ -154,24 +143,22 @@ docker run --rm --platform linux/amd64 --network tx-recon_default -v "E:\Persona
 amount/date/merchant distributions. Loader (`src/adapters/real_data.py`)
 derives settlement nets from an independent schedule calibrated to the v1
 rate card; ~10% of rows are exceptions by design (5% mismatch, 5% orphan),
-so the health gate here is match rate ≥ 85%, not F1=1.0. Full method and
+so the health gate here is match rate ≥ 85%. Full method and
 per-run tables: `docs/REAL_DATA.md`.
 
-- **MERGE** (`reconciliation_benchmark.py --source real`, 8g driver, 128
-  shuffles ≥5M): 1M 50% 6.21s, 5M 50% 11.38s, **12M 50% 23.69s**,
+- **MERGE** (`reconciliation_benchmark.py`, 8g bench driver via `BENCH_SHUFFLE=1`,
+  128 shuffles ≥5M, 25 Sep 2026): 1M 50% 13.25s, 5M 50% 11.61s, **12M 50% 56.73s**,
   match ~94.7% throughout. Source: `results_iceberg_real.json`.
-- **Validation** (`pandas_validation_benchmark.py --input
-  data/real_thiru_full_settlement.csv --dedup`, 12.6M rows): polars 8.44M,
-  manual 3.63M, pandera 1.44M, pydantic 208k rows/s. Source:
+- **Validation** (`pandas_validation_benchmark.py`, 12.9M rows): polars 9.43M,
+  manual 3.34M, pandera 763k, pydantic 178k rows/s. Source:
   `results_pandera_real.json`.
 - **Kafka** (`kafka_producer_benchmark.py --replay-csv
   data/real_thiru_full_hooks.csv`, real ~150B records, acks=all, lz4):
-  **239,061 msgs/sec**, serial p50 0.98ms / p99 20.59ms. Source:
+  **225,123 msgs/sec**, serial p50 0.65ms / p95 1.11ms / p99 3.97ms. Source:
   `results_kafka_real.json`.
-- **Repro:** `python tests/performance/run_benchmarks.py --real`
+- **Repro:** `python tests/performance/run_benchmarks.py`
   (kafka replay 1M + pandera real + MERGE 1M/5M/12M, ~30–45 min) or each
-  module directly. Regression gates stay on synthetic baselines only —
-  different distribution, comparing would false-alarm.
+  module directly (`--suite kafka|pandera|iceberg` selects one).
 
 ## PySpark streaming ingestion
 
@@ -182,8 +169,8 @@ per-run tables: `docs/REAL_DATA.md`.
 ## Regression gate
 
 - **Script:** `tests/performance/check_regression.py`
-- **Thresholds:** fails the PR when throughput drops more than 15 percent or p99 rises more than 20 percent versus the baseline `results.json`; hardware fingerprint change is a warning, not a failure, so a new machine is not mistaken for a slowdown.
-- **Repro:** `python tests/performance/check_regression.py --baseline tests/performance/results.json`
+- **Thresholds:** fails the PR when throughput drops more than 15 percent, p99 rises more than 20 percent, iceberg rows/sec drops more than 15 percent, or any real-data `match_rate` falls below 85 percent, versus the baseline `results_real.json`; hardware fingerprint change is a warning, not a failure, so a new machine is not mistaken for a slowdown.
+- **Repro:** `python tests/performance/check_regression.py --baseline tests/performance/results_real.json`
 
 ## Retired claims
 
@@ -193,7 +180,7 @@ Earlier revisions cited numbers that are no longer reproducible:
 - Iceberg **sub-linear scaling to 227K rows/sec at 5M** from single-sample writes with non-monotonic timing. Replaced by seeded median at 100k only.
 - Validation footnote about Polars "cold-start overhead" from a run that re-read CSV from disk. Current run validates in-memory.
 
-Per-suite files (`results_accuracy.json`, `results_pandera.json`, `results_iceberg.json`, plus `*_real.json` for real-data runs) are the cited sources. `results.json` is an aggreg convenience copy.
+Per-suite files (`results_accuracy.json`, `results_pandera_real.json`, `results_iceberg_real.json`, `results_kafka_real.json`) are the cited sources. `results_real.json` is an aggregate convenience copy.
 
 ## Hardware
 
