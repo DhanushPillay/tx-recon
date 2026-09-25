@@ -181,3 +181,42 @@ def test_versioned_sql_routes_gap_to_prior():
     assert "IS NULL" in case
     # Latest-first ordering: v2 WHEN precedes v1 WHEN.
     assert case.index("2025-06-01") < case.index("2024-01-01")
+
+
+def _gst_cfg(tmp_path, gst):
+    cfg = {
+        "version": "v1.0.0",
+        "default": {"mdr_rate_bps": 150, "gst_on_mdr": 18.0, "tolerance_paise": 1},
+        "instruments": {"CREDIT_CARD": {"mdr_rate_bps": 200, "gst_on_mdr": gst}},
+    }
+    return _write_yaml(cfg, tmp_path / "rates.yaml")
+
+
+def test_negative_gst_override_rejected(tmp_path):
+    import pytest
+
+    from src.processing.fee_engine import FeeEngine
+
+    with pytest.raises(ValueError, match="gst_on_mdr"):
+        FeeEngine(config_path=str(_gst_cfg(tmp_path, -5)))
+
+
+def test_string_gst_override_rejected(tmp_path):
+    import pytest
+
+    from src.processing.fee_engine import FeeEngine
+
+    with pytest.raises(ValueError, match="gst_on_mdr"):
+        FeeEngine(config_path=str(_gst_cfg(tmp_path, "abc")))
+
+
+def test_tolerance_builder_amount_col_pin():
+    """Tolerance CASE is amount-independent; the amount_col param threads
+    through for signature consistency (was a hardcoded literal)."""
+    from src.processing.fee_engine import FeeEngine
+    from src.processing.reconcile import build_tolerance_case_sql
+
+    engine = FeeEngine()
+    assert build_tolerance_case_sql(engine) == build_tolerance_case_sql(
+        engine, amount_col="s.settled_amount_paise"
+    )
