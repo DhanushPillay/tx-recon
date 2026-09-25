@@ -1,6 +1,15 @@
 import pytest
 
-from src.processing.fee_engine import FeeEngine
+from src.processing.fee_engine import FeeEngine, gst_pct_to_bps
+
+
+def test_gst_pct_to_bps_half_up():
+    # float(2.675) * 100 is 267.49999... in binary; half-even round() gives
+    # 267. Money rounds half up -> 268. bank_statement.py uses the same rule.
+    assert gst_pct_to_bps(18.0) == 1800
+    assert gst_pct_to_bps(2.675) == 268
+    assert gst_pct_to_bps("2.675") == 268
+    assert gst_pct_to_bps(0) == 0
 
 
 def test_default_mdr_rate():
