@@ -50,10 +50,11 @@ def _run_with_collects(
         mock_bank_df = MagicMock()
         mock_spark.read.format.return_value.option.return_value.schema.return_value.load.return_value = mock_bank_df
         _valid = mock_bank_df.filter.return_value
+        _valid.repartition.return_value = _valid
         _valid.cache.return_value = _valid
         _valid.count.return_value = 4
         _dedup = _valid.withColumn.return_value.filter.return_value.drop.return_value
-        _dedup.repartition.return_value.count.return_value = 4
+        _dedup.count.return_value = 4
         # Late UPDATE runs only when late_n > 0; gauges are one UNION collect.
         # Provider-aware late block first resolves DISTINCT providers, then the
         # side count, the within-lag gauge, and the optional late MERGE.
@@ -161,9 +162,10 @@ def test_run_reconciliation_wiring(
     mock_spark.read.format.return_value.option.return_value.schema.return_value.load.return_value = mock_bank_df
     # counts path: 4 deduped settlement rows; table holds 3 MATCHED + 1 FEE_MISMATCH
     _valid = mock_bank_df.filter.return_value
+    _valid.repartition.return_value = _valid
     _valid.cache.return_value = _valid
     _valid.count.return_value = 4
-    _valid.withColumn.return_value.filter.return_value.drop.return_value.repartition.return_value.count.return_value = 4
+    _valid.withColumn.return_value.filter.return_value.drop.return_value.count.return_value = 4
     table_collect = [
         {"reconciliation_status": "MATCHED", "n": 3},
         {"reconciliation_status": "EXCEPTION_FEE_MISMATCH", "n": 1},
@@ -190,7 +192,7 @@ def test_run_reconciliation_wiring(
     counts = run_reconciliation(date_str="2025-04-02")
 
     mock_spark.read.format.assert_called_with("csv")
-    dedup_df = mock_bank_df.filter.return_value.withColumn.return_value.filter.return_value.drop.return_value.repartition.return_value
+    dedup_df = mock_bank_df.filter.return_value.withColumn.return_value.filter.return_value.drop.return_value
     dedup_df.createOrReplaceTempView.assert_called_once_with("bank_settlements")
 
     merge_sql = mock_spark.sql.call_args_list[0][0][0]
@@ -282,7 +284,10 @@ def test_maintain_tables_own_session(monkeypatch):
 def test_reconcile_bank_leg_counts():
     """Bank leg arithmetic: evidence kept, gap demoted, orphans counted."""
     spark = MagicMock()
-    spark.sql.return_value.collect.side_effect = [[{"n": 10}], [{"n": 7}], [{"n": 2}]]
+    spark.sql.return_value.collect.side_effect = [
+        [{"k": "matched", "n": 10}, {"k": "orphans", "n": 2}],
+        [{"n": 7}],
+    ]
     bank_df = MagicMock()
     out = reconcile_bank_leg(spark, "nessie.db.webhooks", bank_df, lag_days=2)
     assert out == {"bank_evidence": 7, "bank_missing": 3, "bank_orphans": 2}
@@ -317,6 +322,27 @@ def test_late_rows_preserved_not_self_assigned():
     assert any(EXCEPTION_MISSING_WEBHOOK in m and EXCEPTION_LATE_UNRESOLVED in m for m in merges), (
         "MISSING + LATE must share one preserve clause"
     )
+
+
+def test_bank_leg_single_union_for_before_and_orphans():
+    """before-MATCHED + orphan counts ride one UNION ALL action (was 2 scans)."""
+    spark = MagicMock()
+    bank_df = MagicMock()
+
+    def _sql(q):
+        m = MagicMock()
+        if "UNION ALL" in q:
+            m.collect.return_value = [{"k": "matched", "n": 10}, {"k": "orphans", "n": 2}]
+        else:
+            m.collect.return_value = [{"n": 7}]
+        return m
+
+    spark.sql.side_effect = _sql
+    out = reconcile_bank_leg(spark, "nessie.db.webhooks", bank_df, lag_days=2)
+    assert out == {"bank_evidence": 7, "bank_missing": 3, "bank_orphans": 2}
+    union_qs = [c[0][0] for c in spark.sql.call_args_list if "UNION ALL" in c[0][0]]
+    assert len(union_qs) == 1
+    assert "'matched'" in union_qs[0] and "'orphans'" in union_qs[0]
 
 
 def test_maintain_tables_statement_order(monkeypatch):
