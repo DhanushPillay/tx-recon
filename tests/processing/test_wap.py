@@ -42,3 +42,18 @@ def test_branch_rejects_injection():
     spark = MagicMock()
     with pytest.raises(ValueError):
         wap.create_branch(spark, "x; DROP", "b")
+
+
+def test_publish_branch_refuses_unvalidated():
+    """Publish gate: merge never runs without validated=True (fail closed)."""
+    spark = MagicMock()
+    with pytest.raises(RuntimeError, match="unvalidated"):
+        wap.publish_branch(spark, "nessie.db.webhooks", "ingest/2025-04-02")
+    spark.sql.assert_not_called()
+
+
+def test_publish_branch_merges_when_validated():
+    spark = MagicMock()
+    wap.publish_branch(spark, "nessie.db.webhooks", "ingest/2025-04-02", validated=True)
+    sql = spark.sql.call_args[0][0]
+    assert "fast_forward" in sql and "to => 'ingest/2025-04-02'" in sql
