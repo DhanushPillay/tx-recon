@@ -71,3 +71,19 @@ def merge_branch(spark, table: str, branch: str, target_ref: str = "main") -> No
         f"branch => '{target_ref}', to => '{branch}')"
     )
     logger.info(f"WAP branch merged: {branch} -> {target_ref} on {table}")
+
+
+def publish_branch(
+    spark, table: str, branch: str, *, validated: bool = False, target_ref: str = "main"
+) -> None:
+    """Publish gate: merge runs only with validated=True (fail closed).
+
+    The caller passes validation + match-rate results explicitly — an
+    unvalidated branch can never reach main by accident.
+    """
+    if not validated:
+        raise RuntimeError(
+            f"refusing to publish unvalidated branch {branch} on {table}: "
+            "pass validated=True after validation + match-rate checks"
+        )
+    merge_branch(spark, table, branch, target_ref)
