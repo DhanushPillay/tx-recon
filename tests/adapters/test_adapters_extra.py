@@ -30,6 +30,15 @@ def test_paise_inr_series_symbols():
     assert s.iloc[1] == 10000
 
 
+def test_paise_inr_series_half_up():
+    # 2.675 Rs is unrepresentable below .5 in float64; half-even .round()
+    # gives 267. Money rounds half up -> 268.
+    s = _paise_inr_series(pd.Series(["2.675", "1.005", "100.00"]))
+    assert s.iloc[0] == 268
+    assert s.iloc[1] == 101
+    assert s.iloc[2] == 10000
+
+
 def test_iso_series_mixed_and_empty():
     assert len(_to_iso_series(pd.Series([], dtype=object))) == 0
     out = _to_iso_series(pd.Series(["2025-04-02", "02/04/2025", "bad-date"]))
