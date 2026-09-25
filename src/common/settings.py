@@ -69,9 +69,8 @@ class Settings(BaseSettings):
     # Fee engine
     fee_rate_config: str = "config/fee_rates.yaml"
 
-    # Fail-closed switches. Defaults are strict: demo conveniences (synthetic
-    # generation, destructive seeding, silent fallbacks) must be opted into,
-    # never inherited. Local dev sets the ALLOW_* / GENERATE_* envs explicitly.
+    # Fail-closed switches. Defaults are strict: destructive seeding and
+    # silent fallbacks must be opted into, never inherited.
     strict_slo: bool = True
     allow_destructive_seed: bool = False
     require_schema_registry: bool = False
@@ -223,9 +222,3 @@ def get_settings() -> Settings:
             )
             object.__setattr__(_settings, "iceberg_warehouse", wh_override)
     return _settings
-
-
-def reset_settings() -> None:
-    """Test helper: clear the module singleton (use in fixtures, not prod code)."""
-    global _settings
-    _settings = None
