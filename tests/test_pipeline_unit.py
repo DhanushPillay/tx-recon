@@ -91,3 +91,31 @@ def test_run_daily_no_curated_file_raises():
         pytest.raises(RuntimeError, match="no curated file"),
     ):
         run_daily(date_str="2025-04-02")
+
+
+def test_drift_ignores_duplicate_diagnostic():
+    """Duplicate rows collapse in dedup: the diagnostic must not trip drift.
+
+    3 rows in, 1 dup collapsed -> deduped 2, outcomes tile 2.
+    """
+    check_batch_drift(
+        {
+            "settlement_rows_deduped": 2,
+            "batch_MATCHED": 1,
+            "batch_EXCEPTION_MISSING_WEBHOOK": 1,
+            "batch_EXCEPTION_DUPLICATE_SETTLEMENT": 1,
+        }
+    )  # must not raise
+
+
+def test_drift_raises_despite_diagnostic():
+    """Outcomes not tiling deduped rows still breach, diagnostic or not."""
+    with pytest.raises(RuntimeError, match="Batch drift"):
+        check_batch_drift(
+            {
+                "settlement_rows_deduped": 3,
+                "batch_MATCHED": 1,
+                "batch_EXCEPTION_MISSING_WEBHOOK": 1,
+                "batch_EXCEPTION_DUPLICATE_SETTLEMENT": 1,
+            }
+        )
