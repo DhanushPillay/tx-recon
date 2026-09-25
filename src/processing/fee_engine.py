@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal, ROUND_HALF_UP
 
 import yaml
 
@@ -47,6 +48,16 @@ def _check_bps(bps, label: str) -> int:
 
 def _check_tol(tol, label: str) -> int:
     return _check_int(tol, 0, None, "tolerance_paise", label)
+
+
+def gst_pct_to_bps(gst_pct: float | int | str) -> int:
+    """GST percent -> basis points, HALF_UP (bank_statement.py convention).
+
+    Scalar (per rate, not per row): exact Decimal, no float. Python's
+    round() is half-even and float(x)*100 carries binary error, either of
+    which can shift a bps literal by 1 and misprice every row on that rate.
+    """
+    return int((Decimal(str(gst_pct)) * 100).to_integral_value(rounding=ROUND_HALF_UP))
 
 
 class FeeEngine:
@@ -278,7 +289,7 @@ class FeeEngine:
         # Standard round-to-nearest integer algorithm (half-up equivalent for positive integers).
         # Integer-only: no float money math. GST via bps keeps SQL/Python identical.
         fee_before_gst = (amount_paise * mdr_bps + 5000) // 10000
-        gst_bps = int(round(float(gst_pct) * 100))
+        gst_bps = gst_pct_to_bps(gst_pct)
         gst = (fee_before_gst * gst_bps + 5000) // 10000 if gst_bps > 0 else 0
         total_fee = fee_before_gst + gst
         net = amount_paise - total_fee
