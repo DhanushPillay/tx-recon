@@ -15,7 +15,7 @@ from src.common.schemas import (
     MATCHED,
 )
 from src.common.settings import get_settings
-from src.processing.fee_engine import get_fee_engine
+from src.processing.fee_engine import get_fee_engine, gst_pct_to_bps
 
 logger = logging.getLogger(__name__)
 
@@ -84,12 +84,12 @@ def _build_single_card_fee_sql(
     tol_cases: list[str] = []
     default = card.get("default", {})
     default_mdr = int(default.get("mdr_rate_bps", 150))
-    default_gst_bps = int(round(float(default.get("gst_on_mdr", 18.0)) * 100))
+    default_gst_bps = gst_pct_to_bps(default.get("gst_on_mdr", 18.0))
     default_tol = int(default.get("tolerance_paise", 1))
 
     def _triple(rate: dict) -> tuple[int, int, int]:
         mdr = int(rate.get("mdr_rate_bps", default_mdr))
-        gst = int(round(float(rate.get("gst_on_mdr", default.get("gst_on_mdr", 18.0))) * 100))
+        gst = gst_pct_to_bps(rate.get("gst_on_mdr", default.get("gst_on_mdr", 18.0)))
         return mdr, gst, int(rate.get("tolerance_paise", default_tol))
 
     # Merchant overrides first (most specific)
