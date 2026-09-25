@@ -170,3 +170,40 @@ def test_unknown_instrument_quarantined_by_schema():
     )
     with pytest.raises((SchemaErrors, pa.errors.SchemaError)):
         settlement_schema.validate(df, lazy=True)
+
+
+def test_date_fallback_fills_partial_nulls():
+    """Fallback fills per-row NULLs, not only all-NULL columns."""
+    from src.adapters.settlement import _date_with_fallback, _lc
+
+    df = pd.DataFrame(
+        {"settlementdate": ["2025-04-02", None], "created_at": ["2025-01-01", "2025-04-03"]}
+    )
+    out = _date_with_fallback(
+        df, _lc(df), ("settlementdate", "settlement_date"), ("created_at",)
+    ).tolist()
+    assert out[0] == "2025-04-02"
+    assert out[1] == "2025-04-03"
+
+
+def test_payu_space_variant_amount():
+    """'Settlement Amount' header (space variant) normalizes like underscore."""
+    df = pd.DataFrame({"mihpayid": ["a1"], "Settlement Amount": ["100.00"]})
+    norm, pg = normalize_settlement_df(df)
+    assert pg == "payu"
+    assert norm["settled_amount_paise"].iloc[0] == 10000
+
+
+def test_chunked_and_direct_reads_agree_on_nulls(tmp_path):
+    """Chunked (>256MB) and direct reads treat NA/null literals identically."""
+    from src.validation.validate_settlement import _validate_large_file
+
+    p = tmp_path / "s.csv"
+    p.write_text(
+        "transaction_id,settled_amount_paise,bank_ref_id,settlement_date,instrument_type,currency\n"
+        "tx1,100,b1,2025-04-02,UPI,null\n"
+    )
+    direct, _ = load_settlement_csv(str(p))
+    chunked, _ = _validate_large_file(str(p), normalize_settlement_df)
+    assert direct["currency"].iloc[0] == "INR"
+    assert chunked["currency"].iloc[0] == direct["currency"].iloc[0]
