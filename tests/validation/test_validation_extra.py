@@ -217,6 +217,16 @@ def test_pan_guard_unit():
     df = pd.DataFrame({"transaction_id": ["tx_1", "4111111111111111"], "x": ["a", "b"]})
     assert scan_frame(df, ["transaction_id"]) == {"transaction_id": 1}
     assert scan_frame(df, ["x"]) == {}
+    # columns=None scans every object column: a PAN outside the id columns
+    # must still trip the gate (PCI scope), and skips non-object dtypes.
+    df2 = pd.DataFrame(
+        {
+            "notes": ["ok", "card 4111111111111111 here"],
+            "settled_amount_paise": [100, 200],
+        }
+    )
+    assert scan_frame(df2) == {"notes": 1}
+    assert scan_frame(pd.DataFrame({"a": ["clean"], "n": [1]})) == {}
 
 
 def test_file_registry_redelivery(tmp_path):
