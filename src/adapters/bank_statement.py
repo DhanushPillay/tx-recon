@@ -69,5 +69,15 @@ def parse_mt940(path: str):
         rows,
         columns=["bank_ref", "amount_paise", "value_date", "direction", "link_tx", "narration"],
     )
+    # No-PAN gate (same as PG CSVs): narration is free text and would put the
+    # lake in PCI scope. Fail the file, never merge it.
+    from src.validation.pan_guard import scan_frame
+
+    pan_hits = scan_frame(df)
+    if pan_hits:
+        raise ValueError(
+            f"PAN detected in bank statement {path} {pan_hits}: refusing file "
+            "(store last-4 + issuer only)"
+        )
     logger.info(f"bank statement {path}: {len(df)} rows, {df['link_tx'].notna().sum()} linked")
     return df
