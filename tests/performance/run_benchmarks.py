@@ -88,13 +88,13 @@ def print_summary(results):
     print(f"{'=' * 60}")
 
 
-def run_real(results, hw, suite="all"):
+def run_real(results, hw, suite="all", partitions=16):
     """Real-data pass (direct calls, no 600s subprocess cap).
 
     Suites: kafka replay (full 1M msgs, sample fallback), pandera on the real
-    settlement file (deduped), iceberg MERGE at 1M/5M/12M (sample 10k smoke).
-    Writes results_real.json; per-suite files (results_iceberg_real.json etc.)
-    are written by the modules.
+    settlement file (deduped), iceberg MERGE at 1M/5M/12M (sample 10k smoke),
+    pyspark streaming ingestion. Writes results_real.json; per-suite files
+    (results_iceberg_real.json etc.) are written by the modules.
     """
     import pandas_validation_benchmark as pvb
     from kafka_producer_benchmark import load_replay_events
@@ -144,6 +144,15 @@ def run_real(results, hw, suite="all"):
         except Exception as e:  # noqa: BLE001
             results["iceberg"] = {"error": str(e)}
 
+    if suite in ("all", "pyspark"):
+        print("\n=== PySpark ingestion (real) ===")
+        try:
+            import pyspark_ingestion_benchmark as pib
+
+            results["pyspark"] = pib.run_benchmark(partitions=partitions)
+        except Exception as e:  # noqa: BLE001
+            results["pyspark"] = {"error": str(e)}
+
     output_path = os.path.join(SCRIPT_DIR, "results_real.json")
     with open(output_path, "w") as f:
         json.dump(results, f, indent=2, default=str)
@@ -181,7 +190,7 @@ def main():
 
     if args.suite in ("all", "kafka", "pyspark", "iceberg", "pandera"):
         # All suites are real-data now; run_real honors --suite internally.
-        return run_real(results, hw, args.suite)
+        return run_real(results, hw, args.suite, args.partitions)
 
     output_path = os.path.join(SCRIPT_DIR, "results_real.json")
     with open(output_path, "w") as f:
