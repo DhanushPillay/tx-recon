@@ -1,7 +1,7 @@
 import os
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 
 import yaml
 
@@ -144,7 +144,7 @@ class FeeEngine:
                 key=lambda t: _parse_iso_date(str(t[1].get("effective_from", "1970-01-01")))
                 or date.min,
             )
-            for (prev_idx, prev), (next_idx, nxt) in zip(ordered, ordered[1:]):
+            for (prev_idx, prev), (next_idx, nxt) in zip(ordered, ordered[1:], strict=False):
                 prev_to = (
                     _parse_iso_date(str(prev["effective_to"]))
                     if prev.get("effective_to")
