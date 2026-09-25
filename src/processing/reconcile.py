@@ -193,8 +193,13 @@ def build_tolerance_case_sql(
     inst_col="s.instrument_type",
     merchant_col="s.merchant_id",
     settlement_date_col="s.settlement_date",
+    amount_col="t.amount_paise",
 ) -> str:
-    """Build CASE that yields per-row tolerance_paise (merchant + instrument + version aware)."""
+    """Build CASE that yields per-row tolerance_paise (merchant + instrument + version aware).
+
+    amount_col threads through for signature consistency with
+    build_fee_case_sql (the tolerance fragment itself is amount-independent).
+    """
     cards = getattr(fee_engine, "rate_cards", None)
     if cards and len(cards) > 1:
         top_merchants = (getattr(fee_engine, "config", {}) or {}).get("merchants", {}) or {}
@@ -202,10 +207,10 @@ def build_tolerance_case_sql(
             cards,
             top_merchants,
             settlement_date_col,
-            lambda c: _build_single_card_fee_sql(c, "t.amount_paise", inst_col, merchant_col)[2:],
+            lambda c: _build_single_card_fee_sql(c, amount_col, inst_col, merchant_col)[2:],
         )[0]
     card = _single_card(fee_engine)
-    _, _, tol_sql = _build_single_card_fee_sql(card, "t.amount_paise", inst_col, merchant_col)
+    _, _, tol_sql = _build_single_card_fee_sql(card, amount_col, inst_col, merchant_col)
     return tol_sql
 
 
