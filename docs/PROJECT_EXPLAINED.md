@@ -33,19 +33,19 @@ tx-recon is a small automated system that does the matching for them:
 
 Speed means nothing if the matches are wrong, so correctness is tested first:
 
-- A test rig deliberately plants 7 kinds of problems (wrong fees, rounding
-  edges, missing records, duplicates, late corrections…) with a secret answer
-  key the matcher never sees.
-- Latest result: **every planted problem caught, zero false alarms**
-  (precision = recall = F1 = 1.0, 0 false positives).
+- The 10k real sample (`data/samples/real_10k_*.csv`) is joined through
+  `FeeEngine.check_match` with a secret nothing: the loader mix targets ~90%
+  matched, so anything below 85% means fee miscalibration or drift.
+- Latest result: **94.6% match** (8813 matched / 500 mismatched / 492 orphans
+  on 9805 settlement ids) — gate passes, orphans visible.
 
-## How fast is it (measured September 2026, ordinary desktop, single node)
+## How fast is it (measured 25 September 2026, ordinary desktop, single node)
 
 - **End-to-end batch (12.6M rows, real thiru card data, 15.8 GB RAM, 8g driver):** ~5 minutes wall — 173 s validation (12.9M clean) + 105 s MERGE + mart (89.98% match on the injected ~10% exception mix, health gate ≥ 85%).
-- **MERGE slices (same harness `--source real`, 128 shuffles ≥5M):** 1M 50% 6.21 s, 5M 50% 11.38 s, **12M 50% 23.69 s** (slices show ~94.7% due to tx-ordered sampling; see `docs/REAL_DATA.md`).
-- **File checking (12.6M rows, same box):** polars 8.44M / manual 3.63M / pandera 1.44M / pydantic 208k rows/s (`results_pandera_real.json`).
-- **Queue (real ~150B Avro, acks=all, lz4, Redpanda):** 239,061 msgs/sec, serial p50 0.98 ms / p99 20.59 ms.
-- Earlier synthetic baselines (100k–1M single-node + YARN/HDFS) remain archived in `docs/BENCHMARKS.md`; the real-data suite is now the cited scale proof.
+- **MERGE slices (real data, 128 shuffles ≥5M):** 1M 50% 13.25 s, 5M 50% 11.61 s, **12M 50% 56.73 s** (slices show ~94.7% due to tx-ordered sampling; see `docs/REAL_DATA.md`).
+- **File checking (12.9M rows, same box):** polars 9.43M / manual 3.34M / pandera 763k / pydantic 178k rows/s (`results_pandera_real.json`).
+- **Queue (real ~150B Avro, acks=all, lz4, Redpanda):** 225,123 msgs/sec, serial p50 0.65 ms / p95 1.11 ms / p99 3.97 ms.
+- All suites run on real data; `docs/BENCHMARKS.md` holds the full method and the real-data suite is the cited scale proof.
 
 ## Honest limits
 
@@ -57,7 +57,5 @@ Speed means nothing if the matches are wrong, so correctness is tested first:
 ## Seeing it work
 
 With Docker running: `docker compose up -d` starts the supporting services,
-`make demo` runs the 10-second correctness check (2000×3 sealed F1=1.0),
-`ALLOW_DESTRUCTIVE_SEED=1 python -m src.pipeline --date 2026-09-04 --demo` runs the synthetic pipeline, and
-`python -m src.pipeline --date 2026-09-04` runs the real PG file path (fail-closed).
-Add `--messy` on demo for the full exception mix + `EXCEPTION_MISSING_WEBHOOK` → `LATE_UNRESOLVED` lifecycle.
+`make accuracy` runs the 10-second real-data correctness gate (match_rate >= 85% on the 10k sample), and
+`python -m src.pipeline --date 2026-09-04` runs the real PG file path (fail-closed, never synthesized).
