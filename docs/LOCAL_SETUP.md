@@ -92,22 +92,6 @@ pytest tests/validation/test_file_registry.py tests/validation/test_pan_guard.py
 pytest tests/processing/test_wap.py -v
 ```
 
-## Local multi-node Spark cluster
-
-For running Iceberg benchmarks at scale, a Docker-based Spark cluster is available:
-
-```bash
-# Start the cluster (adds spark-master + 2 workers on top of base services)
-docker compose -f docker-compose.yml -f docker-compose.spark.yml up -d
-
-# Run benchmarks in cluster mode
-SPARK_MODE=cluster python -m tests.performance.reconciliation_benchmark
-```
-
-The cluster uses `Dockerfile.spark` (Apache Spark 3.5.1 + Python 3.11 via `uv`). The driver runs on the host, workers run in Docker. The host must resolve `spark-master`, `minio`, `nessie`, and `redpanda` to `127.0.0.1` (add to `/etc/hosts` or `C:\Windows\System32\drivers\etc\hosts`).
-
-Spark master UI: `http://localhost:8082` (Trino owns port 8080).
-
 ## Running benchmarks
 
 ```bash
