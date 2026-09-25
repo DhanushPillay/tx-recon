@@ -125,6 +125,26 @@ class FeeEngine:
                         f"history[{idx}] invalid effective_to: {card['effective_to']!r}"
                     )
                 validate_card(card, f"history[{idx}]")
+            # Overlapping ranges would price the same date two ways (Python
+            # picks latest-containing, SQL picks latest-from); reject them so
+            # the engines cannot diverge.
+            ordered = sorted(
+                enumerate(history),
+                key=lambda t: _parse_iso_date(str(t[1].get("effective_from", "1970-01-01")))
+                or date.min,
+            )
+            for (prev_idx, prev), (next_idx, nxt) in zip(ordered, ordered[1:]):
+                prev_to = (
+                    _parse_iso_date(str(prev["effective_to"]))
+                    if prev.get("effective_to")
+                    else None
+                )
+                next_from = _parse_iso_date(str(nxt.get("effective_from", "1970-01-01")))
+                if prev_to is not None and next_from is not None and next_from <= prev_to:
+                    raise ValueError(
+                        f"history[{prev_idx}] and history[{next_idx}] overlap: "
+                        f"{nxt.get('effective_from')!r} <= {prev.get('effective_to')!r}"
+                    )
         else:
             validate_card(self.config, "default")
 
@@ -200,10 +220,12 @@ class FeeEngine:
     def _lookup(
         card: dict, instrument_type: str, merchant_id: str | None, top_merchants: dict
     ) -> dict:
-        """Merchant -> instrument -> default rate lookup on one card."""
-        merchants = card.get("merchants", {}) or {}
-        if merchant_id and merchant_id not in merchants:
-            merchants = {**merchants, **top_merchants}
+        """Merchant -> instrument -> default rate lookup on one card.
+
+        Card-level merchants win per merchant key over top-level (same merge
+        as reconcile._versioned_wrap builds for SQL: {**top, **card}).
+        """
+        merchants = {**top_merchants, **(card.get("merchants", {}) or {})}
         if merchant_id and merchant_id in merchants:
             merchant_rates = merchants[merchant_id]
             if instrument_type in merchant_rates:
