@@ -5,11 +5,10 @@ Iceberg `webhooks` table. Full screenshot:
 
 ![Full dashboard](dashboard.png)
 
-> Demo data is synthetic: ~100K rows across 7 days (Sep 11–17, 2026) seeded with
-> a realistic messy mix (~90% MATCHED, ~5% fee mismatch, ~5% missing webhook).
+> Dashboard data is real PG data: reconciled through the pipeline below.
 > The 2,003 oldest rows predate the `instrument_type` column and show NULL there.
 
-Open it: `docker compose up -d` → seed a batch (`python -m src.pipeline --demo --messy`)
+Open it: `docker compose up -d` → run a batch (`python -m src.pipeline --date 2026-09-04`)
 → Metabase → Trino database (host `trino`, port `8080`, catalog `nessie`, schema `db`).
 Two dashboard filters (merchant, status) apply to every card.
 
@@ -37,7 +36,7 @@ Four headline scalars, the first things to check each morning:
 ![Status pie](img/dash-pie.png)
 
 Share of transactions per `reconciliation_status`
-([match_rate.sql](../sql/questions/match_rate.sql)). With the messy demo mix the
+([match_rate.sql](../sql/questions/match_rate.sql)). On the real-data mix the
 pie reads ~90% MATCHED, ~5% `EXCEPTION_FEE_MISMATCH`, ~5%
 `EXCEPTION_MISSING_WEBHOOK`. A new slice appearing (duplicates, invalid) is the
 signal that a new failure mode started.
