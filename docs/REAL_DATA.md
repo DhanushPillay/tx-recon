@@ -71,20 +71,20 @@ Every column tiles exactly (e.g. 11,368,871+625,665+6,315+634,376=12,635,227);
 
 ## Benchmarks on real data (15.8 GB RAM, 8g driver, 128 shuffles ≥5M)
 
-Full method in `tests/performance/` (`--source real` / `--input` /
-`--replay-csv`); combined record in `results_real.json`. Synthetic baselines
-untouched (separate files; regression gates stay on synthetic only).
+Full method in `tests/performance/` (real-only inputs with 10k sample
+fallback); combined record in `results_real.json`, gated by
+`check_regression.py` (rows/sec drop >15% or match_rate <85% fails).
 
-| Suite | Scale | Result |
+| Suite | Scale | Result (25 Sep 2026) |
 | --- | --- | --- |
-| Iceberg MERGE | 1M, 10% update | 2.99 s write, 94.67% match |
-| Iceberg MERGE | 1M, 50% update | 6.21 s write, 94.66% match |
-| Iceberg MERGE | 5M, 10% update | 7.20 s write, 94.7% match |
-| Iceberg MERGE | 5M, 50% update | 11.38 s write, 94.71% match |
-| Iceberg MERGE | 12M, 10% update | 13.12 s write, ~94.7% match |
-| Iceberg MERGE | 12M, 50% update | 23.69 s write, 94.71% match |
-| Validation (12.6M rows) | pandera / manual / pydantic / polars | 1.44M / 3.63M / 208k / 8.44M rows/s |
-| Kafka producer (real ~150 B records) | 1M msgs, acks=all, lz4 | 239,061 msgs/s; serial p50 0.98 ms, p99 20.59 ms |
+| Iceberg MERGE | 1M, 10% update | 6.0 s write, 94.67% match |
+| Iceberg MERGE | 1M, 50% update | 13.25 s write, 94.66% match |
+| Iceberg MERGE | 5M, 10% update | 6.83 s write, 94.7% match |
+| Iceberg MERGE | 5M, 50% update | 11.61 s write, 94.71% match |
+| Iceberg MERGE | 12M, 10% update | 10.32 s write, 94.69% match |
+| Iceberg MERGE | 12M, 50% update | 56.73 s write, 94.71% match |
+| Validation (12.9M rows) | pandera / manual / pydantic / polars | 763k / 3.34M / 178k / 9.43M rows/s |
+| Kafka producer (real ~150 B records) | 1M msgs, acks=all, lz4 | 225,123 msgs/s; serial p50 0.65 ms, p95 1.11 ms, p99 3.97 ms |
 
 Notes: match rate ~94.7% (not 90%) because tx-ordered bench slices sample
 the mix unevenly; health gate is ≥85%. Kafka latency measured isolated —
