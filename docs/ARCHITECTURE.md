@@ -109,7 +109,7 @@ The settlement adapter stamps `provider` into the canonical row; `_settlement_so
 
 After the rule-based MERGE, a downgrade-only residual scorer (`src/processing/residual.py`) can demote `MATCHED` rows to `EXCEPTION_FEE_MISMATCH` when the match is suspicious (e.g. merchant-rate disagreement). It never promotes `MISMATCH -> MATCHED`, so false positives are monotone non-increasing. Proven in `docs/PROOF.md`.
 
-The scorer uses a sigmoid on the difference between default-rate expected and actual settled amount. Threshold `tau` (default 0.9) controls sensitivity. On the sealed harness (F1=1.0, FP=0), the residual is identity: no rows are demoted.
+The scorer uses a sigmoid on the difference between default-rate expected and actual settled amount. Threshold `tau` (default 0.9) controls sensitivity. On clean real rows the residual is identity: no rows are demoted.
 
 Production scoring runs in SQL: `score_match_sql()` ports the exact curve (merchant-disagreement branch plus sigmoid on the worst excess) reusing the fee/tolerance builders, and `apply_residual` demotes via a single set-based `MERGE` — no driver `collect()`. The pure-Python `score_match` remains the auditable oracle; a golden test pins SQL ≈ Python.
 
@@ -143,7 +143,7 @@ This prevents corrupt data (negative amounts, duplicate IDs, bad dates, PAN) fro
 
 ## Fail-closed switches
 
-Defaults are strict (`src/common/settings.py`): `strict_slo=true` (sub-SLO match rate, stale mart, volume/staleness fail the batch), `REQUIRE_KAFKA_SASL`/`REQUIRE_SCHEMA_REGISTRY` refuse plaintext/trust-on-bad-registry, `ALLOW_DESTRUCTIVE_SEED` must be set for demo seeding (MERGE-DELETE). Secrets follow `*_FILE` (mounted file wins over empty env, explicit env wins over file). Unknown PG instruments normalize to `UNKNOWN` and quarantine via the schema `isin` check — never silently priced as `CREDIT_CARD`.
+Defaults are strict (`src/common/settings.py`): `strict_slo=true` (sub-SLO match rate, stale mart, volume/staleness fail the batch), `REQUIRE_KAFKA_SASL`/`REQUIRE_SCHEMA_REGISTRY` refuse plaintext/trust-on-bad-registry, `ALLOW_DESTRUCTIVE_SEED` must be set for real-data webhook seeding (MERGE-DELETE). Secrets follow `*_FILE` (mounted file wins over empty env, explicit env wins over file). Unknown PG instruments normalize to `UNKNOWN` and quarantine via the schema `isin` check — never silently priced as `CREDIT_CARD`.
 
 ## Integer paise
 
@@ -171,11 +171,10 @@ The MERGE mutates statuses in place by design; the audit counterweight is append
 src/
   adapters/        PG settlement normalizers (Razorpay/Cashfree/PayU/Generic) + bank_statement (MT940) + real_data (thiru 13.3M)
   common/          Settings (strict flags, *_FILE secrets), Spark session, domain contracts
-  generators/      Webhook producer (HMAC x-tx-sig) + settlement file generator
   ingestion/       Spark streaming Kafka -> Iceberg (+DLQ, schema-id drift, late-data, bucket 16)
   processing/      FeeEngine + MERGE reconciliation (4×UPDATE/1×INSERT) + residual scorer + batches (provider windows) + wap (branches) + corrections (journal)
   validation/      Pandera schemas + quarantine + pan_guard (Luhn) + file_registry (sha256)
-  pipeline.py      generate -> validate (PAN/registry/curated) -> reconcile (provider batch, per-provider SLA, bank leg) -> metrics.json + maintenance
+  pipeline.py      validate (PAN/registry/curated) -> reconcile (provider batch, per-provider SLA, bank leg) -> metrics.json + maintenance (real data only, fail-closed)
 config/
   fee_rates.yaml   versioned rate cards (effective_from/to, merchant overrides, instruments)
   providers.yaml   per-provider lag_days / late_sla_days / cutoff / cadence
