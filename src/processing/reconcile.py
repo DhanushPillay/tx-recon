@@ -42,31 +42,36 @@ def _append_leg(fee_cases, gst_cases, tol_cases, pred, amount_col, mdr_bps, gst_
 
 
 def _versioned_wrap(cards, top_merchants, date_col, build):
-    """Wrap per-card SQL fragments in settlement_date range WHENs (latest-first, ELSE latest).
+    """Wrap per-card SQL fragments in settlement_date WHENs (latest-first, ELSE earliest).
 
-    build(card_eff) -> tuple of fragments; returns tuple of versioned CASEs.
-    Mirrors FeeEngine._card_for_date: NULL/malformed dates match nothing -> latest.
+    WHENs test `{date_col} >= effective_from` in latest-first order, so the
+    first match is the latest card with from <= date; dates before the first
+    card fall to ELSE (earliest). This mirrors FeeEngine._card_for_date
+    exactly (chosen-or-prior-or-first) for non-overlapping cards, including
+    gap dates; overlapping ranges are rejected by FeeEngine._validate_config.
+    NULL/malformed dates match no WHEN -> earliest (same as Python pre-first).
     """
     per = []
     for card in reversed(cards):
         eff_from_esc = str(card.get("effective_from", "1970-01-01")).replace("'", "''")
-        eff_to = card.get("effective_to")
         card_eff = dict(card)
         card_eff["merchants"] = {**top_merchants, **(card.get("merchants", {}) or {})}
-        if eff_to:
-            eff_to_esc = str(eff_to).replace("'", "''")
-            cond = f"{date_col} >= '{eff_from_esc}' AND {date_col} <= '{eff_to_esc}'"
-        else:
-            cond = f"{date_col} >= '{eff_from_esc}'"
+        cond = f"{date_col} >= '{eff_from_esc}'"
         per.append((cond, build(card_eff)))
+    first_eff = dict(cards[0])
+    first_eff["merchants"] = {**top_merchants, **(cards[0].get("merchants", {}) or {})}
+    first = build(first_eff)
     latest_eff = dict(cards[-1])
     latest_eff["merchants"] = {**top_merchants, **(cards[-1].get("merchants", {}) or {})}
     latest = build(latest_eff)
+    # NULL/empty dates -> latest, mirroring _card_for_date's falsy early-return.
+    null_cond = f"({date_col} IS NULL OR {date_col} = '')"
     return tuple(
         "CASE "
+        + f"WHEN {null_cond} THEN {latest[i]} "
         + " ".join(f"WHEN {cond} THEN {frag[i]}" for cond, frag in per)
-        + f" ELSE {latest[i]} END"
-        for i in range(len(latest))
+        + f" ELSE {first[i]} END"
+        for i in range(len(first))
     )
 
 
