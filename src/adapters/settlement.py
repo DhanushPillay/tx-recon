@@ -114,13 +114,20 @@ def _to_iso_series(s: pd.Series) -> pd.Series:
 
 
 def _paise_inr_series(s: pd.Series) -> pd.Series:
-    # ponytail: vectorized INR->paise, no Decimal per row
+    # ponytail: vectorized INR->paise, HALF_UP without per-row Decimal.
+    # floor(x + 0.5) is exact half-up on the non-negative domain (amounts are
+    # validated > 0 downstream; negative halves would differ but those rows
+    # fail validation regardless). The 1e-9 absorbs float64 representation
+    # error (e.g. 2.675 stored as 2.67499999...); it is smaller than the ulp
+    # of large values so it can never push a genuine non-half over.
     if s.empty:
         return s
+    import numpy as np
+
     cleaned = s.astype(str).str.replace(r"[₹,\s]", "", regex=True).str.strip()
     cleaned = cleaned.replace({"nan": pd.NA, "None": pd.NA, "": pd.NA})
     nums = pd.to_numeric(cleaned, errors="coerce")
-    return (nums * 100).round().astype("Int64")
+    return np.floor(nums * 100 + 0.5 + 1e-9).astype("Int64")
 
 
 def _map_instrument_series(s: pd.Series) -> pd.Series:
