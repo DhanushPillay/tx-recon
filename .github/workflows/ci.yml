@@ -154,7 +154,6 @@ jobs:
 
       - name: Diff coverage on PR (changed lines only)
         if: github.event_name == 'pull_request'
-        continue-on-error: true
         run: |
           git fetch origin ${{ github.base_ref }} --depth=50 || true
           diff-cover coverage.xml --compare-branch=origin/${{ github.base_ref }} --fail-under=90
@@ -202,6 +201,17 @@ jobs:
           MINIO_SECRET_KEY: password
         run: |
           pytest tests/ -m "integration" --no-cov --benchmark-disable
+
+  airflow-image:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      # The scheduler image must import src/config/dags; a COPY-less
+      # Dockerfile ships an image that cannot run the pipeline.
+      - name: Build Airflow image
+        run: docker build -f Dockerfile.airflow -t tx-recon-airflow:ci .
 
   mutation-nightly:
     runs-on: ubuntu-latest
