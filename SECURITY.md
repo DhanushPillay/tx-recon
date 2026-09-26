@@ -40,7 +40,7 @@ assessment. Expect an initial response within 7 days.
 - Real-data provenance: `thiru1711/Financial_Transactions` (Hugging Face) has
   no license card — used on maintainer's explicit acceptance; re-evaluate
   before any redistribution. PII (`card_number`, names, addresses, balances)
-  is stripped by the one-time clean step (`data/thiru_clean.parquet`) and by
+  is stripped by the one-time clean step (intermediate parquet, since removed) and by
   `src/adapters/real_data.py`; only tx id, amount, date, merchant, card type
   enter the pipeline. Amounts are USD magnitudes treated as notional paise
   (ledger stays INR-only via NULL currency). Provenance is recorded in this file.
