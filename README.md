@@ -50,16 +50,16 @@ catalog `nessie`, schema `db`). Full setup: [docs/LOCAL_SETUP.md](docs/LOCAL_SET
 
 ```mermaid
 flowchart LR
-    G([Payment gateway]) -->|webhook events<br/>(Avro)| ING[1 · INGESTION<br/>Kafka (Redpanda) + streaming]
+    G([Payment gateway]) -->|webhook events in Avro| ING[1 - INGESTION<br/>Kafka via Redpanda + streaming]
     ING --> I[(webhooks table<br/>Iceberg)]
-    S([Settlement CSV<br/>from bank / PG]) --> V{2 · VALIDATION<br/>PAN + registry check}
+    S([Settlement CSV<br/>from bank or PG]) -->|PAN plus registry check| V{2 - VALIDATION<br/>valid}
     V -->|clean| N[normalize<br/>PG adapter]
     V -->|bad rows| Q[(Quarantine)]
-    N --> M[3 · MERGE<br/>match webhook vs settlement<br/>(fee engine decides MATCHED?)]
+    N --> M[3 - MERGE<br/>match webhook vs settlement<br/>fee engine decides MATCHED]
     M --> I
     B([Bank statement<br/>MT940]) --> E[(bank evidence)]
     E -->|3rd leg| M
-    I --> D[4 · DASHBOARD<br/>Trino + Metabase]
+    I --> D[4 - DASHBOARD<br/>Trino plus Metabase]
 ```
 
 Single node (0$): `SPARK_MODE=local` (`local[*]`, host driver + MinIO/Nessie/Redpanda/Trino via `docker compose up -d`). Terraform `infra/terraform/local` (LocalStack) proves cloud IaC without bill; same code deploys to `infra/terraform` (S3+Glue, KMS, lifecycle).
