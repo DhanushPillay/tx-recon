@@ -12,6 +12,10 @@ import re
 logger = logging.getLogger(__name__)
 
 _TXN_LINK = re.compile(r"TXN\d{6,}")
+# Derived statements (see build_bank_statement.py) carry the raw settlement id
+# behind an explicit marker — unambiguous, unlike bare digit runs which collide
+# with amounts and merchant ids in free text.
+_RECON_LINK = re.compile(r"ReconRef (\d{6,})")
 
 
 def _paise(amount) -> int:
@@ -54,6 +58,8 @@ def parse_mt940(path: str):
             str(d.get(k) or "") for k in ("transaction_details", "extra_details")
         ).strip()
         m = _TXN_LINK.search(narration)
+        rm = _RECON_LINK.search(narration) if not m else None
+        link = m.group(0) if m else (rm.group(1) if rm else None)
         amt = _paise(d.get("amount", 0))
         rows.append(
             {
@@ -61,7 +67,7 @@ def parse_mt940(path: str):
                 "amount_paise": amt if direction == "CREDIT" else -amt,
                 "value_date": day_iso,
                 "direction": direction,
-                "link_tx": m.group(0) if m else None,
+                "link_tx": link,
                 "narration": narration[:256],
             }
         )
