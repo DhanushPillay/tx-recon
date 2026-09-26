@@ -18,8 +18,8 @@ settlement nets come from an independent loader-side schedule, and
 ## Loader (`src/adapters/real_data.py`)
 
 - Raw `date` is TIMESTAMP(NANOS): Spark 3.5 cannot read it
-  (`Illegal Parquet type`). One-time clean step → `data/thiru_clean.parquet`
-  (126 MB): nanos → `YYYY-MM-DD` string + PII strip.
+  (`Illegal Parquet type`). One-time clean step (intermediate parquet, since
+  removed): nanos → `YYYY-MM-DD` string + PII strip.
 - Mapping: `transaction_id` (globally unique, verified via `np.unique`;
   regex-clean) → id; `amount*100` → paise brut (USD magnitudes treated as
   notional paise — ledger stays INR-only by treating currency as NULL);
