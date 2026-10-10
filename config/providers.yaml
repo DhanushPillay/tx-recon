@@ -1,7 +1,4 @@
-# Per-provider settlement behavior. Reconcile on batch, not calendar date:
-# cutoffs differ by rail, holidays shift, and multi-day batches are normal.
-# lag_days: webhook..settlement window still considered on-time.
-# late_sla_days: MISSING older than this flips to LATE_UNRESOLVED (default 7).
+# lag_days: on-time webhook window. late_sla_days: MISSING older than this flips late.
 default:
   lag_days: 2
   late_sla_days: 7
