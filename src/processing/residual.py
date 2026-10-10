@@ -1,15 +1,3 @@
-"""Downgrade-only residual scorer for tx-recon.
-
-Base MERGE is rule-based with F1=1.0 on the sealed harness. The residual
-may only demote MATCHED -> EXCEPTION_FEE_MISMATCH, never promote.
-Hence FP (hallucinated MATCH) is monotone non-increasing — proven in
-docs/PROOF.md.
-
-Scorer is pure Python, no new deps, so it is auditable. A learned
-logistic regression would replace score_match() internals with fit(),
-but the wrapper and proof stay identical.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -38,11 +26,6 @@ def score_match(
     *,
     fee_engine=None,
 ) -> float:
-    """Downgrade probability in [0,1] for a MATCHED row.
-
-    High score = mercy match that should be demoted. Strongest signal is
-    merchant-rate disagreement: default says MATCH but merchant says MISMATCH.
-    """
     if fee_engine is None:
         from src.processing.fee_engine import get_fee_engine
 
@@ -87,7 +70,6 @@ def should_downgrade(
     tau: float = DEFAULT_TAU,
     fee_engine=None,
 ) -> bool:
-    """True iff score >= tau. Caller must only call on MATCHED rows."""
     return (
         score_match(
             amount_paise,
@@ -106,15 +88,9 @@ def score_match_sql(
     w_amount="t2.amount_paise",
     s_settled="s.settled_amount_paise",
     s_inst="s.instrument_type",
-    s_merch="s.merchant_id",
+    s_merch="COALESCE(s.merchant_id, 'UNKNOWN')",
     s_date="s.settlement_date",
 ) -> str:
-    """SQL port of score_match(): same curve, set-based (no driver collect).
-
-    Reuses build_fee_case_sql/build_tolerance_case_sql so fee math stays
-    single-sourced. The default leg passes CAST(NULL AS STRING) as the
-    merchant column so merchant WHENs never match (merchant-agnostic rates).
-    """
     from src.processing.reconcile import build_fee_case_sql, build_tolerance_case_sql
 
     null_merch = "CAST(NULL AS STRING)"
@@ -157,14 +133,6 @@ def apply_residual(
     tau: float = DEFAULT_TAU,
     fee_engine=None,
 ) -> int:
-    """Batch post-pass: demote scored MATCHED rows. Returns rows demoted.
-
-    Set-based MERGE (no driver collect): scores every MATCHED row in Spark
-    via score_match_sql and demotes those >= tau. Never promotes.
-    Requires a temp view bank_settlements with
-    (transaction_id, settled_amount_paise, instrument_type, merchant_id,
-    settlement_date).
-    """
     from src.processing.reconcile import _qualified_table
 
     table = _qualified_table(table)
@@ -185,7 +153,6 @@ def apply_residual(
     try:
         to_demote = spark.sql(f"SELECT COUNT(*) AS n FROM ({scored_source})").collect()[0]["n"]
     except Exception as exc:
-        # Never report "0 demoted" on error: callers read 0 as a clean bill.
         logger.exception(f"residual scoring failed for {table}")
         raise RuntimeError(f"residual scoring failed for {table}: {exc}") from exc
     if not to_demote:
