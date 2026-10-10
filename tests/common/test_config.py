@@ -11,7 +11,7 @@ def test_settings_loads_defaults(monkeypatch):
     s = Settings()
     assert s.nessie_host == "localhost"
     assert "localhost" in s.minio_endpoint
-    assert s.redpanda_host == "localhost"
+    assert s.redpanda_host == "127.0.0.1"  # IPv4 literal: localhost hits ::1 first on some hosts
 
 
 def test_settings_switch_when_airflow_present(monkeypatch):
@@ -37,8 +37,6 @@ def test_no_table_prefix_keeps_local_tables(monkeypatch):
 
 
 def test_empty_jar_packages_falls_back_to_default(monkeypatch):
-    # Regression: an empty SPARK_JAR_PACKAGES= override once wiped the jar
-    # list and broke the Spark catalog with ClassNotFoundException.
     monkeypatch.setenv("SPARK_JAR_PACKAGES", "")
     s = Settings()
     assert "org.apache.iceberg" in s.spark_jar_packages
@@ -63,7 +61,6 @@ def test_get_spark_session_clears_spark_home(mock_spark_cls, monkeypatch):
 
 def test_get_spark_session_config_values(monkeypatch):
     monkeypatch.delenv("AIRFLOW_HOME", raising=False)
-    # Repo .env (docker hosts) must not leak into unit asserts: env wins over .env.
     monkeypatch.setenv("SPARK_MODE", "local")
     monkeypatch.setenv("NESSIE_HOST", "localhost")
     monkeypatch.setenv("NESSIE_PORT", "19120")
