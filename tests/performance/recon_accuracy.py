@@ -1,16 +1,7 @@
-"""Real-data reconciliation accuracy gate (no Spark needed).
-
-Joins the checked-in 10k real sample (data/samples/real_10k_*.csv, full
-data/real_thiru_full_*.csv when present) through FeeEngine.check_match and
-gates match_rate >= 85%. No synthetic breaks, no answer key: the loader mix
-targets ~90% matched, so a drop below 85% means fee miscalibration or drift.
-
-Usage: python tests/performance/recon_accuracy.py [--hooks CSV] [--settlements CSV]
-"""
-
 import argparse
 import csv
 import os
+import statistics
 
 from src.common.schemas import EXCEPTION_FEE_MISMATCH, EXCEPTION_MISSING_WEBHOOK, MATCHED
 from src.processing.fee_engine import FeeEngine
@@ -25,8 +16,6 @@ SAMPLE_SETTLE = os.path.normpath(os.path.join(HERE, "../../data/samples/real_10k
 
 
 def _default_paths():
-    # Pure-Python gate: always the 10k sample (fast, hermetic). Full-scale
-    # accuracy is covered by the Spark MERGE bench match_rate gate instead.
     return SAMPLE_HOOKS, SAMPLE_SETTLE
 
 
@@ -78,13 +67,35 @@ def run(hooks_csv=None, settle_csv=None):
     mismatched = sum(1 for v in predicted.values() if v == EXCEPTION_FEE_MISMATCH)
     orphans = sum(1 for v in predicted.values() if v == EXCEPTION_MISSING_WEBHOOK)
     joined = matched + mismatched
-    return {
+    rep = {
         "n": len(predicted),
         "matched": matched,
         "mismatched": mismatched,
         "orphans": orphans,
         "match_rate": round(matched / joined, 4) if joined else 0.0,
         "source": os.path.basename(h),
+    }
+    rep["mismatch_delta_abs"] = _mismatch_spread(webhooks, latest, predicted)
+    return rep
+
+
+def _mismatch_spread(webhooks, latest, predicted):
+    engine = FeeEngine()
+    gaps = []
+    for tx, status in predicted.items():
+        if status != EXCEPTION_FEE_MISMATCH:
+            continue
+        settled, sdate, smerch = latest[tx]
+        amount, inst, wmerch, _ = webhooks[tx]
+        _, res = engine.check_match(amount, settled, inst, smerch or wmerch, sdate or None)
+        gaps.append(abs(res.net_paise - settled))
+    if not gaps:
+        return {"p50": 0, "p90": 0, "max": 0}
+    ordered = sorted(gaps)
+    return {
+        "p50": ordered[len(ordered) // 2],
+        "p90": ordered[max(0, int(len(ordered) * 0.9) - 1)],
+        "max": ordered[-1],
     }
 
 
