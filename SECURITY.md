@@ -23,7 +23,11 @@ assessment. Expect an initial response within 7 days.
 ## Known Non-Goals (by design, not oversight)
 
 - Default credentials in `docker-compose.yml` / `.env.example` are local-only
-  placeholders. Never expose these ports beyond `localhost`. Secrets support
+  placeholders, and every published port is bound to `127.0.0.1` in
+  `docker-compose.yml` rather than `0.0.0.0` — that binding is what keeps the
+  unauthenticated services (Trino, Nessie, Redpanda admin, Metabase) and the
+  MinIO root account off the network, so do not "simplify" a
+  `"127.0.0.1:PORT:PORT"` mapping back to `"PORT:PORT"`. Secrets support
   `*_FILE` (mounted-file) resolution (`MINIO_SECRET_KEY_FILE`, `WEBHOOK_SECRET_FILE`,
   `KAFKA_SASL_PASSWORD_FILE`: file wins over empty env, explicit env wins over file).
   Prod must set `REQUIRE_KAFKA_SASL=1` (PLAINTEXT brokers trust forgeable records),
@@ -47,8 +51,14 @@ assessment. Expect an initial response within 7 days.
 - Deps are range-pinned (`pyproject.toml`); reproduce exact builds with
   `uv lock` and run `pip-audit`. CI gates blocking on `pip-audit` with 92 ignores (all pip-only locals — no prod service/network exposure; see `.github/workflows/ci.yml`). Re-audit on `uv lock` bumps; overrides live in `ci.yml`, not in docs.
 - Corrections are append-only with maker-checker (`src/processing/corrections.py: journal_correction` requires `reason` + `approved_by`; `scripts/replay_dlq.py` requires the same flags and journals the purge). No mutation without two eyes.
-- Webhook authenticity: producer signs `x-tx-sig: HMAC(transaction_id|amount)`
-  when `WEBHOOK_SECRET` is set; broker trust comes from SASL
-  (`KAFKA_SECURITY_PROTOCOL` + `KAFKA_SASL_*`). Spark's Kafka source exposes
-  no headers, so HMAC verify lives at the gateway edge, not in
-  `ingest_webhooks.py` (which warns when the secret is set without SASL and enforces `REQUIRE_KAFKA_SASL` / `REQUIRE_SCHEMA_REGISTRY` when those flags are set).
+- **Webhook authenticity is NOT enforced anywhere in this repository.** Set
+  `WEBHOOK_SECRET` expecting verification and you get none: the signature is
+  never emitted (no `x-tx-sig` header, and `WEBHOOK_AVRO_SCHEMA` in
+  `src/common/schemas.py` carries no signature field), and there is no verifier
+  in-repo — Spark's Kafka source exposes no record headers, so one cannot live
+  in `ingest_webhooks.py` even in principle. Verification belongs at the
+  gateway edge, outside this codebase.
+  The only real control on the wire is `REQUIRE_KAFKA_SASL=1`, which is off by
+  default; `ingest_webhooks.py` logs a warning when `WEBHOOK_SECRET` is set so
+  the gap is visible at run time. Treat the topic as trusted input, or deploy a
+  signing gateway, before anything shared.
