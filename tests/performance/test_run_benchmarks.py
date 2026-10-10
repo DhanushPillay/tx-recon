@@ -1,5 +1,3 @@
-"""Orchestrator routing: every accepted --suite choice must run something."""
-
 import sys
 
 import pytest
@@ -20,7 +18,6 @@ def _load_run_benchmarks():
 
 
 def test_pyspark_suite_invokes_pyspark_bench(tmp_path, monkeypatch):
-    """--suite pyspark must run the pyspark bench, not silently skip."""
     import pyspark_ingestion_benchmark as pib
 
     rb = _load_run_benchmarks()
