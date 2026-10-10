@@ -50,9 +50,12 @@ def test_downgrade_never_creates_fp():
     assert fp(pred_after) <= fp(pred_before)
 ```
 
-The test constructs random ledgers via hypothesis draws and asserts the inequality for all draws. It fails if any code path promotes `MISMATCH -> MATCHED`.
+The test draws random ledgers via hypothesis, scores each one through the **SQL the residual pass actually runs** (`score_match_sql`, evaluated by a real Spark session) and through `score_match`, asserts the two agree, then asserts the inequality over the SQL-derived score. It also asserts the pass can only demote: `apply_residual`'s MERGE has no `WHEN NOT MATCHED`, its source is gated on `reconciliation_status = 'MATCHED'`, and its `UPDATE SET` writes only `EXCEPTION_FEE_MISMATCH`.
+
+So a failure means one of three things: the SQL and Python scorers disagree, the score is non-monotone, or the demote-only gate was widened.
 
 ## What is not proven
 
 - Recall may decrease (intentional). The proof does not claim `F1` or `recall` preservation, only `FP` monotonicity.
+- That `apply_residual`'s demotion cannot later be undone by the next reconciliation batch: `EXCEPTION_FEE_MISMATCH` is not in `TERMINAL_STATUSES`, so clause 3 re-evaluates it and a corrected settlement promotes it back to `MATCHED`. That is intended (a corrected settlement should win) but it means the residual verdict is not sticky.
 - Timing, liveness, and streaming dedup are not covered here; they are tested separately in `docs/RUNBOOK.md` failure injection scenarios.
