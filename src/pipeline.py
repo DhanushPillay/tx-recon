@@ -1,13 +1,3 @@
-"""Daily reconciliation pipeline: cron/systemd replacement for the Airflow DAG.
-
-Real-data only. Usage:
-    python -m src.pipeline --date 2026-09-04
-    cron: 0 2 * * * .venv/bin/python -m src.pipeline --date $(date +%F)
-
-Fail-closed: merges a real PG settlement file, never fabricates one
-(validate raises FileNotFoundError when absent).
-"""
-
 import argparse
 import logging
 import os
@@ -17,33 +7,28 @@ logger = logging.getLogger(__name__)
 
 
 def check_batch_drift(counts: dict, ds: str | None = None) -> None:
-    """Fail closed if batch statuses don't tile deduped rows (shared cron/DAG).
-
-    batch_* counts join the DEDUPED settlement view 1:1 to the target, so they
-    must tile settlement_rows_deduped exactly. batch_EXCEPTION_DUPLICATE_SETTLEMENT
-    is a diagnostic (rows collapsed), not an outcome — never subtract it.
-    """
-    batch_n = counts.get("settlement_rows_deduped", 0)
+    batch_n = counts.get("settlement_rows_evaluated") or counts.get("settlement_rows_deduped", 0)
     batch_total = sum(
         v
         for k, v in counts.items()
         if k.startswith("batch_")
         and k != "batch_EXCEPTION_DUPLICATE_SETTLEMENT"
-        and isinstance(v, int)  # gauges like batch_match_rate (float) are not statuses
+        and isinstance(v, int)
     )
-    if batch_n and batch_total and batch_total != batch_n:
+    if batch_n == 0:
+        logger.warning(
+            "Empty settlement batch%s: 0 rows evaluated, no drift or SLO check possible.",
+            f" for ds={ds}" if ds else "",
+        )
+        return
+    if batch_total != batch_n:
         raise RuntimeError(
-            f"Batch drift{f' for ds={ds}' if ds else ''}: deduped {batch_n} "
+            f"Batch drift{f' for ds={ds}' if ds else ''}: evaluated {batch_n} "
             f"but batch statuses tile {batch_total} — investigate dedup/window."
         )
 
 
 def _resolve_batch_date(validated_path: str, date_str: str | None) -> str:
-    """Batch date for MERGE/drift: explicit --date wins, else the validated filename.
-
-    Fail closed: reconcile must never silently merge every curated file when the
-    date is unknown (date-less runs re-merge all history).
-    """
     import re
 
     if date_str:
@@ -57,26 +42,104 @@ def _resolve_batch_date(validated_path: str, date_str: str | None) -> str:
     return f"{stem[:4]}-{stem[4:6]}-{stem[6:]}"
 
 
-def run_daily(date_str: str | None = None) -> dict:
-    """Shared daily entrypoint for cron/main and Airflow DAG (single source of truth).
+def _run_residual(counts: dict) -> bool:
+    from src.common.config import get_spark_session
+    from src.common.settings import get_settings
+    from src.processing.reconcile import leg_enabled
+    from src.processing.residual import apply_residual
 
-    Real-data only: merges the PG settlement file for date_str, never synthesizes.
-    """
+    settings = get_settings()
+    if not leg_enabled("residual", settings):
+        logger.info("residual pass skipped: not in WIRED_LEGS")
+        return True
+    try:
+        counts["residual"] = apply_residual(get_spark_session("residual"), settings.webhook_table)
+    except Exception as exc:
+        msg = f"Residual pass failed: {exc}"
+        if settings.strict_slo:
+            raise RuntimeError(msg) from exc
+        logger.warning(msg)
+        return False
+    return True
+
+
+def _slo_ok(counts: dict) -> bool:
+    try:
+        slo = float(os.environ.get("MATCH_RATE_SLO", 0.95))
+    except (TypeError, ValueError):
+        slo = 0.95
+    rate = counts.get("batch_match_rate")
+    if rate is None:
+        return True
+    try:
+        return float(rate) >= slo
+    except (TypeError, ValueError):
+        return False
+
+
+def run_daily(date_str: str | None = None) -> dict:
     import json
 
-    from src.processing.reconcile import maintain_tables, run_reconciliation
+    from src.common.config import get_spark_session
+    from src.common.settings import get_settings
+    from src.processing.reconcile import leg_enabled, maintain_tables, run_reconciliation
+    from src.processing.wap import (
+        branch_name,
+        create_branch,
+        drop_branch,
+        enable_wap,
+        publish_branch,
+        use_branch,
+    )
     from src.validation.validate_settlement import validate_latest_settlement
 
-    logger.info("Step 1/2: validating real PG settlement file")
+    settings = get_settings()
+    logger.info("Step 1/4: validating real PG settlement file")
     curated_path = validate_latest_settlement(date_str=date_str)
     if not curated_path:
         raise RuntimeError("validation returned no curated file")
     batch_date = _resolve_batch_date(curated_path, date_str)
-    logger.info("Step 2/2: running reconciliation MERGE")
-    counts: dict = run_reconciliation(date_str=batch_date)
+
+    wap_on = leg_enabled("wap", settings)
+    branch = branch_name(batch_date)
+    if wap_on:
+        spark = get_spark_session("pipeline")
+        enable_wap(spark, settings.webhook_table)
+        drop_branch(spark, settings.webhook_table, branch)
+        create_branch(spark, settings.webhook_table, branch)
+        use_branch(spark, branch)
+
+    published = False
+    try:
+        logger.info("Step 2/4: running reconciliation MERGE")
+        counts: dict = run_reconciliation(date_str=batch_date)
+        logger.info("Step 3/4: running residual second opinion")
+        residual_ok = _run_residual(counts)
+        logger.info("Step 4/4: verifying batch and publishing")
+        check_batch_drift(counts, ds=batch_date)
+        if not residual_ok:
+            raise RuntimeError("publish gate failed: residual second opinion failed")
+        if not _slo_ok(counts):
+            raise RuntimeError(
+                f"publish gate failed: batch_match_rate {counts.get('batch_match_rate')} "
+                f"< SLO {os.environ.get('MATCH_RATE_SLO', 0.95)}"
+            )
+        published = True
+    finally:
+        if wap_on:
+            try:
+                if published:
+                    publish_branch(spark, settings.webhook_table, branch, validated=True)
+                    drop_branch(spark, settings.webhook_table, branch)
+                else:
+                    drop_branch(spark, settings.webhook_table, branch)
+            except Exception as exc:
+                logger.warning(f"WAP finalize failed: {exc}")
+                if published:
+                    raise
+            use_branch(spark, None)
     logger.info(f"Pipeline done: {counts}")
-    check_batch_drift(counts, ds=batch_date)
-    try:  # machine-readable ops record next to the curated file
+    try:
         metrics_path = os.path.join(
             os.path.dirname(curated_path), f"metrics_{batch_date.replace('-', '')}.json"
         )
