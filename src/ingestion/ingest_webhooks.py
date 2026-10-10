@@ -1,5 +1,6 @@
 import logging
 import re
+import time
 
 import pyspark.sql.functions as F
 from pyspark.sql.avro.functions import from_avro
@@ -10,6 +11,7 @@ from src.common.config import get_spark_session
 from src.common.schemas import (
     EXCEPTION_LATE_UNRESOLVED,
     EXCEPTION_MISSING_WEBHOOK,
+    PENDING_RECONCILIATION,
     WEBHOOK_AVRO_SCHEMA,
 )
 from src.common.settings import get_settings
@@ -17,9 +19,6 @@ from src.processing.reconcile import _qualified_table
 
 logger = logging.getLogger(__name__)
 
-# Target-table column orders (mirror ensure_webhook_table / DLQ DDL below).
-# The batch carries schema_id/event_time extras, so both writes name their
-# columns explicitly: positional INSERT * / append mis-align on any drift.
 _WEBHOOK_COLS = [
     "transaction_id",
     "amount_paise",
@@ -43,27 +42,36 @@ _DLQ_COLS = [
 
 _WATERMARK_RE = re.compile(r"^(\d+)\s+(seconds?|minutes?|hours?|days?)$", re.IGNORECASE)
 
+_SUPERVISOR_MAX_ATTEMPTS = 5
+_SUPERVISOR_BASE_DELAY_S = 5.0
+_SUPERVISOR_MAX_DELAY_S = 300.0
+
+
+def supervisor_delay(attempt: int) -> float:
+    return min(_SUPERVISOR_BASE_DELAY_S * (2**attempt), _SUPERVISOR_MAX_DELAY_S)
+
 
 def parse_watermark_delay(delay: str) -> tuple[int, str]:
-    """Validate STREAM_WATERMARK_DELAY into (amount, unit) for INTERVAL use.
-
-    Allowlist only (digits + time unit) so the parts are safe to interpolate
-    into Spark SQL — the table names already go through _qualified_table.
-    """
     m = _WATERMARK_RE.match(delay.strip())
     if not m:
         raise ValueError(f"Bad STREAM_WATERMARK_DELAY {delay!r}: want e.g. '1 day', '12 hours'")
     return int(m.group(1)), m.group(2).lower()
 
 
-def _registry_schema_id(settings, required: bool = False) -> str | None:
-    """Latest Avro schema id for the topic value-subject (warn-only if unreachable).
+# nulling the payload turns a bad message into a dlq row instead of killing the stream
+def _decode_guard(df):
+    return (
+        df.withColumn("fixed_value", expr("substring(value, 6, length(value)-5)"))
+        .withColumn("schema_id", expr("conv(hex(substring(value, 2, 4)), 16, 10)"))
+        .withColumn(
+            "decodable",
+            expr("value IS NOT NULL AND length(value) > 5 AND substr(value, 1, 1) = X'00'"),
+        )
+        .withColumn("fixed_value", expr("CASE WHEN decodable THEN fixed_value END"))
+    )
 
-    The streaming parse uses a pinned local copy (WEBHOOK_AVRO_SCHEMA), so a
-    producer-side evolution shows up as per-batch id drift in _write_batch
-    instead of a silent DLQ flood. Never raises unless required: registry down
-    must not block ingestion, it just disables the drift comparison.
-    """
+
+def _registry_schema_id(settings, required: bool = False) -> str | None:
     try:
         from confluent_kafka.schema_registry import SchemaRegistryClient
 
@@ -103,7 +111,7 @@ def run_ingestion():
     kafka_opts = {
         "kafka.bootstrap.servers": settings.kafka_broker,
         "subscribe": settings.topic_name,
-        "startingOffsets": "earliest",
+        "startingOffsets": settings.stream_starting_offsets,
     }
     if settings.kafka_security_protocol != "PLAINTEXT":
         kafka_opts.update(
@@ -133,42 +141,34 @@ def run_ingestion():
         reader = reader.option(k, v)
     df = reader.load()
 
-    # Confluent Avro wire format: Magic Byte (1 byte) + Schema ID (4 bytes)
-    df = df.withColumn("fixed_value", expr("substring(value, 6, length(value)-5)"))
-    # Carry the writer schema id alongside the payload: from_avro parses with
-    # the pinned local copy, so per-batch ids are the drift signal that catches
-    # a producer-side evolution before it becomes a DLQ flood.
-    df = df.withColumn("schema_id", expr("conv(hex(substring(value, 2, 4)), 16, 10)"))
+    df = _decode_guard(df)
     _expected_schema_id = _registry_schema_id(settings, required=settings.require_schema_registry)
 
     parsed_df = df.select(
-        from_avro(col("fixed_value"), WEBHOOK_AVRO_SCHEMA).alias("data"), col("schema_id")
-    ).select("data.*", "schema_id")
-    # Event time for watermarking (Avro carries ISO string; watermark needs TimestampType).
-    # withWatermark bounds dropDuplicates state: keys older than the delay are evicted,
-    # so the state store cannot grow without bound on a long-lived stream.
+        from_avro(col("fixed_value"), WEBHOOK_AVRO_SCHEMA).alias("data"),
+        col("schema_id"),
+        col("decodable"),
+    ).select("data.*", "schema_id", "decodable")
     _wm_n, _wm_unit = parse_watermark_delay(settings.stream_watermark_delay)
     parsed_df = parsed_df.withColumn(
         "event_time", to_timestamp(col("timestamp_utc"))
     ).withWatermark("event_time", f"{_wm_n} {_wm_unit}")
 
-    # NULL-safe split: corrupt from_avro rows yield NULLs, and NULL > 0 / NULL <= 0
-    # are both NULL (3VL), so a naive <= 0 complement silently drops them.
-    # valid keeps only TRUE; invalid keeps FALSE *or* NULL via coalesce.
-    valid_cond = (col("amount_paise") > 0) & (col("transaction_id").isNotNull())
+    valid_cond = col("decodable") & (col("amount_paise") > 0) & (col("transaction_id").isNotNull())
 
     warehouse = settings.iceberg_warehouse
     webhook_table = _qualified_table(settings.webhook_table)
     dlq_table = _qualified_table(settings.dlq_table)
+    checkpoint = settings.stream_checkpoint_location or f"{warehouse}/checkpoints/webhooks_all"
+
+    ensure_webhook_table(spark, webhook_table)
+    ensure_dlq_table(spark, dlq_table)
 
     logger.info(f"Starting stream to Iceberg {webhook_table} (+ DLQ {dlq_table})")
 
     def _write_batch(batch_df, _epoch: int) -> None:
-        # Empty triggers are common: limit-1 check skips count + MERGE planning.
         if batch_df.isEmpty():
             return
-        # Cache once: this batch otherwise gets re-scanned from the source on
-        # every action below (schema-id distinct, late count, MERGE, DLQ count).
         batch_df = batch_df.cache()
         try:
             _write_batch_cached(batch_df)
@@ -176,8 +176,6 @@ def run_ingestion():
             batch_df.unpersist()
 
     def _write_batch_cached(batch_df) -> None:
-        # Schema-id drift: writer evolved without updating the pinned copy.
-        # Warn-only (parse still runs); the oncall checks the registry diff.
         try:
             _ids = sorted(
                 {str(r["schema_id"]) for r in batch_df.select("schema_id").distinct().collect()}
@@ -186,34 +184,29 @@ def run_ingestion():
             _ids = []
             logger.warning(f"schema-id check skipped: {exc}")
         if _ids and _expected_schema_id and any(i != _expected_schema_id for i in _ids):
-            logger.warning(
+            raise RuntimeError(
                 f"schema-id drift: batch ids {_ids} vs registry {_expected_schema_id} "
-                f"({settings.topic_name}-value) — verify producer evolution"
+                f"({settings.topic_name}-value). Fields outside {_WEBHOOK_COLS} are "
+                "dropped by the MERGE, so the batch is refused. Update "
+                "src/common/schemas.py (and ALTER the table) before ingesting."
             )
-        # Late-data policy: count rows arriving older than the watermark delay.
-        # They still merge (effect path is idempotent) but the count is the
-        # side-output the oncall watches; alert threshold lives in the runbook.
         _late_n = batch_df.filter(
             col("event_time").isNotNull()
             & (col("event_time") < F.expr(f"current_timestamp() - INTERVAL {_wm_n} {_wm_unit}"))
         ).count()
         if _late_n:
             logger.warning(f"late-data: {_late_n} rows older than {_wm_n} {_wm_unit} in batch")
-        # No-PAN gate before any write (MERGE or DLQ): a card number in the
-        # batch would put the lake in PCI scope. JVM prefilter + driver Luhn,
-        # collect bounded by candidate rows (normally zero).
+        _bad_ts_n = batch_df.filter(
+            col("event_time").isNull() & col("timestamp_utc").isNotNull()
+        ).count()
+        if _bad_ts_n:
+            logger.warning(
+                f"unparseable timestamp_utc: {_bad_ts_n} rows in batch, excluded from "
+                "the late-data count (timestamp_utc is an unconstrained Avro string)"
+            )
         from src.validation.pan_guard import count_spark_pan_hits
 
-        _pan_n = count_spark_pan_hits(
-            batch_df,
-            [
-                "transaction_id",
-                "gateway_status",
-                "timestamp_utc",
-                "merchant_id",
-                "processing_run_id",
-            ],
-        )
+        _pan_n = count_spark_pan_hits(batch_df)
         if _pan_n:
             raise RuntimeError(
                 f"PAN detected in streaming batch ({_pan_n} rows): refusing batch "
@@ -221,7 +214,7 @@ def run_ingestion():
             )
         v = batch_df.filter(valid_cond).dropDuplicates(["transaction_id"])
         v = (
-            v.withColumn("reconciliation_status", col("gateway_status"))
+            v.withColumn("reconciliation_status", lit(PENDING_RECONCILIATION))
             .withColumn("bank_ref_id", lit(None).cast("string"))
             .withColumn("ingested_at", current_timestamp())
             .withColumn("instrument_type", lit(None).cast("string"))
@@ -229,50 +222,70 @@ def run_ingestion():
         v.createOrReplaceTempView("batch_valid")
         _cols = ", ".join(_WEBHOOK_COLS)
         _vals = ", ".join(f"s.{c}" for c in _WEBHOOK_COLS)
-        # Table via _qualified_table, columns are module constants:
-        # injection-safe by construction (file-level S608 ignore, like reconcile).
         spark.sql(
             f"MERGE INTO {webhook_table} t USING batch_valid s "
             "ON t.transaction_id = s.transaction_id "
-            f"WHEN MATCHED AND (t.reconciliation_status = '{EXCEPTION_MISSING_WEBHOOK}' OR t.reconciliation_status = '{EXCEPTION_LATE_UNRESOLVED}') THEN "
+            f"WHEN MATCHED AND (t.reconciliation_status = '{EXCEPTION_MISSING_WEBHOOK}' "
+            f"OR t.reconciliation_status = '{EXCEPTION_LATE_UNRESOLVED}' "
+            f"OR t.reconciliation_status = '{PENDING_RECONCILIATION}') THEN "
             "UPDATE SET t.amount_paise = s.amount_paise, t.gateway_status = s.gateway_status, "
             "t.timestamp_utc = s.timestamp_utc, t.merchant_id = s.merchant_id, "
             "t.processing_run_id = s.processing_run_id, "
-            "t.reconciliation_status = s.gateway_status, t.ingested_at = s.ingested_at "
+            f"t.reconciliation_status = '{PENDING_RECONCILIATION}', t.ingested_at = s.ingested_at "
             f"WHEN NOT MATCHED THEN INSERT ({_cols}) VALUES ({_vals})"
         )
-        inv = (
-            batch_df.filter(~F.coalesce(valid_cond, F.lit(False)))
-            .dropDuplicates(["transaction_id"])
-            .select(*_DLQ_COLS)
-        )
-        # Single count: isEmpty()+count() was two jobs per microbatch.
+        inv = batch_df.filter(~F.coalesce(valid_cond, F.lit(False))).select(*_DLQ_COLS)
         n_inv = inv.count()
         if n_inv:
             logger.warning(f"DLQ batch: {n_inv} invalid rows -> {dlq_table}")
-            inv.writeTo(dlq_table).append()
+            # MERGE not append: supervisor replays make appends duplicate DLQ rows.
+            # NULL transaction_ids never match (NULL != NULL) and still insert per
+            # retry — keyed rows, the common case, converge idempotently.
+            inv.dropDuplicates(["transaction_id"]).createOrReplaceTempView("batch_invalid")
+            _dlq_cols = ", ".join(_DLQ_COLS)
+            _dlq_vals = ", ".join(f"s.{c}" for c in _DLQ_COLS)
+            spark.sql(
+                f"MERGE INTO {dlq_table} t USING batch_invalid s "
+                "ON t.transaction_id = s.transaction_id "
+                f"WHEN NOT MATCHED THEN INSERT ({_dlq_cols}) VALUES ({_dlq_vals})"
+            )
 
     spark.streams.addListener(_BatchProgressLogger())
-    query = (
-        parsed_df.writeStream.foreachBatch(_write_batch)
-        .queryName("webhooks_all")
-        .trigger(processingTime="10 seconds")
-        .option("maxOffsetsPerTrigger", 200000)
-        .option("checkpointLocation", f"{warehouse}/checkpoints/webhooks_all")
-        .start()
+    logger.info(
+        f"startingOffsets={settings.stream_starting_offsets} (no-checkpoint only) checkpoint={checkpoint}"
     )
-    query.awaitTermination()
+    _attempt = 0
+    while True:
+        try:
+            query = (
+                parsed_df.writeStream.foreachBatch(_write_batch)
+                .queryName("webhooks_all")
+                .trigger(processingTime="60 seconds")
+                .option("maxOffsetsPerTrigger", 200000)
+                .option("checkpointLocation", checkpoint)
+                .start()
+            )
+            query.awaitTermination()
+            break
+        except Exception:
+            _attempt += 1
+            if _attempt >= _SUPERVISOR_MAX_ATTEMPTS:
+                logger.error(
+                    f"ingestion stream failed {_attempt} times, giving up. Inspect the "
+                    "batch error and the DLQ before restarting; a message that always "
+                    "fails will fail again on the replay."
+                )
+                raise
+            _delay = supervisor_delay(_attempt - 1)
+            logger.warning(
+                f"ingestion stream died, restart {_attempt}/{_SUPERVISOR_MAX_ATTEMPTS} "
+                f"in {_delay:.0f}s (offsets commit only on success, so the failed batch "
+                "replays and the MERGE converges)"
+            )
+            time.sleep(_delay)
 
 
 def ensure_webhook_table(spark, table: str) -> None:
-    """Create namespace + webhooks Iceberg table if missing (shared by the
-    streaming __main__ init and the pipeline real-data seeder).
-
-    Layout: bucket(16, transaction_id) co-locates MERGE join keys so batches
-    prune to file groups instead of full-scanning history (verified live).
-    Applies to NEW tables only (IF NOT EXISTS): existing unpartitioned tables
-    keep their spec — migrate via CREATE new + INSERT + swap, never in place.
-    """
     *parts, _ = table.split(".")
     spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {'.'.join(parts)}")
     spark.sql(
@@ -296,29 +309,19 @@ def ensure_webhook_table(spark, table: str) -> None:
             'write.parquet.compression-codec' = 'zstd',
             'write.merge.mode' = 'merge-on-read',
             'write.delete.mode' = 'merge-on-read',
-            'write.update.mode' = 'merge-on-read'
+            'write.update.mode' = 'merge-on-read',
+            'gc.enabled' = 'true'
         )
     """
     )
-    # Cluster MERGE join key so equality lookups avoid full sort on every write.
-    try:
-        spark.sql(f"ALTER TABLE {table} WRITE ORDERED BY transaction_id")
-    except Exception as exc:
-        logger.warning(f"Write ordering skipped for {table}: {exc}")
 
 
-if __name__ == "__main__":
-    settings = get_settings()
-    webhook_table = _qualified_table(settings.webhook_table)
-    dlq_table = _qualified_table(settings.dlq_table)
-
-    logger.info("Initializing Iceberg tables via Nessie")
-    spark = get_spark_session("Init")
-    ensure_webhook_table(spark, webhook_table)
-
+def ensure_dlq_table(spark, table: str) -> None:
+    *parts, _ = table.split(".")
+    spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {'.'.join(parts)}")
     spark.sql(
         f"""
-        CREATE TABLE IF NOT EXISTS {dlq_table} (
+        CREATE TABLE IF NOT EXISTS {table} (
             transaction_id string,
             amount_paise bigint,
             gateway_status string,
@@ -332,9 +335,21 @@ if __name__ == "__main__":
             'write.parquet.compression-codec' = 'zstd',
             'write.merge.mode' = 'merge-on-read',
             'write.delete.mode' = 'merge-on-read',
-            'write.update.mode' = 'merge-on-read'
+            'write.update.mode' = 'merge-on-read',
+            'gc.enabled' = 'true'
         )
     """
     )
+
+
+if __name__ == "__main__":
+    settings = get_settings()
+    webhook_table = _qualified_table(settings.webhook_table)
+    dlq_table = _qualified_table(settings.dlq_table)
+
+    logger.info("Initializing Iceberg tables via Nessie")
+    spark = get_spark_session("Init")
+    ensure_webhook_table(spark, webhook_table)
+    ensure_dlq_table(spark, dlq_table)
 
     run_ingestion()
