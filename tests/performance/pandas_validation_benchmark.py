@@ -75,7 +75,6 @@ def run_single(rows, output_dir, warmup_runs=2, iters=7, input_csv=None, dedup=F
         REAL_SETTLEMENT_CSV if os.path.exists(REAL_SETTLEMENT_CSV) else SAMPLE_SETTLEMENT_CSV
     )
 
-    # Warmup (load to memory)
     for _ in range(warmup_runs):
         pd.read_csv(latest)
 
@@ -84,8 +83,6 @@ def run_single(rows, output_dir, warmup_runs=2, iters=7, input_csv=None, dedup=F
 
     pf = pl.read_csv(latest)
     rows = len(df)
-    # Prod loads CSVs as dtype=str before validation; real numeric ids need
-    # the same cast or the bench's str schema rejects them (untimed setup).
     df["transaction_id"] = df["transaction_id"].astype(str)
     df["bank_ref_id"] = df["bank_ref_id"].astype(str)
     pf = pf.with_columns(
@@ -93,9 +90,6 @@ def run_single(rows, output_dir, warmup_runs=2, iters=7, input_csv=None, dedup=F
         pl.col("bank_ref_id").cast(pl.String),
     )
     if dedup:
-        # Untimed setup: prod dedups post-validation (WINDOW latest-wins);
-        # the bench schema demands unique ids, so collapse first and report
-        # the deduped count. CSV order is oldest-first, keep="last" matches.
         df = df.drop_duplicates("transaction_id", keep="last")
         pf = pf.unique(subset="transaction_id", keep="last")
         rows = len(df)
@@ -113,7 +107,6 @@ def run_single(rows, output_dir, warmup_runs=2, iters=7, input_csv=None, dedup=F
 
     methods = {}
 
-    # Pandera
     times = []
     for _ in range(iters):
         start = time.perf_counter()
@@ -124,7 +117,6 @@ def run_single(rows, output_dir, warmup_runs=2, iters=7, input_csv=None, dedup=F
         "std_ms": round(statistics.stdev(times), 2) if len(times) > 1 else 0,
     }
 
-    # Manual pandas
     times = []
     for _ in range(iters):
         start = time.perf_counter()
@@ -135,7 +127,6 @@ def run_single(rows, output_dir, warmup_runs=2, iters=7, input_csv=None, dedup=F
         "std_ms": round(statistics.stdev(times), 2) if len(times) > 1 else 0,
     }
 
-    # Pydantic
     times = []
     for _ in range(iters):
         start = time.perf_counter()
@@ -146,7 +137,6 @@ def run_single(rows, output_dir, warmup_runs=2, iters=7, input_csv=None, dedup=F
         "std_ms": round(statistics.stdev(times), 2) if len(times) > 1 else 0,
     }
 
-    # Polars (in-memory, same CSV preloaded once — no disk IO in the timed path)
     times = []
     for _ in range(iters):
         start = time.perf_counter()
