@@ -1,5 +1,3 @@
--- Fee-mismatch exposure per payment instrument, in rupees.
--- Rows seeded before the instrument column land NULL and are excluded.
 SELECT
     instrument_type,
     COUNT(*) AS mismatches,
