@@ -28,7 +28,6 @@ def test_generic_adapter_canonical():
 
 
 def test_razorpay_adapter_inr_conversion_and_mapping():
-    # Razorpay ships Amount/Settlement Amount as INR decimal strings with Fee/Tax
     df = pd.DataFrame(
         {
             "Payment Id": ["pay_ABC123"],
@@ -43,7 +42,6 @@ def test_razorpay_adapter_inr_conversion_and_mapping():
         }
     )
     out = RazorpayAdapter().normalize(df)
-    # Razorpay Payment Id preserved as transaction_id (pay_ prefix, not synthetic tx_)
     assert out.iloc[0]["transaction_id"] == "pay_ABC123"
     assert out.iloc[0]["settled_amount_paise"] == 97640
     assert out.iloc[0]["gross_amount_paise"] == 100000
@@ -104,7 +102,6 @@ def test_detect_adapter_generic_vs_razorpay():
 
 
 def test_roundtrip_quarantine_path():
-    # Empty string becomes NA, not zero
     df = pd.DataFrame(
         {
             "bank_ref_id": ["bnk_1"],
