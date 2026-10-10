@@ -37,6 +37,8 @@ settlement nets come from an independent loader-side schedule, and
 
 ## Results
 
+Re-verified 9 Oct 2026 via `tests/performance/recon_accuracy.py` on the full files (244s): identical counts to the table below — no matcher drift.
+
 | Run | Settlement rows | Deduped | MATCHED | MISSING | LATE | MISMATCH | Match rate |
 | --- | --------------- | ------- | ------- | ------- | ---- | -------- | ---------- |
 | 1% sample (seed 7) | 128,088 | 125,575 | 112,911 | 6,315 | 6,315* | 6,349 | 89.92% |
@@ -49,7 +51,7 @@ Every column tiles exactly (e.g. 11,368,871+625,665+6,315+634,376=12,635,227);
 
 - Full MERGE end-to-end (CSV read + dedup + MERGE + mart): **105 s for
   12.6M rows** on 15.8 GB RAM box (8g driver / 128 shuffle partitions).
-  Default 2g driver OOMs at this scale — scale runs need the override.
+  That pair is now the shipped default; the old 2g/32 default OOMed here.
 - Validation: 12.9M rows clean in 173 s (chunked path). One real catch during
   the work: a $0.005 dust amount + noise −1 produced `settled=0` and was
   quarantined (1/12.9M). Loader now clamps noise to ≥1 (`_noise_delta` +
@@ -75,16 +77,17 @@ Full method in `tests/performance/` (real-only inputs with 10k sample
 fallback); combined record in `results_real.json`, gated by
 `check_regression.py` (rows/sec drop >15% or match_rate <85% fails).
 
-| Suite | Scale | Result (25 Sep 2026) |
+| Suite | Scale | Result (9 Oct 2026) |
 | --- | --- | --- |
-| Iceberg MERGE | 1M, 10% update | 6.0 s write, 94.67% match |
-| Iceberg MERGE | 1M, 50% update | 13.25 s write, 94.66% match |
-| Iceberg MERGE | 5M, 10% update | 6.83 s write, 94.7% match |
-| Iceberg MERGE | 5M, 50% update | 11.61 s write, 94.71% match |
-| Iceberg MERGE | 12M, 10% update | 10.32 s write, 94.69% match |
-| Iceberg MERGE | 12M, 50% update | 56.73 s write, 94.71% match |
-| Validation (12.9M rows) | pandera / manual / pydantic / polars | 763k / 3.34M / 178k / 9.43M rows/s |
-| Kafka producer (real ~150 B records) | 1M msgs, acks=all, lz4 | 225,123 msgs/s; serial p50 0.65 ms, p95 1.11 ms, p99 3.97 ms |
+| Iceberg MERGE | 1M, 10% update | 3.09 s write, 94.67% match |
+| Iceberg MERGE | 1M, 50% update | 11.21 s write, 94.66% match |
+| Iceberg MERGE | 5M, 10% update | 12.0 s write, 94.7% match |
+| Iceberg MERGE | 5M, 50% update | 19.81 s write, 94.71% match |
+| Iceberg MERGE | 12M, 10% update | 18.69 s write, 94.69% match |
+| Iceberg MERGE | 12M, 50% update | 34.32 s write, 94.71% match |
+| Validation (12.9M rows) | pandera / manual / pydantic / polars | 1.24M / 2.93M / 132k / 7.07M rows/s |
+| Kafka producer (real ~150 B records) | 1M msgs, acks=all, lz4 | 224,237 msgs/s; serial p50 0.75 ms, p95 1.17 ms, p99 2.82 ms |
+| Streaming ingestion (Kafka → Iceberg) | 1.54M rows over 120 s | 12,832 rows/s sustained |
 
 Notes: match rate ~94.7% (not 90%) because tx-ordered bench slices sample
 the mix unevenly; health gate is ≥85%. Kafka latency measured isolated —
