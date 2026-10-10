@@ -54,13 +54,9 @@ def validate_settlement_task(ds, **kwargs):
 
 
 def run_reconciliation_task(ds, **kwargs):
-    from src.pipeline import check_batch_drift
-    from src.processing.reconcile import maintain_tables, run_reconciliation
+    from src.pipeline import run_daily
 
-    counts = run_reconciliation(date_str=ds)
-    check_batch_drift(counts, ds=ds)
-    counts["maintenance"] = maintain_tables()
-    return counts
+    return run_daily(date_str=ds)
 
 
 with DAG(
@@ -70,6 +66,7 @@ with DAG(
     schedule="@daily",
     start_date=datetime(2023, 1, 1, tzinfo=UTC),
     catchup=False,
+    max_active_runs=1,
     tags=["finance", "reconciliation"],
     sla_miss_callback=failure_callback,
 ) as dag:
@@ -86,6 +83,8 @@ with DAG(
     run_reconciliation_op = PythonOperator(
         task_id="run_pyspark_reconciliation",
         python_callable=run_reconciliation_task,
+        sla=timedelta(hours=2),
+        execution_timeout=timedelta(hours=2),
     )
 
     (generate_settlement >> validate_settlement_op >> run_reconciliation_op)
