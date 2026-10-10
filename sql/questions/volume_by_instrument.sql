@@ -1,4 +1,3 @@
--- Volume and row counts per payment instrument.
 SELECT
     instrument_type,
     COUNT(*) AS n,
