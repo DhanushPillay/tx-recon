@@ -1,16 +1,3 @@
-"""ServiceLab-lite regression gate: fail a PR if perf moved vs baseline.
-
-Real-data only. Compares tests/performance/results_real.json against a baseline:
-  - throughput_msgs_sec must not drop more than 15%
-  - ack p99 must not rise more than 20%
-  - iceberg rows_per_sec (if present both sides) must not drop more than 15%
-  - real match_rate must stay >= 85%
-
-Usage:
-    python tests/performance/check_regression.py --baseline baseline_results_real.json
-    python tests/performance/check_regression.py  # compares nothing, prints current
-"""
-
 import argparse
 import json
 import os
@@ -22,6 +9,19 @@ P99_RISE_PCT = 20.0
 
 def _pct_change(new, old):
     return (new - old) / old * 100 if old else 0.0
+
+
+def _comparable(results):
+    found = []
+    k = results.get("kafka", {})
+    if "throughput_msgs_sec" in k:
+        found.append("kafka.throughput_msgs_sec")
+    if "p99" in k.get("ack_latency", {}):
+        found.append("kafka.ack_latency.p99")
+    for bench, vals in results.get("iceberg", {}).get("benchmarks", {}).items():
+        if "rows_per_sec" in vals:
+            found.append(f"iceberg.benchmarks.{bench}.rows_per_sec")
+    return found
 
 
 def check(current, baseline):
@@ -58,7 +58,10 @@ def check(current, baseline):
     acc = current.get("accuracy", {})
     if acc and acc.get("match_rate", 1.0) < 0.85:
         failures.append("real accuracy gate failed (match_rate < 85%)")
-    return failures, warn
+    compared = set(_comparable(current)) & set(_comparable(baseline))
+    for name in sorted(set(_comparable(baseline)) - compared):
+        warn.append(f"baseline measures {name} but this run did not, so no comparison ran for it")
+    return failures, warn, compared
 
 
 if __name__ == "__main__":
@@ -77,7 +80,7 @@ if __name__ == "__main__":
         sys.exit(0)
     with open(args.baseline) as f:
         baseline = json.load(f)
-    failures, warn = check(current, baseline)
+    failures, warn, compared = check(current, baseline)
     for w in warn:
         print(f"WARNING: {w}")
     if failures:
@@ -86,3 +89,4 @@ if __name__ == "__main__":
             print(f"  - {f_}")
         sys.exit(1)
     print("No regression vs baseline.")
+    print(f"Compared throughput metrics: {', '.join(sorted(compared)) or 'none'}")
