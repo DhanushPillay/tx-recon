@@ -1,8 +1,3 @@
-"""Derived bank statement: MT940 built from real settlement rows.
-
-Covers the RED test driving the builder (tmp in -> parse back -> links hold).
-"""
-
 import csv
 
 from src.adapters.build_bank_statement import build_bank_statement
