@@ -1,10 +1,3 @@
-"""Corrections journal: every manual money mutation recorded append-only.
-
-The MERGE mutates statuses in place by design; this journal is the audit
-counterweight. Destructive ops (DLQ purge, manual re-match) must log who,
-why (ticket), and what changed. No entry, no mutation.
-"""
-
 import json
 import logging
 import os
@@ -20,7 +13,6 @@ def journal_correction(
     approved_by: str,
     details: dict | None = None,
 ) -> str:
-    """Append one correction record. Empty reason/approver refuses (maker-checker)."""
     if not (reason or "").strip():
         raise ValueError("correction requires a reason (ticket/cause)")
     if not (approved_by or "").strip():
