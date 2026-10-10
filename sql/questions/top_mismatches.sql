@@ -1,4 +1,3 @@
--- Top 10 fee mismatches by amount: where to look first.
 SELECT
     transaction_id,
     merchant_id,
