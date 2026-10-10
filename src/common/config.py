@@ -6,11 +6,6 @@ from src.common.settings import get_settings
 
 
 def _check_java_home() -> None:
-    """Drop a dangling JAVA_HOME so the JVM launch fails clearly, not cryptically.
-
-    A stale JAVA_HOME (e.g. pointing at a deleted JDK) makes PySpark die with a
-    bare FileNotFoundError from the gateway launcher. Warn and fall back to PATH.
-    """
     import logging
     import shutil
 
@@ -29,7 +24,6 @@ def _check_java_home() -> None:
 
 
 def get_spark_session(app_name: str = "TxRecon") -> SparkSession:
-    """Build the Iceberg+Nessie+S3A Spark session. Reads all config from Settings."""
     settings = get_settings()
 
     if settings.iceberg_warehouse.startswith("s3a://") and (
@@ -40,7 +34,6 @@ def get_spark_session(app_name: str = "TxRecon") -> SparkSession:
             "(see .env.example); refusing to start with empty creds."
         )
 
-    # PySpark ships its own Hadoop; a stale SPARK_HOME breaks worker classpath.
     os.environ.pop("SPARK_HOME", None)
     _check_java_home()
 
@@ -52,7 +45,6 @@ def get_spark_session(app_name: str = "TxRecon") -> SparkSession:
         .config("spark.jars.packages", ",".join(packages))
         .config("spark.driver.memory", settings.spark_driver_memory)
         .config("spark.executor.memory", settings.spark_executor_memory)
-        # ponytail: Temurin 17.0.20 C2 segfault; set SPARK_TIERED_STOP=1 to re-enable cap, else native JIT
         .config(
             "spark.driver.extraJavaOptions",
             "-XX:TieredStopAtLevel=1" if os.environ.get("SPARK_TIERED_STOP") == "1" else "",
