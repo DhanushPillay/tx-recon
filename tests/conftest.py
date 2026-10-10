@@ -6,7 +6,6 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _reset_singletons(monkeypatch):
-    """Prevent Settings/FeeEngine singletons leaking between tests (order independence)."""
     import src.common.settings as settings_mod
     import src.processing.fee_engine as fee_mod
 
@@ -37,8 +36,6 @@ def canonical_df():
 
 @pytest.fixture(scope="session")
 def spark():
-    # Skip only when Spark is actually unavailable (the old blanket Windows
-    # skip hid real MERGE/dedup coverage on dev boxes that run it fine).
     try:
         from pyspark.sql import SparkSession
 
@@ -55,12 +52,13 @@ def spark():
             .appName("TxRecon-Tests")
             .getOrCreate()
         )
-    except Exception as exc:
-        pytest.skip(f"Spark unavailable: {exc}")
-        return
+    except (FileNotFoundError, OSError) as exc:
+        pytest.skip(
+            f"Spark unavailable (JVM launch): {exc}. Set a valid JAVA_HOME and "
+            "unset SPARK_HOME if it points at a deleted install."
+        )
     yield session
     session.stop()
-    # restore caller env (never leak test config into other tests)
     if old_spark_home is not None:
         os.environ["SPARK_HOME"] = old_spark_home
     if old_python is None:
