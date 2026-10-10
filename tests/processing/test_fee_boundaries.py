@@ -1,5 +1,3 @@
-"""Fee engine boundaries + versioning edges."""
-
 import pytest
 
 from src.processing.fee_engine import FeeEngine, _parse_iso_date
@@ -14,8 +12,8 @@ def test_parse_iso_invalid_returns_none():
 
 def test_zero_and_full_bps():
     e = FeeEngine()
-    r0 = e.compute_fee(100000, "UPI")  # UPI 0bps in default config
-    assert r0.net_paise <= 100000
+    r0 = e.compute_fee(100000, "UPI")
+    assert r0.net_paise == 100000
     with pytest.raises(ValueError):
         e.compute_fee(-1, "UPI")
 
@@ -40,7 +38,6 @@ def test_invalid_config_raises(tmp_path):
 
 
 def test_missing_config_raises_not_defaults(tmp_path):
-    """A missing rate card must never silently price money at hardcoded defaults."""
     with pytest.raises(FileNotFoundError, match="fee rate config not found"):
         FeeEngine(config_path=str(tmp_path / "nope.yaml"))
 
@@ -74,10 +71,10 @@ def test_merchant_fallback_top_level():
 
 
 def test_effective_to_boundary():
-    e = FeeEngine()  # real config/fee_rates.yaml has v1..2025-03-31, v2 from 2025-04-01
-    v1 = e.get_rate_for_date("CREDIT_CARD", settlement_date="2025-03-31")
-    v2 = e.get_rate_for_date("CREDIT_CARD", settlement_date="2025-04-01")
-    assert v1 and v2
+    e = FeeEngine()
+    assert e._card_for_date("2025-03-31")["version"] == "v1.0.0"
+    assert e._card_for_date("2025-04-01")["version"] == "v2.0.0"
+    assert e._card_for_date(None)["version"] == "v2.0.0"
 
 
 @pytest.mark.parametrize(
