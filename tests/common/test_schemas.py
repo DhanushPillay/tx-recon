@@ -1,9 +1,3 @@
-"""Contract pins: domain constants must track config/schemas they claim to mirror.
-
-A renamed instrument in fee_rates.yaml (or a dropped Avro field) silently
-re-prices rows as UNKNOWN/quarantine. These tests fail loudly instead.
-"""
-
 import io
 import json
 
@@ -52,7 +46,6 @@ def test_avro_schema_dict_matches_json():
 
 
 def test_avro_roundtrip():
-    """Producer bytes must parse with the pinned schema (writer/reader agree)."""
     import fastavro
 
     from src.common.schemas import WEBHOOK_AVRO_SCHEMA_DICT
