@@ -1,5 +1,3 @@
-"""WAP branch helpers: SQL shapes (live-verified statements in module docstring)."""
-
 from unittest.mock import MagicMock
 
 import pytest
@@ -16,12 +14,17 @@ def test_branch_name():
 def test_create_drop_merge_branch_sql():
     spark = MagicMock()
     wap.create_branch(spark, "nessie.db.webhooks", "ingest/2025-04-02")
-    assert "CREATE BRANCH IF NOT EXISTS ingest/2025-04-02" in spark.sql.call_args[0][0]
+    assert "CREATE BRANCH IF NOT EXISTS `ingest/2025-04-02`" in spark.sql.call_args[0][0]
     wap.drop_branch(spark, "nessie.db.webhooks", "ingest/2025-04-02")
-    assert "DROP BRANCH IF EXISTS ingest/2025-04-02" in spark.sql.call_args[0][0]
+    assert "DROP BRANCH IF EXISTS `ingest/2025-04-02`" in spark.sql.call_args[0][0]
     wap.merge_branch(spark, "nessie.db.webhooks", "ingest/2025-04-02")
     sql = spark.sql.call_args[0][0]
     assert "fast_forward" in sql and "to => 'ingest/2025-04-02'" in sql
+
+
+def test_branch_ident_quotes_the_slash_convention():
+    assert wap._branch_ident("ingest/2025-04-02") == "`ingest/2025-04-02`"
+    assert wap._branch_ident("a`b") == "`a``b`"
 
 
 def test_enable_wap_sets_property():
@@ -45,7 +48,6 @@ def test_branch_rejects_injection():
 
 
 def test_publish_branch_refuses_unvalidated():
-    """Publish gate: merge never runs without validated=True (fail closed)."""
     spark = MagicMock()
     with pytest.raises(RuntimeError, match="unvalidated"):
         wap.publish_branch(spark, "nessie.db.webhooks", "ingest/2025-04-02")
