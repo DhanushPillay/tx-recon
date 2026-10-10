@@ -59,7 +59,6 @@ def print_summary(results):
     if "error" not in iceberg:
         benchmarks = iceberg.get("benchmarks", {})
         if benchmarks:
-            # Show the largest-scale 50% update row when present, else the last row.
             pick = next(
                 (v for k, v in benchmarks.items() if k.endswith("50pct_update")),
                 next(iter(benchmarks.values())),
@@ -89,13 +88,6 @@ def print_summary(results):
 
 
 def run_real(results, hw, suite="all", partitions=16):
-    """Real-data pass (direct calls, no 600s subprocess cap).
-
-    Suites: kafka replay (full 1M msgs, sample fallback), pandera on the real
-    settlement file (deduped), iceberg MERGE at 1M/5M/12M (sample 10k smoke),
-    pyspark streaming ingestion. Writes results_real.json; per-suite files
-    (results_iceberg_real.json etc.) are written by the modules.
-    """
     import pandas_validation_benchmark as pvb
     from kafka_producer_benchmark import load_replay_events
     from kafka_producer_benchmark import run as run_kafka
@@ -119,7 +111,7 @@ def run_real(results, hw, suite="all", partitions=16):
         try:
             event_fn = load_replay_events(replay_csv, 1_000_000)
             results["kafka"] = run_kafka(
-                "localhost:19092", 1_000_000, "all", "lz4", "real", "both", event_fn
+                "127.0.0.1:19092", 1_000_000, "all", "lz4", "real", "both", event_fn
             )
         except Exception as e:  # noqa: BLE001
             results["kafka"] = {"error": str(e)}
@@ -189,7 +181,6 @@ def main():
     results = {"timestamp": datetime.now(UTC).isoformat(), "hardware": hw}
 
     if args.suite in ("all", "kafka", "pyspark", "iceberg", "pandera"):
-        # All suites are real-data now; run_real honors --suite internally.
         return run_real(results, hw, args.suite, args.partitions)
 
     output_path = os.path.join(SCRIPT_DIR, "results_real.json")
