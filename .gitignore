@@ -14,10 +14,9 @@ coverage.xml
 *.log
 .env
 .env.local
-dbt_recon/target/
-dbt_recon/dbt_packages/
 **/.terraform/
-**/.terraform.lock.hcl
+# .terraform.lock.hcl is deliberately NOT ignored: it is the provider pin, and
+# an unpinned provider resolves fresh on every CI run.
 infra/*.tfstate
 infra/*.tfstate.backup
 benchmarks/data/
