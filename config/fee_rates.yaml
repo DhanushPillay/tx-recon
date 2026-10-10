@@ -1,6 +1,4 @@
-# Fee rate configuration for tx-recon
-# Rates are in basis points (bps) where 1 bps = 0.01%
-# GST on MDR is applied separately where applicable (India context)
+# Rates in basis points (1 bps = 0.01%).
 
 version: "v2.0.0"
 
@@ -35,7 +33,6 @@ instruments:
     mdr_rate_bps: 300  # 3.0%
     gst_on_mdr: 18.0
 
-# Per-merchant negotiated rates (merchant-aware MERGE)
 merchants:
   merch_001:
     CREDIT_CARD:
@@ -45,9 +42,7 @@ merchants:
     CREDIT_CARD:
       mdr_rate_bps: 190  # demo merchant slightly better than standard
 
-# Effective-date versioned rate cards. When present, FeeEngine picks the card
-# where settlement_date lies in [effective_from, effective_to]. If absent,
-# the top-level default/instruments/merchants act as a single card from 1970.
+# Cards picked by settlement_date in [effective_from, effective_to].
 history:
   - version: "v1.0.0"
     effective_from: "2024-01-01"
