@@ -74,7 +74,7 @@ def run_benchmark(partitions=16):
         """
         CREATE TABLE IF NOT EXISTS nessie.db.webhooks_bench (
             transaction_id string,
-            amount_paise int,
+            amount_paise bigint,
             gateway_status string,
             timestamp_utc string,
             merchant_id string,
@@ -139,12 +139,9 @@ def run_benchmark(partitions=16):
         .toTable("nessie.db.webhooks_bench")
     )
 
-    # Warmup
     logger.info(f"Warmup: {WARMUP_SECONDS}s...")
     time.sleep(WARMUP_SECONDS)
 
-    # Measure rows written inside the window only: the table also holds
-    # warmup rows, so snapshot the count before measuring.
     logger.info(f"Measuring: {MEASURE_SECONDS}s...")
     count_before = spark.sql("SELECT COUNT(*) as cnt FROM nessie.db.webhooks_bench").collect()[0][
         "cnt"
@@ -163,7 +160,6 @@ def run_benchmark(partitions=16):
     new_rows = count_result - count_before
     sustained_rate = new_rows / total_duration if total_duration > 0 else 0
 
-    # Aggregate listener data
     listener_batches = listener.batches
     avg_processed_rps = 0
     avg_input_rps = 0
