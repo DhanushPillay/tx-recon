@@ -1,21 +1,37 @@
-from hypothesis import given
+from unittest.mock import MagicMock
+
+import pytest
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from src.common.schemas import EXCEPTION_FEE_MISMATCH, MATCHED
 from src.processing.fee_engine import get_fee_engine
-from src.processing.residual import DEFAULT_TAU, score_match, should_downgrade
+from src.processing.residual import (
+    DEFAULT_TAU,
+    apply_residual,
+    score_match,
+    score_match_sql,
+    should_downgrade,
+)
+
+
+def _sql_score(spark, eng, amount, settled, instrument, merchant):
+    t2 = spark.createDataFrame([(amount,)], "amount_paise bigint").alias("t2")
+    s = spark.createDataFrame(
+        [(settled, instrument, merchant, None)],
+        "settled_amount_paise bigint, instrument_type string, "
+        "merchant_id string, settlement_date string",
+    ).alias("s")
+    expr = score_match_sql(eng)
+    return float(t2.crossJoin(s).selectExpr(f"{expr} AS score").collect()[0]["score"])
 
 
 def test_merchant_disagreement_scores_high():
     eng = get_fee_engine()
-    # merch_001 CREDIT_CARD at 180bps vs default 200bps — create amount where default MATCH, merchant MISMATCH.
-    amount = 100000  # Rs 1000
-    # settled for merch_001 at 180bps
+    amount = 100000
     exp_merch = eng.compute_expected_settled(amount, "CREDIT_CARD", merchant_id="merch_001")
-    # default at 200bps would be lower; use merch settled but score with merch_001 merchant_id so disagreement triggers
     exp_default = eng.compute_expected_settled(amount, "CREDIT_CARD", merchant_id=None)
     assert exp_default != exp_merch
-    # Use mismatched settled: default MATCH window does not contain merch expected, but merch would
-    # Construct settled that is MATCH under default but not under merch: take exp_default +1 (within tol 1)
     settled = exp_default
     s = score_match(amount, settled, "CREDIT_CARD", "merch_001", None, fee_engine=eng)
     assert s == 0.95
@@ -50,7 +66,6 @@ def test_threshold_monotone():
     ),
 )
 def test_perfect_match_never_downgrades_property(amount, instrument):
-    """Perfect rule-match scores below tau for all draws (calls real scorer)."""
     eng = get_fee_engine()
     settled = eng.compute_expected_settled(amount, instrument)
     s = score_match(amount, settled, instrument, None, None, fee_engine=eng)
@@ -58,6 +73,9 @@ def test_perfect_match_never_downgrades_property(amount, instrument):
     assert not should_downgrade(amount, settled, instrument, None, None, fee_engine=eng)
 
 
+@settings(
+    max_examples=15, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
 @given(
     amount=st.integers(min_value=1000, max_value=1_000_000),
     instrument=st.sampled_from(
@@ -65,26 +83,21 @@ def test_perfect_match_never_downgrades_property(amount, instrument):
     ),
     merchant=st.sampled_from([None, "merch_001", "merch_demo", "merch_unknown"]),
     delta=st.integers(min_value=-5000, max_value=5000),
+    tau=st.floats(min_value=0.5, max_value=0.999, allow_nan=False, allow_infinity=False),
 )
-def test_downgrade_never_creates_fp(amount, instrument, merchant, delta):
-    """PROOF.md property: downgrade-only post-pass never promotes, so for any
-    truth labeling FP(after) <= FP(before). Structural: after==MATCHED implies
-    before==MATCHED, checked against both default-truth and merchant-truth."""
-    from src.common.schemas import EXCEPTION_FEE_MISMATCH, MATCHED
-
+def test_downgrade_never_creates_fp(amount, instrument, merchant, delta, tau, spark):
     eng = get_fee_engine()
     settled = eng.compute_expected_settled(amount, instrument) + delta
-    ok_default, _ = eng.check_match(amount, settled, instrument)
-    pred_before = MATCHED if ok_default else EXCEPTION_FEE_MISMATCH
-    pred_after = (
-        EXCEPTION_FEE_MISMATCH
-        if pred_before == MATCHED
-        and should_downgrade(amount, settled, instrument, merchant, None, fee_engine=eng)
-        else pred_before
-    )
-    # No promotion, ever.
+    ok_before, _ = eng.check_match(amount, settled, instrument)
+    pred_before = MATCHED if ok_before else EXCEPTION_FEE_MISMATCH
+
+    score = _sql_score(spark, eng, amount, settled, instrument, merchant)
+    assert score == pytest.approx(
+        score_match(amount, settled, instrument, merchant, None, fee_engine=eng)
+    ), "SQL and Python scorers disagree, so the proof is about a scorer nobody runs"
+
+    pred_after = EXCEPTION_FEE_MISMATCH if pred_before == MATCHED and score >= tau else pred_before
     assert not (pred_before != MATCHED and pred_after == MATCHED)
-    # FP monotone under either truth labeling.
     for truth in (
         MATCHED if eng.check_match(amount, settled, instrument)[0] else EXCEPTION_FEE_MISMATCH,
         MATCHED
@@ -96,6 +109,25 @@ def test_downgrade_never_creates_fp(amount, instrument, merchant, delta):
         assert fp_after <= fp_before
 
 
+def test_apply_residual_can_only_demote_a_matched_row():
+    spark = MagicMock()
+    spark.sql.return_value.collect.return_value = [{"n": 0}]
+    apply_residual(spark, "nessie.db.webhooks")
+
+    source = spark.sql.call_args_list[0][0][0]
+    assert f"t2.reconciliation_status = '{MATCHED}'" in source
+
+    spark.sql.reset_mock()
+    spark.sql.return_value.collect.return_value = [{"n": 3}]
+    apply_residual(spark, "nessie.db.webhooks")
+    merge = spark.sql.call_args_list[1][0][0]
+
+    assert "WHEN NOT MATCHED" not in merge
+    set_clause = merge.split("UPDATE SET", 1)[1]
+    assert f"= '{EXCEPTION_FEE_MISMATCH}'" in set_clause
+    assert f"= '{MATCHED}'" not in set_clause
+
+
 @given(
     amount=st.integers(min_value=1000, max_value=1_000_000),
     instrument=st.sampled_from(
@@ -103,7 +135,6 @@ def test_downgrade_never_creates_fp(amount, instrument, merchant, delta):
     ),
 )
 def test_score_monotone_in_excess_property(amount, instrument):
-    """A far-mismatch always scores above the perfect match (same draw)."""
     eng = get_fee_engine()
     settled_ok = eng.compute_expected_settled(amount, instrument)
     s_ok = score_match(amount, settled_ok, instrument, None, None, fee_engine=eng)
