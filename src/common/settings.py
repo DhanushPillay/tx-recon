@@ -5,66 +5,57 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    """Central typed config. All infra URLs come from env/.env; code never hardcodes hosts."""
-
-    # Project
     project_root: str = os.environ.get("PROJECT_ROOT", os.getcwd())
 
-    # MinIO / S3
     minio_endpoint: str = "http://localhost:9000"
     minio_access_key: str = Field(default="", min_length=0)
     minio_secret_key: str = Field(default="", min_length=0)
     webhook_secret: str = ""
 
-    # Nessie
     nessie_host: str = "localhost"
     nessie_port: int = Field(default=19120, gt=0, lt=65536)
     nessie_ref: str = "main"
 
-    # Redpanda / Kafka
-    redpanda_host: str = "localhost"
-    kafka_broker: str = "localhost:19092"
+    redpanda_host: str = "127.0.0.1"
+    kafka_broker: str = "127.0.0.1:19092"
     schema_registry_url: str = "http://localhost:8081"
     topic_name: str = "gateway_webhooks"
     kafka_security_protocol: str = "PLAINTEXT"
     kafka_sasl_mechanism: str = ""
     kafka_sasl_username: str = ""
     kafka_sasl_password: str = ""
-    # Late-data policy: event-time bound for dropDuplicates state + late-row alerts.
     stream_watermark_delay: str = "1 day"
+    # latest so a fresh checkpoint doesnt replay the whole topic
+    stream_starting_offsets: str = "latest"
+    stream_checkpoint_location: str = ""
 
-    # Spark
     spark_mode: str = "local"
     load_csv_on_driver: bool = False
-    spark_shuffle_partitions: int = 32
+    spark_shuffle_partitions: int = 128
     spark_master: str = "local[*]"
-    spark_driver_memory: str = "2g"
+    spark_driver_memory: str = "8g"
     spark_executor_memory: str = "2g"
     spark_executor_cores: int = 2
     spark_jar_packages: str = (
         "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.11.0,"
-        "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.5,"
-        "org.apache.spark:spark-avro_2.12:3.5.5,"
+        "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,"
+        "org.apache.spark:spark-avro_2.12:3.5.1,"
         "org.projectnessie.nessie-integrations:nessie-spark-extensions-3.5_2.12:0.107.9,"
         "org.apache.iceberg:iceberg-aws-bundle:1.11.0,"
         "org.apache.hadoop:hadoop-aws:3.3.4,"
         "com.amazonaws:aws-java-sdk-bundle:1.12.262"
     )
 
-    # Iceberg
     iceberg_warehouse: str = "s3a://lakehouse/warehouse"
     nessie_api_version: str = "v2"
     webhook_table: str = "nessie.db.webhooks"
     dlq_table: str = "nessie.db.webhooks_dlq"
-    # Cloud targeting without fork: TABLE_PREFIX=glue rewrites nessie.db.* to
-    # glue.db.* (Glue catalog), so run_reconciliation() runs unchanged on AWS.
+    maintain_after_merge: bool = True
+    wired_legs: str = ""
     table_prefix: str = ""
 
-    # Fee engine
     fee_rate_config: str = "config/fee_rates.yaml"
 
-    # Fail-closed switches. Defaults are strict: destructive seeding and
-    # silent fallbacks must be opted into, never inherited.
     strict_slo: bool = True
     allow_destructive_seed: bool = False
     require_schema_registry: bool = False
@@ -74,8 +65,6 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _resolve_secret_files(self) -> "Settings":
-        # Docker/K8s secret convention: *_FILE points at a mounted file whose
-        # contents are the secret. Explicit env value wins over the file.
         for field in ("minio_secret_key", "webhook_secret", "kafka_sasl_password"):
             if not getattr(self, field):
                 path = os.environ.get(field.upper() + "_FILE", "")
@@ -89,8 +78,6 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _apply_table_prefix(self) -> "Settings":
-        # An empty env override (e.g. SPARK_JAR_PACKAGES=) must not wipe the
-        # default jar list — that silently breaks the Spark catalog at runtime.
         if not self.spark_jar_packages.strip():
             object.__setattr__(
                 self,
@@ -124,17 +111,10 @@ class Settings(BaseSettings):
 
     @classmethod
     def for_local(cls, _base: "Settings | None" = None) -> "Settings":
-        """Single-node bench: driver-heavy, file warehouse, low shuffle.
-
-        BENCH_MODE=local -> file:///tmp/tx-recon-warehouse + HadoopFileIO,
-        bypassing MinIO S3 round-trip (30-40% saving on local NVMe). Prod
-        stays s3a://lakehouse. 32 partitions = cores*2 for 28c host.
-        """
         base = _base.model_dump() if _base else {}
         bench_local = os.environ.get("BENCH_MODE") == "local"
         if bench_local:
             tmp = os.path.join(os.environ.get("TEMP", "/tmp"), "tx-recon-warehouse")  # noqa: S108 — local bench warehouse only
-            # file:// needs triple slash; normalize Windows backslashes
             wh = "file:///" + tmp.replace("\\", "/").lstrip("/")
             base.update(
                 spark_master="local[12]",
@@ -144,7 +124,6 @@ class Settings(BaseSettings):
                 iceberg_warehouse=wh,
             )
         else:
-            # Even without file://, bench benefits from lower shuffle + more driver mem
             base.update(
                 spark_shuffle_partitions=32,
                 spark_driver_memory="8g",
@@ -161,17 +140,12 @@ def get_settings() -> Settings:
         base = Settings()
         is_airflow = os.environ.get("AIRFLOW_HOME") is not None
         bench_local = os.environ.get("BENCH_MODE") == "local"
-        # Single node only: local file warehouse or default s3a.
         if bench_local:
             _settings = Settings.for_local(base)
         else:
             _settings = Settings.for_airflow(base) if is_airflow else base
-            # Apply bench shuffle/memory tuning even on default local[*] when BENCH_MODE not set?
-            # Only when explicitly requested via env to keep prod 200
             if os.environ.get("BENCH_SHUFFLE") == "1":
                 _settings = Settings.for_local(_settings)
-        # Allow explicit file warehouse override (e.g. BENCH_WAREHOUSE=file:///tmp/...)
-        # Loud on purpose: a stray override silently redirects the warehouse.
         wh_override = os.environ.get("BENCH_WAREHOUSE")
         if wh_override:
             import logging as _logging
