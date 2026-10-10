@@ -1,5 +1,3 @@
-"""Corrections journal: append-only audit for manual money mutations."""
-
 import json
 
 import pytest
@@ -30,7 +28,6 @@ def test_journal_refuses_without_reason_or_approver(tmp_path):
 
 
 def test_journal_write_failure_raises(tmp_path):
-    """Unwritable journal dir fails the mutation, never silently unlogged."""
     blocker = tmp_path / "blocker"
     blocker.write_text("not-a-dir")
     with pytest.raises(RuntimeError, match="cannot write corrections journal"):
