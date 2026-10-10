@@ -3,56 +3,71 @@ import logging
 import os
 import re
 import time
+from datetime import date
 
 import pandas as pd
 import pandera.pandas as pa
 from pandera.errors import SchemaErrors
 
-from src.validation.settlement_schema import settlement_schema
+from src.validation.settlement_schema import bad_calendar_date_mask, settlement_schema
 
 logger = logging.getLogger(__name__)
 
-_VOLUME_DROP_WARN = 0.5  # warn if this batch has <50% of the previous curated rows
-_STALE_FILE_HOURS = 48  # warn if the settlement file itself is older than this
+_VOLUME_DROP_WARN = 0.5
+_VOLUME_SPIKE_WARN = 2.0
+_STALE_FILE_HOURS = 48
+
+
+def _settlement_date(path: str) -> date | None:
+    m = re.search(r"(\d{4})(\d{2})(\d{2})", os.path.basename(path))
+    if not m:
+        return None
+    try:
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
 
 
 def _warn_volume_shift(data_dir: str, latest_file: str, n_rows: int, strict: bool = False) -> None:
-    """Volume guard: compare against the previous curated batch.
 
-    Catches a truncated/partial PG drop before MERGE bakes it in. Warn-only by
-    default; strict (prod) raises so a truncated drop can never merge green.
-    Never raises on missing history or unreadable files — only on a measured
-    breach.
-    """
+    def _flag(msg: str) -> None:
+        if strict:
+            raise SettlementValidationError(msg)
+        logger.warning(msg)
+
     try:
+        drop_date = _settlement_date(latest_file)
+        age_h = (
+            (date.today() - drop_date).days * 24
+            if drop_date
+            else (time.time() - os.path.getmtime(latest_file)) / 3600
+        )
+        if age_h > _STALE_FILE_HOURS:
+            logger.warning(
+                f"stale settlement file: {os.path.basename(latest_file)} covers "
+                f"{drop_date or 'an unknown date'} and is {age_h / 24:.1f}d old "
+                f"(>{_STALE_FILE_HOURS / 24:.0f}d) — verify the PG drop schedule"
+            )
+
         current = "curated_" + os.path.basename(latest_file)
         cands = [
             p
             for p in glob.glob(os.path.join(data_dir, "curated_settlement_*.csv"))
-            if os.path.basename(p) != current
+            if os.path.basename(p) != current or os.path.getmtime(p) < os.path.getmtime(latest_file)
         ]
         if not cands:
             return
-        prev = max(cands, key=os.path.getmtime)
+        prev = max(cands, key=lambda p: (_settlement_date(p) or date.min, os.path.getmtime(p)))
         with open(prev, encoding="utf-8") as fh:
-            prev_n = sum(1 for _ in fh) - 1  # header
-        if prev_n > 0 and n_rows < _VOLUME_DROP_WARN * prev_n:
-            msg = (
+            prev_n = sum(1 for _ in fh) - 1
+        if prev_n > 0 and (
+            n_rows < _VOLUME_DROP_WARN * prev_n or n_rows > _VOLUME_SPIKE_WARN * prev_n
+        ):
+            _flag(
                 f"volume shift: {n_rows} rows vs {prev_n} in {os.path.basename(prev)} "
-                f"(>{(1 - _VOLUME_DROP_WARN):.0%} drop) — verify the PG drop is complete"
+                f"(outside [{_VOLUME_DROP_WARN:.0%}, {_VOLUME_SPIKE_WARN:.0%}]) — "
+                "verify the PG drop is complete"
             )
-            if strict:
-                raise SettlementValidationError(msg)
-            logger.warning(msg)
-        age_h = (time.time() - os.path.getmtime(latest_file)) / 3600
-        if age_h > _STALE_FILE_HOURS:
-            msg = (
-                f"stale settlement file: {os.path.basename(latest_file)} is {age_h:.1f}h old "
-                f"(>{_STALE_FILE_HOURS}h) — verify the PG drop schedule"
-            )
-            if strict:
-                raise SettlementValidationError(msg)
-            logger.warning(msg)
     except OSError as exc:
         logger.warning(f"volume check skipped: {exc}")
 
@@ -64,8 +79,6 @@ class SettlementValidationError(Exception):
 def validate_and_quarantine(
     df: pd.DataFrame, schema: pa.DataFrameSchema
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Split df into (valid, invalid) rows. Fails closed with an explicit error
-    if pandera's failure_cases shape is unexpected (never silently quarantine all)."""
     try:
         schema.validate(df, lazy=True)
         return df, pd.DataFrame(columns=df.columns)
@@ -81,22 +94,21 @@ def validate_and_quarantine(
 
 
 def _validate_large_file(path: str, normalize_fn, chunksize: int = 100_000) -> tuple:
-    """Stream a large settlement CSV in chunks; returns (canonical_df, pg_name)."""
     import pandas as _pd
 
-    from src.adapters.settlement import _CSV_NA_VALUES
+    from src.adapters.settlement import _CSV_NA_VALUES, blank_to_na, sniff_csv_delimiter
 
     _parts, _pg = [], "generic"
     for _chunk in _pd.read_csv(
         path,
         dtype=str,
-        sep=None,
-        engine="python",
+        sep=sniff_csv_delimiter(path),
+        engine="c",
         keep_default_na=False,
         na_values=_CSV_NA_VALUES,
         chunksize=chunksize,
     ):
-        _chunk = _chunk.replace(r"^\s*$", _pd.NA, regex=True)
+        _chunk = blank_to_na(_chunk)
         _norm, _pg = normalize_fn(_chunk)
         _parts.append(_norm)
     return (_pd.concat(_parts, ignore_index=True) if _parts else _pd.DataFrame(), _pg)
@@ -105,17 +117,9 @@ def _validate_large_file(path: str, normalize_fn, chunksize: int = 100_000) -> t
 def validate_latest_settlement(
     project_root: str | None = None, date_str: str | None = None
 ) -> str | None:
-    """Validate latest settlement file, persist normalized valid rows.
-
-    Returns path to curated CSV (normalized, canonical) for reconcile to read,
-    so PG INR->paise / date / instrument normalization is not lost.
-    """
     root = project_root or os.environ.get("PROJECT_ROOT", os.getcwd())
     data_dir = os.path.join(root, "data")
     if date_str:
-        # Same allowlist as reconcile._settlement_source: digit-only
-        # YYYY-MM-DD or YYYYMMDD. Anything else (.., /, glob chars) is
-        # rejected so date_str can never escape data_dir via the glob.
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}|\d{8}", date_str):
             raise ValueError(f"Bad date_str (want YYYY-MM-DD): {date_str!r}")
         file_pattern = f"settlement_{date_str.replace('-', '')}.csv"
@@ -125,13 +129,9 @@ def validate_latest_settlement(
     if not files:
         raise FileNotFoundError(f"No settlement file found in {data_dir}")
 
-    latest_file = max(files, key=os.path.getmtime)
+    latest_file = max(files, key=lambda p: (_settlement_date(p) or date.min, os.path.getmtime(p)))
     logger.info(f"Validating {latest_file} with Pandera...")
 
-    # Try PG adapter normalization (Razorpay/Cashfree/PayU/generic) before validation.
-    # Generic files pass through unchanged; PG files are converted INR->paise etc.
-    # Large files (>256MB) stream in 100k-row chunks so the driver never holds
-    # the whole file + validated copies in memory at once.
     _chunk_bytes = 256 * 1024 * 1024
     try:
         _big = os.path.getsize(latest_file) > _chunk_bytes
@@ -147,33 +147,30 @@ def validate_latest_settlement(
             df, pg_name = load_settlement_csv(latest_file)
             logger.info(f"Settlement adapter detected: {pg_name} -> {len(df)} rows normalized")
     except Exception as exc:
-        # Fail closed: raw fallback would lose PG INR->paise/date/instrument
-        # normalization and mis-price the MERGE. Fix the adapter, not the data.
         raise SettlementValidationError(
             f"Adapter normalization failed for {latest_file}: {exc}"
         ) from exc
     if df.empty:
         raise SettlementValidationError(f"Settlement file is empty: {latest_file}")
 
-    # No-PAN gate before anything else touches the rows: one card number
-    # puts the whole lake in PCI scope. Last-4 + issuer only, ever.
     from src.validation.pan_guard import scan_frame
 
     pan_hits = scan_frame(df)
     if pan_hits:
         raise SettlementValidationError(
-            f"PAN detected in {latest_file} {pan_hits}: refusing batch (store last-4 + issuer only)"
+            f"PAN detected in {latest_file} {pan_hits}: refusing batch. "
+            "Inspect the flagged columns before acting -- a 13-19 digit run that "
+            "is Luhn-valid and starts with a real issuer prefix is almost always "
+            "a card number, but confirm against the source export rather than "
+            "purging the file blind. Store last-4 + issuer only, ever."
         )
 
-    _, invalid = validate_and_quarantine(df, settlement_schema)
-    valid = df.drop(invalid.index) if not invalid.empty else df
-
-    # Persist normalized valid rows for reconcile (PG normalization survives).
-    # curated_ prefix avoids matching settlement_*.csv glob on next run.
-    curated_path = os.path.join(data_dir, "curated_" + os.path.basename(latest_file))
-    if not valid.empty:
-        valid.to_csv(curated_path, index=False)
-        logger.info(f"Wrote {len(valid)} normalized rows to {curated_path}")
+    valid, invalid = validate_and_quarantine(df, settlement_schema)
+    impossible_dates = bad_calendar_date_mask(df["settlement_date"])
+    if impossible_dates.any():
+        quarantined = invalid.index.union(df.index[impossible_dates])
+        logger.warning(f"Impossible calendar dates quarantined: {len(quarantined)}")
+        valid, invalid = df.drop(index=quarantined), df.loc[quarantined]
 
     quarantine_rate = len(invalid) / len(df) * 100 if len(df) > 0 else 0
     logger.info(f"Quarantine rate: {quarantine_rate:.1f}% ({len(invalid)}/{len(df)} rows)")
@@ -181,6 +178,10 @@ def validate_latest_settlement(
 
     _warn_volume_shift(data_dir, latest_file, len(valid), strict=get_settings().strict_slo)
 
+    try:
+        max_pct = float(os.environ.get("QUARANTINE_MAX_PCT", 0))
+    except (TypeError, ValueError):
+        max_pct = 0
     if not invalid.empty:
         base, ext = os.path.splitext(latest_file)
         stem = os.path.basename(base)
@@ -191,13 +192,23 @@ def validate_latest_settlement(
         )
         invalid.to_csv(invalid_path, index=False)
         logger.warning(f"Wrote {len(invalid)} quarantined rows to {invalid_path}")
-        raise SettlementValidationError(
-            f"Data contract validation failed: {len(invalid)} rows quarantined"
+        if quarantine_rate > max_pct:
+            raise SettlementValidationError(
+                f"Data contract validation failed: {len(invalid)} rows quarantined "
+                f"({quarantine_rate:.1f}% > {max_pct:.1f}% allowed)"
+            )
+        logger.warning(
+            f"Proceeding with {len(valid)} valid rows; {len(invalid)} quarantined within allowance"
         )
 
+    # only write curated after quarantine passes, so a bad batch leaves nothing behind
+    curated_path = os.path.join(data_dir, "curated_" + os.path.basename(latest_file))
+    _tmp = curated_path + ".tmp"
+    valid.to_csv(_tmp, index=False)
+    os.replace(_tmp, curated_path)
+    logger.info(f"Wrote {len(valid)} normalized rows to {curated_path}")
+
     logger.info("SUCCESS: Data Contract Validated successfully!")
-    # Record only on curated-write success: a quarantined/failed batch must
-    # never look processed to the redelivery guard.
     from src.validation.file_registry import record_file
 
     record_file(data_dir, latest_file, date_str)
