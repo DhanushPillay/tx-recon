@@ -1,5 +1,3 @@
-"""Smoke: every src module imports (honest coverage, no hidden files)."""
-
 import pkgutil
 
 import src
