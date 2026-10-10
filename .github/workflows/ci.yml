@@ -21,23 +21,33 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Full history: gitleaks scans the push range (base^..head),
           # which does not resolve in a depth-1 clone.
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.11'
           cache: 'pip'
 
       - name: Set up Java
-        uses: actions/setup-java@v6
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
         with:
           distribution: 'temurin'
           java-version: '17'
+
+      - name: Lockfile drift
+        run: |
+          # uv.lock is tracked but the install below resolves fresh from PyPI,
+          # so nothing else would notice it going stale -- and it WAS stale
+          # (mt-940 missing, pytest pinned to 8.4.2 in pyproject against 8.3.4
+          # in the lock). Gate it so the lock is usable as the record of the
+          # resolved set. Run `uv lock` locally to refresh.
+          pip install uv
+          uv lock --check
 
       - name: Install dependencies
         run: |
@@ -52,76 +62,38 @@ jobs:
         run: ruff check src/ tests/ dags/
 
       - name: Run Mypy
+        # mypy is a dev extra; installing it again here pulled whatever was
+        # newest and overrode the pyproject/lock pin.
+        run: mypy src/ --ignore-missing-imports
+
+      - name: Audit baseline is current
         run: |
-          pip install mypy
-          mypy src/ --ignore-missing-imports
+          # The advisory baseline is a suppression list. Left unenforced it renews
+          # itself silently, which is how 40-odd entries ended up with no recorded
+          # reason. Expire it.
+          review_by=$(grep -oP 'REVIEW_BY=\K[0-9-]+' .github/pip-audit-ignore.txt)
+          today=$(date -u +%F)
+          if [ "$review_by" \< "$today" ]; then
+            echo "::error::pip-audit baseline REVIEW_BY=$review_by has passed (today $today)."
+            echo "Re-audit, drop what is fixed, bump the date in .github/pip-audit-ignore.txt."
+            exit 1
+          fi
+          echo "baseline review date $review_by is current"
 
       - name: Dependency vulnerability scan
         run: |
-          pip install pip-audit
-          # Blocking: a NEW advisory fails the build. Baseline below pins the
-          # 90 advisories accepted on 2026-09-24 (Airflow 2.11.2 tree, pyspark
-          # 3.5.1, pytest 8.3.4 — all need upstream upgrades, tracked
-          # separately; pyspark 3.5.x bump alone clears PYSEC-2025-184).
-          # 2026-09-24 baseline: 37 ignores. 2026-09-25: +53 ignores from local
-          # pip-audit (aiohttp 3.13.3, anyio 4.12.1, pyjwt 2.11.0, etc.) — all
-          # transitive via airflow constraints, not exploitable in lakehouse
-          # batch path (no aiohttp server, no SMTP/FTP data channel, no
-          # multipart upload). Review date: 2026-12-24. To add an ignore:
-          # append --ignore-vuln ID with dated justification.
-          # 2026-09-25: +2 ignores (aiohttp 3.13.3 PYSEC-2026-2109 digest-auth
-          # redirect, PYSEC-2026-2111 compressed-body cleanup — both need an
-          # aiohttp client/server we never run in the batch path).
+          # Not a project dependency, so it needs installing -- but pinned, or
+          # the audit tool itself floats.
+          pip install pip-audit==2.9.0
+          # Blocking on anything NOT in the baseline: a new advisory fails the
+          # build. Granularity is by advisory ID, so a fresh advisory in an
+          # already-ignored package still fails.
           pip-audit --desc \
-            --ignore-vuln PYSEC-2023-314 --ignore-vuln PYSEC-2025-184 \
-            --ignore-vuln PYSEC-2026-10 --ignore-vuln PYSEC-2026-12 \
-            --ignore-vuln PYSEC-2026-13 --ignore-vuln PYSEC-2026-1378 \
-            --ignore-vuln PYSEC-2026-1379 --ignore-vuln PYSEC-2026-172 \
-            --ignore-vuln PYSEC-2026-173 --ignore-vuln PYSEC-2026-18 \
-            --ignore-vuln PYSEC-2026-181 --ignore-vuln PYSEC-2026-1845 \
-            --ignore-vuln PYSEC-2026-186 --ignore-vuln PYSEC-2026-187 \
-            --ignore-vuln PYSEC-2026-2082 --ignore-vuln PYSEC-2026-2083 \
-            --ignore-vuln PYSEC-2026-2086 --ignore-vuln PYSEC-2026-2087 \
-            --ignore-vuln PYSEC-2026-2088 --ignore-vuln PYSEC-2026-2151 \
-            --ignore-vuln PYSEC-2026-2343 --ignore-vuln PYSEC-2026-2344 \
-            --ignore-vuln PYSEC-2026-2345 --ignore-vuln PYSEC-2026-2346 \
-            --ignore-vuln PYSEC-2026-2351 --ignore-vuln PYSEC-2026-2353 \
-            --ignore-vuln PYSEC-2026-2354 --ignore-vuln PYSEC-2026-2356 \
-            --ignore-vuln PYSEC-2026-2366 --ignore-vuln PYSEC-2026-3705 \
-            --ignore-vuln PYSEC-2026-3706 --ignore-vuln PYSEC-2026-3709 \
-            --ignore-vuln PYSEC-2026-3710 --ignore-vuln PYSEC-2026-3711 \
-            --ignore-vuln PYSEC-2026-3712 --ignore-vuln PYSEC-2026-3806 \
-            --ignore-vuln PYSEC-2026-3966 --ignore-vuln PYSEC-2026-2097 \
-            --ignore-vuln PYSEC-2026-2095 --ignore-vuln PYSEC-2026-2098 \
-            --ignore-vuln PYSEC-2026-2099 --ignore-vuln PYSEC-2026-2101 \
-            --ignore-vuln PYSEC-2026-2100 --ignore-vuln PYSEC-2026-2102 \
-            --ignore-vuln PYSEC-2026-2103 --ignore-vuln PYSEC-2026-2094 \
-            --ignore-vuln PYSEC-2026-2096 --ignore-vuln PYSEC-2026-2104 \
-            --ignore-vuln PYSEC-2026-2105 --ignore-vuln PYSEC-2026-2107 \
-            --ignore-vuln PYSEC-2026-2112 --ignore-vuln PYSEC-2026-2110 \
-            --ignore-vuln PYSEC-2026-2106 --ignore-vuln PYSEC-2026-2113 \
-            --ignore-vuln PYSEC-2026-2108 --ignore-vuln PYSEC-2026-2109 \
-            --ignore-vuln PYSEC-2026-2111 --ignore-vuln PYSEC-2026-237 \
-            --ignore-vuln PYSEC-2026-3547 --ignore-vuln PYSEC-2026-3546 \
-            --ignore-vuln PYSEC-2026-3545 --ignore-vuln PYSEC-2026-2338 \
-            --ignore-vuln PYSEC-2026-3805 --ignore-vuln CVE-2026-63374 \
-            --ignore-vuln CVE-2026-64847 --ignore-vuln PYSEC-2026-238 \
-            --ignore-vuln PYSEC-2026-24 --ignore-vuln PYSEC-2026-215 \
-            --ignore-vuln PYSEC-2026-2617 --ignore-vuln PYSEC-2026-1805 \
-            --ignore-vuln PYSEC-2026-2987 --ignore-vuln PYSEC-2026-120 \
-            --ignore-vuln PYSEC-2026-179 --ignore-vuln PYSEC-2026-175 \
-            --ignore-vuln PYSEC-2026-177 --ignore-vuln PYSEC-2026-178 \
-            --ignore-vuln PYSEC-2026-176 --ignore-vuln PYSEC-2026-3038 \
-            --ignore-vuln PYSEC-2026-3039 --ignore-vuln PYSEC-2026-3040 \
-            --ignore-vuln PYSEC-2026-3036 --ignore-vuln PYSEC-2026-3037 \
-            --ignore-vuln PYSEC-2026-2275 --ignore-vuln PYSEC-2026-3447 \
-            --ignore-vuln PYSEC-2026-3697 --ignore-vuln PYSEC-2026-3696 \
-            --ignore-vuln PYSEC-2026-3698 --ignore-vuln PYSEC-2026-3699 \
-            --ignore-vuln PYSEC-2026-3923 --ignore-vuln PYSEC-2026-141 \
+            $(grep -v '^#' .github/pip-audit-ignore.txt | sed 's/#.*//' | sed 's/[[:space:]]*$//' | grep -v '^$' | sed 's/^/--ignore-vuln /' | xargs)
             --ignore-vuln PYSEC-2026-142
 
       - name: Secret scan (gitleaks)
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -137,8 +109,13 @@ jobs:
           PYTHONPATH: .
           PROJECT_ROOT: ${{ github.workspace }}
         run: |
-          # Blocking: accuracy match_rate < 85% or >15% throughput / >20% p99
-          # movement vs tests/performance/baseline_real.json fails the build.
+          # Blocking. Accuracy match_rate < 85% fails the build.
+          # Throughput and p99 movement (>15% / >20% vs
+          # tests/performance/baseline_real.json) also fail — but only when this
+          # step measures them. It compares the accuracy-only artifact, so today
+          # those two checks are skipped and the step gates accuracy alone.
+          # check_regression.py reports each skipped metric as a failure rather
+          # than passing vacuously, so widening the measurement widens the gate.
           # A hardware fingerprint mismatch only warns (CI runners differ).
           python tests/performance/check_regression.py \
             --results tests/performance/results_accuracy.json \
@@ -152,6 +129,12 @@ jobs:
         run: |
           pytest tests/ -m "not integration" -n auto --benchmark-disable --cov=src --cov-branch --cov-report=term-missing:skip-covered --cov-report=xml --cov-fail-under=90
 
+      - name: Coverage floor on the money path
+        run: |
+          # The 90% total can hide a gutted core module behind 100%-covered
+          # helpers, so the money path gets its own floor.
+          coverage report --fail-under=85 --include="src/processing/reconcile.py,src/processing/fee_engine.py,src/processing/residual.py,src/ingestion/ingest_webhooks.py,src/validation/pan_guard.py"
+
       - name: Diff coverage on PR (changed lines only)
         if: github.event_name == 'pull_request'
         run: |
@@ -159,7 +142,7 @@ jobs:
           diff-cover coverage.xml --compare-branch=origin/${{ github.base_ref }} --fail-under=90
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v7
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
         with:
           files: coverage.xml
           fail_ci_if_error: false
@@ -190,6 +173,14 @@ jobs:
             sleep 2
           done
           [ "$ready" = "1" ] || { echo "minio lakehouse bucket never became reachable"; docker compose ps; exit 1; }
+          # Nessie serves the Iceberg catalog; /api/v2/config 200 = REST API up
+          ready=0
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:19120/api/v2/config || true)
+            if [ "$code" = "200" ]; then ready=1; break; fi
+            sleep 2
+          done
+          [ "$ready" = "1" ] || { echo "nessie api never became ready"; docker compose ps; exit 1; }
           # Trino is slow to boot (~2-4 min); /v1/info 200 = coordinator ready
           ready=0
           for i in $(seq 1 60); do
@@ -212,8 +203,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v7
-
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # The scheduler image must import src/config/dags; a COPY-less
       # Dockerfile ships an image that cannot run the pipeline.
       - name: Build Airflow image
@@ -221,13 +211,15 @@ jobs:
 
   mutation-nightly:
     runs-on: ubuntu-latest
+    # Nightly + manual only, deliberately not on push/PR: mutmut re-runs the whole
+    # selected test set once per mutant, so this is a slow job by construction.
+    # The score gate below is what makes it a gate rather than a report.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v7
-
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.11'
 
@@ -237,17 +229,30 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Mutation test fee engine
-        run: mutmut run || true
+        run: mutmut run
+
+      # `mutmut run` only exits non-zero on infrastructure failure, never on a
+      # surviving mutant, so the score has to be asserted explicitly.
+      - name: Assert mutation score
+        run: |
+          python -c "
+          import json, sys
+          s = json.load(open('mutants/mutmut-cicd-stats.json'))
+          tested = s['total'] - s['skipped']
+          score = 100.0 if tested <= 0 else (s['killed'] + s['timeout']) / tested * 100
+          print(f'mutation score: {score:.1f}% ({s[\"killed\"]}/{tested} killed, {s[\"survived\"]} survived)')
+          sys.exit(0 if score >= MUTATION_SCORE_MIN else 1)
+          "
+        env:
+          MUTATION_SCORE_MIN: '80'
 
   cloud-dry-run:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v7
-
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v4
-
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
       - name: Terraform fmt check
         working-directory: infra/terraform
         run: terraform fmt -check -diff
