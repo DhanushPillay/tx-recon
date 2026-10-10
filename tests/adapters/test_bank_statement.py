@@ -1,5 +1,3 @@
-"""Bank-statement leg: MT940 parse + third-leg MERGE SQL shape."""
-
 import os
 
 import pytest
@@ -25,7 +23,7 @@ def test_parse_mt940_fixture():
         "narration",
     ]
     r1 = df.iloc[0]
-    assert r1["amount_paise"] == 976400  # 9764.00 credit
+    assert r1["amount_paise"] == 976400
     assert r1["value_date"] == "2016-04-02"
     assert r1["direction"] == "CREDIT"
     assert r1["link_tx"] == "TXN000000001"
@@ -46,7 +44,6 @@ def test_parse_mt940_garbage_fails_closed():
 
 
 def test_parse_mt940_zero_lines_fails_closed(tmp_path):
-    """Headers but no :61: lines: nothing to match against, fail loudly."""
     p = tmp_path / "empty.sta"
     p.write_text(":20:STARTUMS\n:25:12345678901234567890\n:28C:00001/001\n")
     with pytest.raises(ValueError, match="zero statement lines"):
@@ -59,7 +56,6 @@ def test_bank_leg_sql_shape():
     assert EXCEPTION_MISSING_BANK_STATEMENT in merge_sql
     assert "bank_statements" in merge_sql and "bank_settlements" in merge_sql
     assert "DATEDIFF" in merge_sql
-    # Only MATCHED rows demote; other statuses are terminal for this leg.
     assert merge_sql.count("WHEN MATCHED") == 1
     assert "WHEN NOT MATCHED" not in merge_sql
     assert "COUNT(*)" in orphan_sql
@@ -71,7 +67,6 @@ def test_bank_leg_sql_rejects_injection():
 
 
 def test_parse_mt940_missing_package_fails_closed(monkeypatch):
-    """mt940 not installed: explicit error, never a silent empty leg."""
     import sys
 
     monkeypatch.setitem(sys.modules, "mt940", None)
@@ -80,7 +75,6 @@ def test_parse_mt940_missing_package_fails_closed(monkeypatch):
 
 
 def test_parse_mt940_missing_value_date_fails_closed():
-    """Statement line without a date: fail loudly, never match by amount alone."""
     from unittest.mock import MagicMock, patch
 
     txn = MagicMock()
@@ -93,7 +87,6 @@ def test_parse_mt940_missing_value_date_fails_closed():
 
 
 def test_parse_mt940_pan_in_narration_fails_closed(tmp_path):
-    """Card number in free-text narration: refuse the file (PCI scope)."""
     p = tmp_path / "pan.sta"
     p.write_text(
         ":20:STARTUMS\n"
