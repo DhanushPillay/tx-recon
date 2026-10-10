@@ -1,37 +1,20 @@
-"""Third settlement leg: bank statement (MT940) -> canonical bank rows.
-
-Gateways can be consistently wrong; the bank credit is the independent
-truth. Parsing is delegated to the `mt-940` package (typed, fixture-tested)
-— never hand-rolled SWIFT. Output links to settlements by extracted TXN id
-when the narration carries one, else by amount + value date.
-"""
-
 import logging
 import re
 
 logger = logging.getLogger(__name__)
 
 _TXN_LINK = re.compile(r"TXN\d{6,}")
-# Derived statements (see build_bank_statement.py) carry the raw settlement id
-# behind an explicit marker — unambiguous, unlike bare digit runs which collide
-# with amounts and merchant ids in free text.
 _RECON_LINK = re.compile(r"ReconRef (\d{6,})")
 
 
 def _paise(amount) -> int:
     from decimal import Decimal
 
-    raw = getattr(amount, "amount", amount)  # mt940 Amount wraps a Decimal
+    raw = getattr(amount, "amount", amount)
     return int((Decimal(str(raw)) * 100).to_integral_value(rounding="ROUND_HALF_UP"))
 
 
 def parse_mt940(path: str):
-    """Parse an MT940 file into a pandas DataFrame of bank statement rows.
-
-    Columns: bank_ref, amount_paise (signed: credit +, debit -), value_date
-    (YYYY-MM-DD), direction (CREDIT/DEBIT), link_tx (TXN id from narration or
-    None), narration. Raises on unparseable files (fail closed, like PG CSVs).
-    """
     import pandas as pd
 
     try:
@@ -52,7 +35,7 @@ def parse_mt940(path: str):
         day = d.get("date")
         if day is None:
             raise ValueError(f"cannot parse MT940 {path}: missing value date")
-        day_iso = day.strftime("%Y-%m-%d") if hasattr(day, "strftime") else str(day)[:10]  # type: ignore[union-attr]
+        day_iso = day.strftime("%Y-%m-%d") if hasattr(day, "strftime") else str(day)[:10]
         direction = "CREDIT" if str(d.get("status", "")).upper().startswith("C") else "DEBIT"
         narration = " ".join(
             str(d.get(k) or "") for k in ("transaction_details", "extra_details")
@@ -75,8 +58,6 @@ def parse_mt940(path: str):
         rows,
         columns=["bank_ref", "amount_paise", "value_date", "direction", "link_tx", "narration"],
     )
-    # No-PAN gate (same as PG CSVs): narration is free text and would put the
-    # lake in PCI scope. Fail the file, never merge it.
     from src.validation.pan_guard import scan_frame
 
     pan_hits = scan_frame(df)
