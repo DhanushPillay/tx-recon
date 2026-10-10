@@ -1,5 +1,3 @@
-"""Settings matrix + table prefix + bench overrides."""
-
 import pytest
 
 from src.common.settings import Settings
@@ -35,7 +33,6 @@ def test_bench_warehouse_override(monkeypatch):
 
 
 def test_fail_closed_defaults():
-    """Prod posture out of the box: strict SLO, no destructive seeding."""
     s = Settings()
     assert s.strict_slo is True
     assert s.allow_destructive_seed is False
@@ -43,11 +40,19 @@ def test_fail_closed_defaults():
     assert s.require_kafka_sasl is False
 
 
+def test_maintain_after_merge_env_switch(monkeypatch):
+    monkeypatch.delenv("MAINTAIN_AFTER_MERGE", raising=False)
+    assert Settings().maintain_after_merge is True
+    monkeypatch.setenv("MAINTAIN_AFTER_MERGE", "0")
+    assert Settings().maintain_after_merge is False
+    monkeypatch.setenv("MAINTAIN_AFTER_MERGE", "1")
+    assert Settings().maintain_after_merge is True
+
+
 def test_secret_file_resolution(tmp_path, monkeypatch):
-    """*_FILE convention loads mounted secrets; explicit env wins."""
     pw = tmp_path / "pw"
     pw.write_text("s3cr3t\n")
-    monkeypatch.setenv("MINIO_SECRET_KEY", "")  # .env may provide one; force the FILE path
+    monkeypatch.setenv("MINIO_SECRET_KEY", "")
     monkeypatch.setenv("MINIO_SECRET_KEY_FILE", str(pw))
     assert Settings().minio_secret_key == "s3cr3t"  # noqa: S105 (test fixture)
     monkeypatch.setenv("MINIO_SECRET_KEY", "explicit")
@@ -65,7 +70,7 @@ def test_check_java_home_no_env_noop(monkeypatch):
     from src.common.config import _check_java_home
 
     monkeypatch.delenv("JAVA_HOME", raising=False)
-    _check_java_home()  # must not raise
+    _check_java_home()
 
 
 def test_check_java_home_valid_kept(monkeypatch, tmp_path):
