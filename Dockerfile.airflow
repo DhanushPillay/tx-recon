@@ -15,6 +15,7 @@ RUN apt-get update \
 COPY --chown=airflow:root pyproject.toml /opt/airflow/pyproject.toml
 COPY --chown=airflow:root src/ /opt/airflow/src/
 COPY --chown=airflow:root config/ /opt/airflow/config/
+COPY --chown=airflow:root sql/ /opt/airflow/sql/
 COPY --chown=airflow:root dags/ /opt/airflow/dags/
 USER airflow
 RUN pip install --no-cache-dir /opt/airflow
