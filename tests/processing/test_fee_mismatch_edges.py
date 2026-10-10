@@ -1,9 +1,3 @@
-"""Tolerance edges per instrument: +-1 paise MATCHES, +-2 MISMATCHES.
-
-Catches tolerance inflation (e.g. someone bumping tolerance_paise to hide
-fee drift). Hermetic: FeeEngine only, no Spark.
-"""
-
 import pytest
 
 from src.processing.fee_engine import FeeEngine
