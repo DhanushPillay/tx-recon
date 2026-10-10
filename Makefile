@@ -1,6 +1,6 @@
-.PHONY: help up down install clean format lint typecheck test coverage integration bench accuracy regression pipeline
+.PHONY: help up down wait install clean format lint typecheck test coverage integration bench accuracy regression pipeline
 
-DATE ?= 2026-09-04
+DATE ?= $(shell python -c "import datetime;print(datetime.date.today())")
 
 help:
 	@echo "up/down         - start/stop docker services (redpanda, minio, nessie, trino)"
@@ -13,7 +13,7 @@ help:
 	@echo "accuracy        - real-data accuracy gate (>=85% on 10k sample)"
 	@echo "regression      - accuracy gate vs checked-in baseline"
 	@echo "bench           - full real-data bench (accuracy + kafka/pandera/iceberg/pyspark)"
-	@echo "pipeline        - run daily recon (DATE=YYYY-MM-DD, default 2026-09-04)"
+	@echo "pipeline        - run daily recon (DATE=YYYY-MM-DD, default today)"
 	@echo "clean           - remove pycache/pyc (portable, no Unix find)"
 
 accuracy:
@@ -54,7 +54,10 @@ test:
 coverage:
 	pytest tests/ -m "not integration" -n auto --benchmark-disable --cov=src --cov-branch --cov-report=term-missing:skip-covered --cov-report=xml --cov-fail-under=90
 
-integration:
+wait:
+	python -c "import time,urllib.request;end=time.time()+300\nfor name,url,ok in [('minio','http://localhost:9000/minio/health/live',lambda b:True),('nessie','http://localhost:19120/api/v2/config',lambda b:True),('trino','http://localhost:8080/v1/info',lambda b:b'\"starting\":false' in b)]:\n while True:\n  try:\n   body=urllib.request.urlopen(url,timeout=5).read()\n   assert ok(body),name+' not ready yet';print(name,'ready');break\n  except Exception as e:\n   assert time.time()<end,f'{name} never became ready: {e}';time.sleep(5)"
+
+integration: wait
 	pytest tests/ -m "integration" --no-cov --benchmark-disable
 
 bench: accuracy
