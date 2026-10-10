@@ -4,16 +4,15 @@ from pandera import Check
 
 from src.common.schemas import INSTRUMENT_TYPES
 
-_settlement_date_valid = Check(
-    lambda s: pd.to_datetime(s, format="%Y-%m-%d", errors="coerce").notna().all(),
-    error="settlement_date must be a real calendar date YYYY-MM-DD",
-)
+
+def bad_calendar_date_mask(series: pd.Series) -> pd.Series:
+    return series.notna() & pd.to_datetime(series, format="%Y-%m-%d", errors="coerce").isna()
+
 
 settlement_schema = pa.DataFrameSchema(
     {
         "transaction_id": pa.Column(
             str,
-            # ponytail: dup detection lives in reconcile dedup (counted), not here — unique=True would quarantine whole files.
             unique=False,
             nullable=False,
             checks=[Check.str_matches(r"^[A-Za-z0-9_]{4,64}$")],
@@ -23,22 +22,22 @@ settlement_schema = pa.DataFrameSchema(
         "settlement_date": pa.Column(
             str,
             nullable=False,
-            checks=[Check.str_matches(r"^\d{4}-\d{2}-\d{2}$"), _settlement_date_valid],
+            checks=[Check.str_matches(r"^\d{4}-\d{2}-\d{2}$")],
         ),
         "instrument_type": pa.Column(
             str,
             nullable=False,
             checks=Check.isin(INSTRUMENT_TYPES),
         ),
-        # Optional canonical columns — nullable, allow PG adapters to populate.
         "merchant_id": pa.Column(str, nullable=True, required=False),
-        "fee_paise": pa.Column(pd.Int64Dtype(), nullable=True, required=False, coerce=True),
-        "gst_paise": pa.Column(pd.Int64Dtype(), nullable=True, required=False, coerce=True),
+        "fee_paise": pa.Column(
+            pd.Int64Dtype(), nullable=True, required=False, coerce=True, checks=Check.ge(0)
+        ),
+        "gst_paise": pa.Column(
+            pd.Int64Dtype(), nullable=True, required=False, coerce=True, checks=Check.ge(0)
+        ),
         "settlement_id": pa.Column(str, nullable=True, required=False),
         "utr": pa.Column(str, nullable=True, required=False),
-        # Single-currency ledger: matching math assumes INR paise. Non-INR rows
-        # fail closed into quarantine instead of silently matching wrong rates.
-        # NULL stays allowed (adapter did not populate -> treated as INR).
         "currency": pa.Column(
             str,
             nullable=True,
@@ -46,10 +45,12 @@ settlement_schema = pa.DataFrameSchema(
             checks=Check.isin(["INR"]),
         ),
         "gross_amount_paise": pa.Column(
-            pd.Int64Dtype(), nullable=True, required=False, coerce=True
+            pd.Int64Dtype(),
+            nullable=True,
+            required=False,
+            coerce=True,
+            checks=Check.ge(0),
         ),
-        # Provenance stamp from the handling PG adapter (razorpay/cashfree/
-        # payu/generic). Free-form: unknown PGs must not fail validation.
         "provider": pa.Column(str, nullable=True, required=False),
     },
     strict=False,
