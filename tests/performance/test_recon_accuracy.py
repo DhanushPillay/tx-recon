@@ -1,9 +1,11 @@
-"""Accuracy gate on real data: match_rate >= 85% on the 10k sample.
+from recon_accuracy import MATCH_GATE, load, match, run
 
-No synthetic breaks. A drop means fee miscalibration or data drift.
-"""
-
-from recon_accuracy import MATCH_GATE, run
+from src.adapters.real_data import _bucket
+from src.common.schemas import (
+    EXCEPTION_FEE_MISMATCH,
+    EXCEPTION_MISSING_WEBHOOK,
+    MATCHED,
+)
 
 
 def test_real_accuracy_gate():
@@ -15,6 +17,23 @@ def test_real_accuracy_gate():
 
 
 def test_orphans_visible_in_real_sample():
-    # The 10k sample carries ~5% orphan settlements; the gate must see them.
     rep = run()
     assert rep["orphans"] > 0
+
+
+def test_fixture_exceptions_are_all_injected_genuine():
+    webhooks, latest = load(
+        "data/samples/real_10k_hooks.csv", "data/samples/real_10k_settlement.csv"
+    )
+    predicted = match(webhooks, latest)
+    assert len(predicted) > 0
+    for tx, status in predicted.items():
+        bucket = _bucket(f"exc|{tx}", 7)
+        if status == EXCEPTION_FEE_MISMATCH:
+            assert bucket < 5, f"{tx} mismatched outside the injected set"
+        elif status == EXCEPTION_MISSING_WEBHOOK:
+            assert 7 <= bucket < 12, f"{tx} orphan outside the injected set"
+        elif status == MATCHED:
+            assert bucket in (5, 6) or bucket >= 12, f"{tx} matched an injected row"
+        else:
+            raise AssertionError(f"{tx} has unexpected status {status!r}")
