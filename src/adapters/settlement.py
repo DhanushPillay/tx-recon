@@ -1,15 +1,11 @@
-"""PG settlement adapters — Razorpay / Cashfree / PayU -> canonical tx-recon."""
-
 from __future__ import annotations
 
+import csv
 import re
 
 import pandas as pd
 
 CANONICAL_COLS = [
-    # Order matches bank_schema in src/processing/reconcile.py: Spark's CSV
-    # reader maps positionally under an explicit schema, so curated files
-    # must be bank_ref-first or tx/bank_ref silently swap on read.
     "bank_ref_id",
     "transaction_id",
     "settled_amount_paise",
@@ -22,12 +18,9 @@ CANONICAL_COLS = [
     "utr",
     "currency",
     "gross_amount_paise",
-    # Provenance for batch-model recon (provider batch/cutoff config) and
-    # per-provider late SLA. Stamped by _finalize from the handling adapter.
     "provider",
 ]
 
-# Mapping raw PG method strings -> canonical INSTRUMENT_TYPES
 _INSTRUMENT_ALIASES: dict[str, str] = {
     "upi": "UPI",
     "vpa": "UPI",
@@ -51,19 +44,16 @@ _INSTRUMENT_ALIASES: dict[str, str] = {
 
 
 def _map_instrument(raw: str | None) -> str:
-    """Map a PG method string to a canonical instrument.
-
-    Unknown strings map to "UNKNOWN" (not a real instrument): the Pandera
-    isin check quarantines the row. Silently defaulting to CREDIT_CARD would
-    price the row at the wrong MDR and MATCH it.
-    """
-    if not raw:
+    # pd.NA breaks a plain if-not so check it directly
+    if raw is None or (not isinstance(raw, str) and pd.isna(raw)):
         return "UNKNOWN"
-    key = str(raw).strip().lower().replace("-", "_").replace(" ", "_")
+    key = raw.strip().lower().replace("-", "_").replace(" ", "_")
+    if not key:
+        return "UNKNOWN"
     if key in _INSTRUMENT_ALIASES:
         return _INSTRUMENT_ALIASES[key]
-    # substring match for compound strings like "card - visa credit"
-    for alias, canonical in _INSTRUMENT_ALIASES.items():
+    # longest alias first so "international_card" hits "international", not "card"
+    for alias, canonical in sorted(_INSTRUMENT_ALIASES.items(), key=lambda kv: -len(kv[0])):
         if alias in key:
             return canonical
     return "UNKNOWN"
@@ -75,16 +65,12 @@ def _to_iso_date(value) -> str | None:
     s = str(value).strip()
     if not s:
         return None
-    # Already YYYY-MM-DD
     if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
         return s
-    # DD-MM-YYYY or DD/MM/YYYY
     m = re.match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$", s)
     if m:
         d, mo, y = m.groups()
         return f"{int(y):04d}-{int(mo):02d}-{int(d):02d}"
-    # ISO timestamp -> date part
-    # e.g. 2025-04-01T10:00:00Z or 2025-04-01 10:00:00
     m2 = re.match(r"^(\d{4}-\d{2}-\d{2})[T ]", s)
     if m2:
         return m2.group(1)
@@ -98,13 +84,20 @@ def _to_iso_date(value) -> str | None:
 
 
 def _to_iso_series(s: pd.Series) -> pd.Series:
-    # ponytail: vectorized date parse — single pd.to_datetime over series, not per-row apply
+    # Ambiguous slashes ("02/04/2025") are DAY-first here, matching _to_iso_date.
+    # The vectorized fast path only fires for uniform ISO input; anything else
+    # falls through to the row-wise fallback below, which is also day-first,
+    # so both paths agree (pinned by test_adapters_extra date tests).
     if s.empty:
         return s
     str_s = s.astype(str).str.strip()
     if str_s.str.match(r"^\d{4}-\d{2}-\d{2}$").all():
         return str_s
-    out = pd.to_datetime(str_s, errors="coerce", utc=True).dt.strftime("%Y-%m-%d")
+    # strict ISO on the vector path (dayfirst=True mangles ISO in pandas 2.x);
+    # every non-ISO value falls through to the day-first row fallback below.
+    out = pd.to_datetime(str_s, errors="coerce", utc=True, format="%Y-%m-%d").dt.strftime(
+        "%Y-%m-%d"
+    )
     mask = out.isna() & s.notna() & (str_s != "nan") & (str_s != "None")
     if mask.any():
         fallback = s.loc[mask].apply(_to_iso_date)
@@ -114,12 +107,6 @@ def _to_iso_series(s: pd.Series) -> pd.Series:
 
 
 def _paise_inr_series(s: pd.Series) -> pd.Series:
-    # ponytail: vectorized INR->paise, HALF_UP without per-row Decimal.
-    # floor(x + 0.5) is exact half-up on the non-negative domain (amounts are
-    # validated > 0 downstream; negative halves would differ but those rows
-    # fail validation regardless). The 1e-9 absorbs float64 representation
-    # error (e.g. 2.675 stored as 2.67499999...); it is smaller than the ulp
-    # of large values so it can never push a genuine non-half over.
     if s.empty:
         return s
     import numpy as np
@@ -131,7 +118,6 @@ def _paise_inr_series(s: pd.Series) -> pd.Series:
 
 
 def _map_instrument_series(s: pd.Series) -> pd.Series:
-    # ponytail: vectorized map, fallback to row-wise substring only for unmapped
     if s.empty:
         return s
     lower = (
@@ -142,19 +128,13 @@ def _map_instrument_series(s: pd.Series) -> pd.Series:
         .str.replace(" ", "_", regex=False)
     )
     mapped = lower.map(_INSTRUMENT_ALIASES)
-    # substring fallback where direct miss
-    missing = mapped.isna()
+    missing = mapped.isna() & s.notna()
     if missing.any():
         mapped.loc[missing] = s.loc[missing].apply(_map_instrument)
     return mapped.fillna("UNKNOWN")
 
 
 def _lc(df: pd.DataFrame) -> dict[str, str]:
-    """Lowercased header lookup with separators normalized to underscores.
-
-    'Settlement Amount' / 'settlement-amount' / 'settlement_amount' all map
-    to 'settlement_amount', so every adapter looks keys up underscore-style.
-    """
     return {re.sub(r"[\s\-]+", "_", c.strip().lower()): c for c in df.columns}
 
 
@@ -193,11 +173,14 @@ def _merchant(df: pd.DataFrame, lc: dict[str, str]) -> pd.Series:
             break
     else:
         return pd.Series(["UNKNOWN"] * len(df), index=df.index)
-    return s.fillna("UNKNOWN").replace("nan", "UNKNOWN").replace("", "UNKNOWN")
+    # astype(str) stringifies missing markers, so map every spelling of
+    # missing back to UNKNOWN: None->"None", np.nan->"nan", pd.NA->"<NA>".
+    return s.fillna("UNKNOWN").replace(
+        {"nan": "UNKNOWN", "None": "UNKNOWN", "<NA>": "UNKNOWN", "": "UNKNOWN"}
+    )
 
 
 def _currency(df: pd.DataFrame, lc: dict[str, str]) -> pd.Series:
-    # fillna before str cast: pd.NA astype(str) is "<NA>", not NaN, and would dodge fillna
     cur = _col(df, lc, "currency").fillna("INR").astype(str).str.strip().str.upper()
     return cur.replace("NAN", "INR").replace("", "INR")
 
@@ -207,7 +190,12 @@ def _bank_ref(
 ) -> pd.Series:
     for cand in candidates:
         if cand in lc:
-            return df[lc[cand]].astype(str).str.strip().replace("nan", pd.NA)
+            return (
+                df[lc[cand]]
+                .astype(str)
+                .str.strip()
+                .replace({"nan": pd.NA, "None": pd.NA, "<NA>": pd.NA, "": pd.NA})
+            )
     return fallback
 
 
@@ -221,16 +209,12 @@ class BaseSettlementAdapter:
         raise NotImplementedError
 
     def _finalize(self, df: pd.DataFrame) -> pd.DataFrame:
-        # Ensure canonical columns exist, fill missing with NA, order.
-        # Provenance stamp: which adapter (PG) produced this row — but an
-        # existing provider (e.g. re-validated curated file) always wins.
         stamped = "provider" in df.columns
         for col in CANONICAL_COLS:
             if col not in df.columns:
                 df[col] = pd.NA
         if not stamped:
             df["provider"] = self.pg_name
-        # Coerce types for required cols
         df["settled_amount_paise"] = pd.to_numeric(
             df["settled_amount_paise"], errors="coerce"
         ).astype("Int64")
@@ -241,8 +225,6 @@ class BaseSettlementAdapter:
 
 
 class GenericAdapter(BaseSettlementAdapter):
-    """Already-canonical 5-col file: bank_ref_id, transaction_id, settled_amount_paise, settlement_date, instrument_type."""
-
     pg_name = "generic"
 
     def can_handle(self, columns: list[str]) -> bool:
@@ -250,11 +232,8 @@ class GenericAdapter(BaseSettlementAdapter):
         return {"transaction_id", "bank_ref_id", "settled_amount_paise"}.issubset(cols)
 
     def normalize(self, df: pd.DataFrame) -> pd.DataFrame:
-        # Column names are canonical; just normalize aliases and fill optional cols
         df = df.copy()
-        # lower -> canonical for case-insensitive files
         lc = _lc(df)
-        # Ensure canonical names (if file used Transaction_ID etc.)
         rename = {}
         for want in CANONICAL_COLS:
             if want not in df.columns and want.lower() in lc:
@@ -266,7 +245,6 @@ class GenericAdapter(BaseSettlementAdapter):
         df["settlement_date"] = _to_iso_series(df["settlement_date"])
         df["merchant_id"] = _merchant(df, lc)
         df["currency"] = _currency(df, lc)
-        # settled_amount_paise is already paise in generic
         df["settled_amount_paise"] = pd.to_numeric(df["settled_amount_paise"], errors="coerce")
         if "utr" not in df.columns and "bank_ref_id" in df.columns:
             df["utr"] = df["bank_ref_id"]
@@ -276,16 +254,8 @@ class GenericAdapter(BaseSettlementAdapter):
 
 
 class RazorpayAdapter(BaseSettlementAdapter):
-    """Razorpay settlement CSV -> canonical.
-
-    Expected Razorpay headers (case-insensitive, spaces):
-    Payment Id, Order Id, Settlement Id, Settlement UTR, Payment Method,
-    Amount, Fee, Tax, Settlement Amount, Currency, Created At, Settlement Date, Status
-    """
-
     pg_name = "razorpay"
 
-    # Lowercased required columns to detect (utr optional for tests)
     _SIGNATURE = {"payment id", "settlement id"}
 
     def can_handle(self, columns: list[str]) -> bool:
@@ -302,34 +272,22 @@ class RazorpayAdapter(BaseSettlementAdapter):
             _col(df, lc, "settlement_utr").astype(str).str.strip().replace("nan", pd.NA)
         )
         out["utr"] = out["bank_ref_id"]
-        # Settlement Amount is INR decimal -> paise
         out["settled_amount_paise"] = _paise_col(df, lc, "settlement_amount")
-        # Fallback to Amount - Fee - Tax if settlement amount missing
-        # gross
         out["gross_amount_paise"] = _paise_col(df, lc, "amount")
         out["fee_paise"] = _paise_col(df, lc, "fee")
         out["gst_paise"] = _paise_col(df, lc, "tax")
-        # Dates: prefer Settlement Date, fallback Created At
         out["settlement_date"] = _date_with_fallback(df, lc, ("settlement_date",), ("created_at",))
         out["instrument_type"] = _map_instrument_series(_col(df, lc, "payment_method"))
-        # Merchant: Razorpay files are per-account; column may not exist
         out["merchant_id"] = _merchant(df, lc)
         out["currency"] = _currency(df, lc)
         return self._finalize(out)
 
 
 class CashfreeAdapter(BaseSettlementAdapter):
-    """Cashfree settlement CSV -> canonical.
-
-    Headers: payment_id, order_id, settlement_id, settlement_amount, fee, tax, utr,
-    payment_method, settlement_date, currency, status, merchant_id
-    """
-
     pg_name = "cashfree"
 
     def can_handle(self, columns: list[str]) -> bool:
         cols = {c.strip().lower() for c in columns}
-        # cashfree uses underscores, needs payment_id + settlement_id
         return {"payment_id", "settlement_id", "settlement_amount"}.issubset(
             cols
         ) and "settlement utr" not in cols
@@ -340,7 +298,6 @@ class CashfreeAdapter(BaseSettlementAdapter):
         out = pd.DataFrame()
         out["transaction_id"] = _col(df, lc, "payment_id").astype(str).str.strip()
         out["settlement_id"] = _col(df, lc, "settlement_id").astype(str).str.strip()
-        # UTR may be 'utr' or 'settlement_utr'
         out["bank_ref_id"] = _bank_ref(
             df, lc, ("utr", "settlement_utr"), _col(df, lc, "settlement_id").astype(str)
         )
@@ -357,11 +314,6 @@ class CashfreeAdapter(BaseSettlementAdapter):
 
 
 class PayUAdapter(BaseSettlementAdapter):
-    """PayU settlement CSV -> canonical.
-
-    Headers: mihpayid, transaction_id|txnid, settlementId, settlementAmount, surcharge|fee, tax, utr, paymentMode, settlementDate
-    """
-
     pg_name = "payu"
 
     def can_handle(self, columns: list[str]) -> bool:
@@ -372,9 +324,7 @@ class PayUAdapter(BaseSettlementAdapter):
         lc = _lc(df)
 
         out = pd.DataFrame()
-        # PayU primary id is mihpayid
         tx = _col(df, lc, "mihpayid").astype(str).str.strip()
-        # txnid alias fallback
         if tx.isna().all() or (tx == "nan").all():
             for cand in ("transaction_id", "txnid", "txnid_"):
                 if cand in lc:
@@ -388,16 +338,12 @@ class PayUAdapter(BaseSettlementAdapter):
         out["bank_ref_id"] = _bank_ref(df, lc, ("utr", "settlement_utr"), sid)
         out["utr"] = out["bank_ref_id"]
         out["settled_amount_paise"] = _paise_col(df, lc, "settlementamount", "settlement_amount")
-        # Fee: surcharge or fee
         out["fee_paise"] = _paise_col(df, lc, "surcharge", "fee")
         out["gst_paise"] = _paise_col(df, lc, "tax")
-        # Gross: amount
         out["gross_amount_paise"] = _paise_col(df, lc, "amount", "gross_amount")
-        # Date
         out["settlement_date"] = _date_with_fallback(
             df, lc, ("settlementdate", "settlement_date"), ("created_at",)
         )
-        # paymentMode variations
         pm = next(
             (
                 lc[cand]
@@ -416,7 +362,7 @@ _ADAPTERS: list[BaseSettlementAdapter] = [
     RazorpayAdapter(),
     CashfreeAdapter(),
     PayUAdapter(),
-    GenericAdapter(),  # must be last — generic is most permissive
+    GenericAdapter(),
 ]
 
 
@@ -431,13 +377,11 @@ def detect_adapter(df: pd.DataFrame) -> BaseSettlementAdapter:
 def normalize_settlement_df(
     df: pd.DataFrame, pg_hint: str | None = None
 ) -> tuple[pd.DataFrame, str]:
-    """Normalize df to canonical. Returns (canonical_df, pg_name)."""
     if pg_hint:
         hint = pg_hint.strip().lower()
         for a in _ADAPTERS:
             if a.pg_name == hint and a.can_handle(list(df.columns)):
                 return a.normalize(df), a.pg_name
-        # Fallback: try by hint name even if signature not matched
         for a in _ADAPTERS:
             if a.pg_name == hint:
                 return a.normalize(df), a.pg_name
@@ -445,23 +389,38 @@ def normalize_settlement_df(
     return adapter.normalize(df), adapter.pg_name
 
 
-# Null spellings shared by both readers: the chunked (>256MB) and direct
-# paths must tokenize the same bytes identically (was: chunked passed none).
 _CSV_NA_VALUES = ["", "NA", "null", "NULL"]
+
+_CSV_DELIMITERS = ",;\t|"
+
+
+def blank_to_na(df: pd.DataFrame) -> pd.DataFrame:
+    mask = pd.DataFrame(False, index=df.index, columns=df.columns)
+    for col in df.columns:
+        if df[col].dtype == object:
+            mask[col] = df[col].str.isspace().eq(True) | df[col].eq("")
+    return df.mask(mask, pd.NA) if mask.to_numpy().any() else df
+
+
+def sniff_csv_delimiter(path: str, default: str = ",") -> str:
+    try:
+        with open(path, newline="", encoding="utf-8-sig") as fh:
+            header = fh.readline()
+        dialect = csv.Sniffer().sniff(header, delimiters=_CSV_DELIMITERS)
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return default
+    return dialect.delimiter or default
 
 
 def load_settlement_csv(path: str, pg_hint: str | None = None) -> tuple[pd.DataFrame, str]:
-    """Read CSV at path and normalize. Returns (canonical_df, pg_name)."""
-    # sep=None sniffs comma vs semicolon PG dialects in one read.
     df = pd.read_csv(
         path,
         dtype=str,
-        sep=None,
-        engine="python",
+        sep=sniff_csv_delimiter(path),
+        engine="c",
         keep_default_na=False,
         na_values=_CSV_NA_VALUES,
     )
-    # Replace empty strings with NA for normalization
-    df = df.replace(r"^\s*$", pd.NA, regex=True)
+    df = blank_to_na(df)
     canonical, pg_name = normalize_settlement_df(df, pg_hint=pg_hint)
     return canonical, pg_name
