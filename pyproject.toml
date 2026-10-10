@@ -7,7 +7,6 @@ name = "tx-recon"
 version = "0.1.0"
 description = "Payment gateway reconciliation with Iceberg MERGE"
 requires-python = ">=3.10,<3.13"
-license = {text = "MIT"}
 dependencies = [
     "pyspark==3.5.1",
     "pandas>=2.0,<3.0",
@@ -16,7 +15,6 @@ dependencies = [
     "pydantic>=2.0,<3.0",
     "pydantic-settings>=2.0,<3.0",
     "confluent-kafka[schemaregistry]>=2.0,<3.0",
-    "authlib>=1.0.0",
     "httpx>=0.26",
     "certifi",
     "fastavro>=1.5.4,<2",
@@ -92,6 +90,15 @@ python_version = "3.11"
 ignore_missing_imports = true
 
 [tool.mutmut]
-source_paths = ["src/processing/fee_engine.py"]
-pytest_add_cli_args_test_selection = ["tests/processing/test_fee_engine.py"]
+paths_to_mutate = ["src/processing/fee_engine.py"]
+# Every pure-Python test of the engine. test_fee_sql_parity.py is excluded on
+# purpose: it boots a Spark session, and mutmut re-runs the selection once per
+# mutant, which would turn a nightly job into a weekend.
+tests_dir = [
+    "tests/processing/test_fee_engine.py",
+    "tests/processing/test_fee_boundaries.py",
+    "tests/processing/test_fee_versioning.py",
+    "tests/processing/test_fee_engine_hypothesis.py",
+    "tests/processing/test_fee_mismatch_edges.py",
+]
 pytest_add_cli_args = ["-o", "addopts=--no-cov --benchmark-disable -p no:cacheprovider -q"]
