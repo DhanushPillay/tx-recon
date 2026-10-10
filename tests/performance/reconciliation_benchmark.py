@@ -5,7 +5,6 @@ import os
 import sys
 import time
 
-# Single node: executors run in-process, always use the current interpreter.
 os.environ["PYSPARK_PYTHON"] = sys.executable
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
@@ -24,10 +23,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 
-# Canonical fee math (must mirror src/processing/reconcile.py build_fee_case_sql
-# for the default 150bps + 18% GST rate card). Integer DIV only — Spark DIV
-# rejects float operands. Tolerance-aware: |expected_net - settled| <= 1.
-# Single WHEN MATCHED with CASE keeps one ABS eval per row (was 2x).
 def _build_merge_sql(table: str, fee_case_sql: str, gst_case_sql: str, tol_case_sql: str) -> str:
     return f"""
 MERGE INTO {table} t
@@ -43,9 +38,6 @@ WHEN MATCHED THEN
 REAL_SCALES = [1_000_000, 5_000_000, 12_000_000]
 SAMPLE_SCALES = [10_000]
 
-# Real-data inputs (thiru loader outputs). Settlement nets are loader-computed
-# (independent schedule = v1 card), so clean rows MATCH and the ~5% injected
-# mismatch slice reports as mismatched instead of a synthetic 0%.
 REAL_HOOKS_CSV = os.path.join(os.path.dirname(__file__), "../../data/real_thiru_full_hooks.csv")
 REAL_SETTLEMENT_CSV = os.path.join(
     os.path.dirname(__file__), "../../data/real_thiru_full_settlement.csv"
@@ -57,12 +49,6 @@ SAMPLE_SETTLEMENT_CSV = os.path.join(
 
 
 def _latest_snapshot_summary(spark, table_name):
-    """Latest snapshot id + summary map (Iceberg snapshots metadata table).
-
-    Each MERGE commit's own summary carries that commit's added-data-files,
-    added-delete-files, added-records etc — the per-MERGE diagnostics that
-    rows/sec alone cannot show (LST-Bench rule: report physical cost).
-    """
     rows = spark.sql(
         f"SELECT snapshot_id, summary FROM {table_name}.snapshots "
         "ORDER BY committed_at DESC LIMIT 1"
@@ -73,12 +59,6 @@ def _latest_snapshot_summary(spark, table_name):
 
 
 def _hygiene(spark, catalog, table_name):
-    """Binpack + expire between repeats (untimed).
-
-    Without this, MoR delete-debt accumulates across repeats and the median
-    measures degrading runs. With it, each timed MERGE starts from a
-    maintained steady state — labeled 'maintained' in results.
-    """
     spark.sql(
         f"CALL {catalog}.system.rewrite_data_files(table => '{table_name}', strategy => 'binpack')"
     )
@@ -86,7 +66,6 @@ def _hygiene(spark, catalog, table_name):
 
 
 def _bench_ddl(spark, table_name, merge_mode="mor"):
-    """Shared scratch-table DDL (all real-only runs measure the same layout)."""
     spark.sql(f"DROP TABLE IF EXISTS {table_name}")
     mode = "merge-on-read" if merge_mode == "mor" else "copy-on-write"
     spark.sql(
@@ -119,11 +98,6 @@ def _bench_ddl(spark, table_name, merge_mode="mor"):
 
 
 def create_table_real(spark, table_name, num_rows, merge_mode="mor", hooks_csv=None):
-    """Bench target from real hook rows: JVM CSV read (no driver list), same DDL.
-
-    ORDER BY makes the slice deterministic; setup is untimed so sort cost is free.
-    hooks_csv overrides the default full file (e.g. data/samples/ for smoke runs).
-    """
     from pyspark.sql import functions as F
 
     src = hooks_csv or REAL_HOOKS_CSV
@@ -161,11 +135,6 @@ _REAL_RAW_CACHED = False
 
 
 def _real_settlement_raw(spark):
-    """Read + persist the 1GB settlement CSV once per process.
-
-    Both update fractions reuse it instead of re-scanning 12.9M rows each
-    (~1 min saved per scale). Untimed setup; warmed before timing.
-    """
     global _REAL_RAW_CACHED
 
     if _REAL_RAW_CACHED:
@@ -194,10 +163,6 @@ def _real_settlement_raw(spark):
 
 
 def create_settlement_data_real(spark, table_name, update_fraction):
-    """Settlement slice = cached raw CSV semi-joined to the target ids.
-
-    Same temp view + persist + warm-count contract as before.
-    """
     count = spark.sql(f"SELECT COUNT(*) FROM {table_name}").collect()[0][0]
     settlement_count = int(count * update_fraction)
     logger.info(
@@ -211,8 +176,6 @@ def create_settlement_data_real(spark, table_name, update_fraction):
     settlement_df = (
         spark.sql("SELECT * FROM settlement_raw_real")
         .join(target_ids, "transaction_id")
-        # Real files carry dup settlement rows (dedup-keep-latest is prod behavior);
-        # MERGE demands one source row per target. Untimed setup.
         .dropDuplicates(["transaction_id"])
         .select(
             "bank_ref_id",
@@ -249,7 +212,6 @@ def measure_merge(spark, catalog, table_name, update_fraction, merge_mode, repea
     tol_case_sql = build_tolerance_case_sql(fee_engine)
     merge_sql = _build_merge_sql(table_name, fee_case_sql, gst_case_sql, tol_case_sql)
 
-    # Join strategy from the plan: broadcast (no target shuffle) vs sort-merge.
     plan = "\n".join(r[0] for r in spark.sql(f"EXPLAIN {merge_sql}").collect())
     if "BroadcastHashJoin" in plan:
         join_type = "broadcast"
@@ -262,12 +224,10 @@ def measure_merge(spark, catalog, table_name, update_fraction, merge_mode, repea
     reset_sql = f"""UPDATE {table_name}
                 SET reconciliation_status = 'PENDING_SETTLEMENT',
                     bank_ref_id = NULL"""
-    # Warmup (untimed): cold JVM/S3/JIT inflates the first MERGE 2-3x, which
-    # would drag the median. One throwaway MERGE + reset before timing.
     spark.sql(merge_sql)
     spark.sql(reset_sql)
     for _ in range(repeats):
-        _hygiene(spark, catalog, table_name)  # untimed steady-state reset
+        _hygiene(spark, catalog, table_name)
         start = time.perf_counter()
         spark.sql(merge_sql)
         elapsed = time.perf_counter() - start
@@ -281,9 +241,7 @@ def measure_merge(spark, catalog, table_name, update_fraction, merge_mode, repea
                 "added_data_files_size": int(summary.get("added-files-size", 0) or 0),
             }
         )
-        # Reset state between repeats so each timing measures the same work.
         spark.sql(reset_sql)
-    # One final MERGE leaves the table matched for the count queries below.
     start = time.perf_counter()
     spark.sql(merge_sql)
     write_time = time.perf_counter() - start
@@ -312,7 +270,6 @@ def measure_merge(spark, catalog, table_name, update_fraction, merge_mode, repea
     spark.sql(f"SELECT COUNT(*) FROM {table_name}").collect()
     read_time = time.perf_counter() - start
 
-    # Release settlement cache
     try:
         spark.catalog.uncacheTable("bank_settlements")
     except Exception:
@@ -351,7 +308,6 @@ def run_benchmark(scale=None, catalog="nessie", merge_mode="mor", cluster=False,
 
     spark = get_spark_session("ReconciliationBenchmark")
 
-    # Adaptive query execution — tuned for single-node local[12] 32 partitions
     spark.conf.set("spark.sql.adaptive.enabled", "true")
     spark.conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
     spark.conf.set("spark.sql.adaptive.advisoryPartitionSizeInBytes", "64MB")
@@ -380,26 +336,20 @@ def run_benchmark(scale=None, catalog="nessie", merge_mode="mor", cluster=False,
     results = {}
     output = {"hardware": hw, "benchmarks": results, "catalog": catalog}
 
-    # Single node: nessie -> results_iceberg_real.json (s3a).
-    # CoW runs get their own file so they never overwrite the cited MoR record.
     out_name = "results_iceberg_cow.json" if merge_mode == "cow" else "results_iceberg_real.json"
     out_path = os.path.join(os.path.dirname(__file__), out_name)
 
     def _dump():
-        # Incremental: a kill loses at most the in-flight scale, never completed ones.
         with open(out_path, "w") as f:
             json.dump(output, f, indent=2)
 
     for num_rows in row_counts:
         table_name = f"{catalog}.db.webhooks_bench_{num_rows // 1000}k_real"
         if num_rows >= 5_000_000:
-            # 12M-row joins OOM at 32 partitions on a 16GB box (measured);
-            # smaller partitions keep per-task heap flat. Runtime conf only.
             spark.conf.set("spark.sql.shuffle.partitions", "128")
             spark.conf.set("spark.default.parallelism", "128")
         create_table_real(spark, table_name, num_rows, merge_mode=merge_mode, hooks_csv=hooks_src)
         if cluster:
-            # One-variable experiment: sort on the join key. Untimed setup.
             logger.info("Clustering table on transaction_id (sort rewrite)...")
             spark.sql(
                 f"CALL {catalog}.system.rewrite_data_files("
