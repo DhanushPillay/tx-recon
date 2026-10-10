@@ -1,10 +1,3 @@
-"""Provider settlement behavior: batch identity, lag windows, per-provider SLA.
-
-Calendar-date joins create false MISSINGs (cross-midnight batches, holidays,
-multi-day cycles). Every settlement belongs to a provider batch
-`{provider}:{batch_date}`; webhooks match when inside the lag window.
-"""
-
 import logging
 import os
 
@@ -14,7 +7,6 @@ logger = logging.getLogger(__name__)
 
 
 def load_providers(path: str | None = None) -> dict:
-    """Load providers.yaml. Missing file fails closed (no silent defaults)."""
     from src.common.settings import get_settings
 
     if path is None:
@@ -30,7 +22,6 @@ def load_providers(path: str | None = None) -> dict:
 
 
 def provider_spec(cfg: dict, provider: str | None) -> dict:
-    """Provider section merged over defaults; unknown providers get defaults."""
     base = dict(cfg.get("default", {}))
     if provider:
         override = (cfg.get("providers") or {}).get(provider, {})
@@ -42,12 +33,10 @@ def provider_spec(cfg: dict, provider: str | None) -> dict:
 
 
 def assign_batch(provider: str | None, settlement_date: str) -> str:
-    """Stable batch identity `{provider}:{date}` (provider defaults to gateway)."""
     return f"{provider or 'gateway'}:{settlement_date}"
 
 
 def within_lag(webhook_date: str, settlement_date: str, lag_days: int) -> bool:
-    """True when the webhook falls inside the provider's on-time window."""
     from datetime import date as _date
 
     try:
