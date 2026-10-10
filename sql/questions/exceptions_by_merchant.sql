@@ -1,4 +1,3 @@
--- Fee-mismatch exposure per merchant, in rupees.
 SELECT
     merchant_id,
     COUNT(*) AS mismatches,
@@ -6,4 +5,4 @@ SELECT
 FROM nessie.db.webhooks
 WHERE reconciliation_status = 'EXCEPTION_FEE_MISMATCH'
 GROUP BY merchant_id
-ORDER BY mismatches DESC;
+ORDER BY mismatches DESC
