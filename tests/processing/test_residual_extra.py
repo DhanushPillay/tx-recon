@@ -1,5 +1,3 @@
-"""Residual scorer edges + apply_residual with mocked spark."""
-
 from unittest.mock import MagicMock
 
 import pytest
@@ -20,7 +18,6 @@ def test_excess_zero_vs_positive():
     eng.compute_expected_settled.return_value = 1000
     eng.get_rate_for_date.return_value = {"tolerance_paise": 1}
     assert should_downgrade(1000, 1000, "UPI", None, None, fee_engine=eng) is False
-    # merchant disagreement forces 0.95 -> downgrade at default tau 0.9
     eng2 = MagicMock()
     eng2.compute_expected_settled.side_effect = [1000, 2000]
     eng2.get_rate_for_date.side_effect = [{"tolerance_paise": 1}, {"tolerance_paise": 1}]
@@ -31,7 +28,7 @@ def test_apply_residual_no_rows_returns_zero():
     spark = MagicMock()
     spark.sql.return_value.collect.return_value = [{"n": 0}]
     assert apply_residual(spark, "nessie.db.webhooks") == 0
-    assert spark.sql.call_count == 1  # count only, no MERGE
+    assert spark.sql.call_count == 1
 
 
 def test_apply_residual_demotes_via_merge():
@@ -45,11 +42,10 @@ def test_apply_residual_demotes_via_merge():
     assert "MERGE INTO nessie.db.webhooks" in merge_sql
     assert "bank_settlements" in merge_sql
     assert ">= 0.9" in merge_sql
-    assert "IN (" not in merge_sql  # set-based: no tx-id literals
+    assert "IN (" not in merge_sql
 
 
 def test_apply_residual_count_failure_raises():
-    """Scoring failure must fail the batch, never report '0 demoted' as clean."""
     spark = MagicMock()
     spark.sql.return_value.collect.side_effect = RuntimeError("boom")
     with pytest.raises(RuntimeError, match="residual scoring failed"):
@@ -61,8 +57,8 @@ def test_score_match_sql_reuses_builders():
     from src.processing.residual import score_match_sql
 
     sql = score_match_sql(FeeEngine())
-    assert "CAST(NULL AS STRING)" in sql  # default leg ignores merchant
-    assert "s.merchant_id" in sql  # merchant leg
+    assert "CAST(NULL AS STRING)" in sql
+    assert "s.merchant_id" in sql
     assert "GREATEST" in sql and "EXP(" in sql
     assert "0.95" in sql and "0.75" in sql
 
