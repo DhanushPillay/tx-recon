@@ -1,21 +1,7 @@
-"""Reconciliation logic tests: Spark for wiring, FeeEngine for money math.
-
-Uses the real FeeEngine.check_match (tolerance-aware) instead of a
-reimplemented formula, so these tests break when prod logic drifts.
-"""
-
-import pytest
-
 from src.processing.fee_engine import FeeEngine
-
-pytestmark = pytest.mark.skipif(
-    __import__("platform").system() == "Windows",
-    reason="PySpark Python worker crashes on Windows with Python 3.13",
-)
 
 
 def _reconcile_statuses(spark, webhooks_rows, bank_rows, instrument="CREDIT_CARD"):
-    """Join in Spark (wiring), decide in FeeEngine (real logic)."""
     engine = FeeEngine()
     webhooks_df = spark.createDataFrame(webhooks_rows, ["transaction_id", "amount_paise"])
     bank_df = spark.createDataFrame(bank_rows, ["transaction_id", "settled_amount_paise"])
@@ -68,7 +54,6 @@ def test_fee_calculation_mixed_results(spark):
 def test_tolerance_boundary(spark):
     engine = FeeEngine()
     settled = engine.compute_expected_settled(100000, "CREDIT_CARD")
-    # ±1 paise is within default tolerance -> MATCHED; ±2 is not.
     assert (
         _reconcile_statuses(spark, [("t", 100000)], [("t", settled + 1)], "CREDIT_CARD")["t"]
         == "MATCHED"
