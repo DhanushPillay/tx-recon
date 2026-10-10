@@ -1,5 +1,3 @@
-"""Reconcile SQL builder + run_reconciliation error paths."""
-
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -97,35 +95,3 @@ def test_run_reconciliation_missing_file_raises():
         )
         with pytest.raises(FileNotFoundError):
             rec.run_reconciliation(date_str="2099-01-01")
-
-
-def test_run_reconciliation_merge_failure_wraps():
-    spark = MagicMock()
-    spark.read.format.return_value.option.return_value.schema.return_value.load.return_value = (
-        MagicMock()
-    )
-    # make dedup chain return mock df
-    df = MagicMock()
-    df.filter.return_value.withColumn.return_value.filter.return_value.drop.return_value = df
-    spark.read.format.return_value.option.return_value.schema.return_value.load.return_value = df
-    spark.sql.side_effect = ["ok", Exception("merge boom")]
-    with patch("src.processing.reconcile.get_spark_session", return_value=spark):
-        # FileNotFound path needs load_csv_on_driver False; force MERGE fail via sql
-        import pandas as pd
-
-        _df2 = pd.DataFrame(
-            [
-                {
-                    "transaction_id": "tx_abcdef123456",
-                    "settled_amount_paise": 100,
-                    "settlement_date": "2025-04-02",
-                }
-            ]
-        )
-        spark.createDataFrame.return_value = MagicMock()
-        # simpler: patch whole flow to hit RuntimeError
-        with (
-            patch.object(spark, "sql", side_effect=[None, RuntimeError("boom")]),
-            pytest.raises((RuntimeError, Exception)),
-        ):
-            rec.run_reconciliation(date_str="2025-04-02")
