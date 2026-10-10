@@ -26,7 +26,6 @@ def percentile(data, p):
 
 
 def load_replay_events(csv_path, count):
-    """Preload real hook rows (untimed setup); returns a cycling event fn."""
     import pandas as pd
 
     df = pd.read_csv(
@@ -197,7 +196,7 @@ def main():
     )
     args = parser.parse_args()
 
-    brokers = ["localhost:9092", "localhost:19092"] if args.compare else ["localhost:19092"]
+    brokers = ["127.0.0.1:9092", "127.0.0.1:19092"] if args.compare else ["127.0.0.1:19092"]
 
     target = args.replay_csv or (
         REAL_HOOKS_CSV if os.path.exists(REAL_HOOKS_CSV) else SAMPLE_HOOKS_CSV
