@@ -96,7 +96,6 @@ def test_schema_validates_correct_data():
 
 
 def test_schema_allows_duplicate_ids(invalid_csv_duplicate_ids):
-    # Dup detection lives in reconcile dedup (counted), not validation.
     df = pd.read_csv(invalid_csv_duplicate_ids / "data" / "settlement_dupes.csv")
     settlement_schema.validate(df, lazy=True)
 
