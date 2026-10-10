@@ -9,7 +9,6 @@ Local lakehouse pipeline that matches payment gateway webhooks against bank sett
 [![CI](https://github.com/DhanushPillay/tx-recon/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DhanushPillay/tx-recon/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/DhanushPillay/tx-recon/branch/main/graph/badge.svg)](https://codecov.io/gh/DhanushPillay/tx-recon)
 [![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)](https://www.python.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 </div>
 
@@ -36,7 +35,7 @@ If the settlement file says Rs.976.40, the transaction is `MATCHED`. If it says 
 ## Quickstart
 
 ```bash
-cp .env.example .env          # set MINIO_ROOT_PASSWORD
+cp .env.example .env          # ships working local MinIO credentials
 docker compose up -d          # redpanda, minio, nessie, trino, metabase
 pip install -e ".[dev]"
 python -m src.pipeline --date 2026-09-04
@@ -49,22 +48,37 @@ catalog `nessie`, schema `db`). Full setup: [docs/LOCAL_SETUP.md](docs/LOCAL_SET
 ## Architecture
 
 ```mermaid
-flowchart LR
-    G([Payment gateway]) -->|webhook events in Avro| ING[1 - INGESTION<br/>Kafka via Redpanda + streaming]
-    ING --> I[(webhooks table<br/>Iceberg)]
-    S([Settlement CSV<br/>from bank or PG]) -->|PAN plus registry check| V{2 - VALIDATION<br/>valid}
-    V -->|clean| N[normalize<br/>PG adapter]
-    V -->|bad rows| Q[(Quarantine)]
-    N --> M[3 - MERGE<br/>match webhook vs settlement<br/>fee engine decides MATCHED]
-    M --> I
-    B([Bank statement<br/>MT940]) --> E[(bank evidence)]
-    E -->|3rd leg| M
-    I --> D[4 - DASHBOARD<br/>Trino plus Metabase]
+flowchart TB
+  subgraph SL["STREAMING LANE · always on"]
+    direction LR
+    K["Kafka topic<br/>gateway_webhooks"] --> D["Decode guard<br/>magic byte, then Avro"] --> DD["Dedup + drift<br/>schema-id must match"] --> H["Heal-or-insert<br/>PENDING_RECONCILIATION"]
+    D -.->|undecodable or invalid| DQ["webhooks_dlq"]
+  end
+
+  subgraph BL["DAILY BATCH LANE · on WAP branch ingest/YYYY-MM-DD"]
+    direction LR
+    V["Validate<br/>quarantine, or raise"] --> OB["Open branch<br/>drop, then recreate"] --> M["MERGE<br/>three legs converge"] --> AR["Age + residual<br/>late-SLA, then demote"]
+  end
+
+  T["nessie.db.webhooks<br/>one row per transaction_id · Iceberg on Nessie"]
+
+  H --> T
+  M --> T
+  AR --> G{"SLO gate<br/>match-rate + residual"}
+  G -->|pass| P["Publish by fast-forward<br/>ingest/YYYY-MM-DD → main"]
+  P --> MT["Iceberg maintenance<br/>expire, rewrite, manifests"]
+  G -->|fail| X["Drop the branch<br/>never reaches main"]
+
+  T -.-> RO["read-only: Trino + Metabase"]
 ```
+
+`RECONCILIATION_STATUS`: `MATCHED`, `FEE_MISMATCH`, `MISSING_WEBHOOK`, `MISSING_BANK_STMT`, `LATE_UNRESOLVED`.
+
+Two lanes, one table. Every batch lands on its own branch; nothing touches `main` until the gate passes, and a schema-id mismatch refuses the whole streaming batch.
 
 Single node (0$): `SPARK_MODE=local` (`local[*]`, host driver + MinIO/Nessie/Redpanda/Trino via `docker compose up -d`). Terraform `infra/terraform/local` (LocalStack) proves cloud IaC without bill; same code deploys to `infra/terraform` (S3+Glue, KMS, lifecycle).
 
-Three legs converge on one table. Streaming ingests webhooks (bucket(16, transaction_id) to co-locate MERGE joins). Batch validates settlements (PAN guard + content-hash registry → WAP branch) and merges by provider batch, not calendar date. The bank leg (MT940 via `mt-940`) provides independent evidence for MATCHED rows — a gateway-consistent error is invisible without it. All merges are idempotent so re-runs converge.
+Three legs converge on one table. Streaming ingests webhooks. Batch validates settlements (PAN guard + content-hash registry) and merges on a WAP branch, by provider batch rather than calendar date. The bank leg (MT940 via `mt-940`) provides independent evidence for MATCHED rows — a gateway-consistent error is invisible without it. All merges are idempotent so re-runs converge.
 
 Full architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -75,15 +89,16 @@ Full architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - Per-merchant negotiated rates that override instrument rates within each card
 - Merchant-aware MERGE SQL that checks `merchant_id` before `instrument_type` (`src/processing/reconcile.py: build_fee_case_sql`)
 - PG settlement adapters that normalize Razorpay, Cashfree, and PayU CSVs to a canonical 13-column shape including `provider` (`src/adapters/settlement.py`, `config/providers.yaml`)
-- Provider batch identity + per-provider lag/SLA (`config/providers.yaml`, `src/processing/batches.py`) — reconcile by `{provider}:{batch_date}` with `lag_days`/`late_sla_days`, not calendar date
+- Provider batch identity + per-provider lag + one global late-SLA threshold (`config/providers.yaml`, `src/processing/batches.py`) — reconcile by `{provider}:{batch_date}`, so cut-offs do not create false MISSINGs
 - Bank-statement third leg: MT940 parsing via `mt-940` (never hand-rolled) with independent credit evidence for MATCHED rows (`src/adapters/bank_statement.py`, `EXCEPTION_MISSING_BANK_STATEMENT`)
-- Pandera contract validation with quarantine + no-PAN gate (Luhn-checked scan) + content-hash file registry before Spark (`src/validation/pan_guard.py`, `file_registry.py`)
+- Pandera contract validation with quarantine + no-PAN gate (issuer-prefixed Luhn) + content-hash file registry before Spark (`src/validation/pan_guard.py`, `file_registry.py`)
 - WAP branches (`src/processing/wap.py`): batches land on `ingest/YYYY-MM-DD`, merge to `main` only on gate pass (`spark.wap.branch` + `write.wap.enabled` both required, verified live against Nessie 0.107.9 API v2)
-- Bucket partitioning `PARTITIONED BY bucket(16, transaction_id)` + `WRITE ORDERED BY transaction_id` so MERGE prunes to file groups (`src/ingestion/ingest_webhooks.py: ensure_webhook_table`)
-- Streaming dedup via `dropDuplicates` + idempotent `MERGE WHEN NOT MATCHED` in `foreachBatch` with watermark-bounded state and schema-id drift detection
+- Bucket partitioning `PARTITIONED BY bucket(16, transaction_id)` so MERGE join keys land in the same bucket on both sides. This colocates writes and reduces the shuffle; it does not prune the target scan, because a `MERGE ... ON a = b` equi-condition is a join predicate rather than a scan filter (`src/ingestion/ingest_webhooks.py: ensure_webhook_table`)
+- Per-micro-batch `dropDuplicates` plus an idempotent `MERGE WHEN NOT MATCHED` for cross-batch idempotency, with schema-id drift detection that fails closed and a supervisor loop that restarts a dead stream with backoff
 - Append-only corrections journal with maker-checker (`src/processing/corrections.py`, `scripts/replay_dlq.py --reason/--approved-by`)
 - Strict fail-closed defaults (`strict_slo`, `REQUIRE_KAFKA_SASL`, `REQUIRE_SCHEMA_REGISTRY`, `ALLOW_DESTRUCTIVE_SEED`) — real-data seeding is opt-in
-- Downgrade-only residual scorer with a formal proof that false positives never increase (`docs/PROOF.md`)
+- Differential test proving `FeeEngine` and its Spark SQL mirror agree over the full instrument × merchant × date × amount grid, on generated rate cards, in the default test pass (`tests/processing/test_fee_sql_parity.py`)
+- Downgrade-only residual scorer with a property test that false positives never increase (`docs/PROOF.md`)
 - Real-data accuracy gate: 10k sample joined through `FeeEngine.check_match`, match_rate >= 85% (`tests/performance/recon_accuracy.py`, measured 94.6%)
 
 ## Dashboard
@@ -92,9 +107,9 @@ Trino serves the reconciled Iceberg tables; Metabase visualizes them.
 BI-ready mart: [sql/marts/fact_reconciliation.sql](sql/marts/fact_reconciliation.sql).
 
 ```sql
-SELECT status, COUNT(*), SUM(amount_paise) / 100.0 AS rupees
+SELECT reconciliation_status, COUNT(*), SUM(amount_paise) / 100.0 AS rupees
 FROM nessie.db.webhooks
-GROUP BY status;
+GROUP BY reconciliation_status;
 ```
 
 ![Dashboard KPI row](docs/img/dash-kpi-row.png)
@@ -105,13 +120,15 @@ Full tour of all 11 cards: [docs/DASHBOARD.md](docs/DASHBOARD.md).
 ## Benchmarks
 
 Measured on real data: [thiru1711/Financial_Transactions](https://huggingface.co/datasets/thiru1711/Financial_Transactions)
-(13,305,915 card transactions) on 25 Sep 2026. Method, repro commands, and full tables: [docs/REAL_DATA.md](docs/REAL_DATA.md).
+(13,305,915 card transactions) on 9 Oct 2026. Method, repro commands, and full tables: [docs/REAL_DATA.md](docs/REAL_DATA.md).
 
 | Suite | Result |
 | :--- | :--- |
-| Iceberg MERGE (single-node, 8g driver, 128 shuffles ≥5M) | 1M 50% **13.25s**, 5M 50% **11.61s**, 12M 50% **56.73s** (10%: 6.0 / 6.83 / 10.32s; bench slices ~94.7% due to tx-ordered sampling; end-to-end 89.98% — see below) |
-| Validation, 12.9M rows | polars **9.43M** / manual 3.34M / pandera 763k / pydantic 178k rows/sec |
-| Kafka producer (real ~150B records, acks=all, lz4) | **225,123 msgs/sec**; serial p50 0.65ms, p99 3.97ms |
+| Iceberg MERGE (single-node, 8g driver, 128 shuffles ≥5M) | 1M 50% **11.21s**, 5M 50% **19.81s**, 12M 50% **34.32s** (10%: 3.09 / 12.0 / 18.69s; bench slices ~94.7% due to tx-ordered sampling; end-to-end 89.98% — see below) |
+| Validation, 12.9M rows | polars **7.07M** / manual 2.93M / pandera 1.24M / pydantic 132k rows/sec |
+| Kafka producer (real ~150B records, acks=all, lz4) | **224,237 msgs/sec**; serial p50 0.75ms, p99 2.82ms |
+| Streaming ingestion (Kafka → Iceberg, 16 partitions) | **12,832 rows/sec** sustained over 120s |
+| Full accuracy, 12.9M rows | **94.71%** match rate (gate ≥85%) |
 | End-to-end batch (12.6M rows: validate + MERGE + mart) | **~5 min wall** (173s validate, 105s MERGE, 89.98% end-to-end) |
 
 Record: `tests/performance/results_real.json`. The loader injects ~10% exceptions by design (health gate ≥ 85%): bench slices show ~94.7% due to tx-ordered sampling, while the full 12.6M end-to-end run reports **89.98%** (11,368,871 / 12,635,227) — both are the mix working, not matcher error.
@@ -123,20 +140,19 @@ Synthetic regression baselines are archived in [docs/BENCHMARKS.md](docs/BENCHMA
 src/
   adapters/        PG settlement normalizers (Razorpay/Cashfree/PayU/Generic) + bank_statement MT940 + real_data loader
   common/          Settings (strict flags, *_FILE secrets), Spark session, domain contracts
-  ingestion/       Spark streaming Kafka -> Iceberg (+DLQ, WAP table layout, bucket 16)
+  ingestion/       Spark streaming Kafka -> Iceberg (+DLQ, per-row decode guard, supervisor loop, bucket 16)
   processing/      FeeEngine + MERGE reconciliation + residual scorer + batches (provider windows) + wap (branches) + corrections (journal)
-  validation/      Pandera schemas + quarantine + pan_guard (Luhn) + file_registry (sha256)
-  pipeline.py      validate (PAN/registry) -> reconcile (provider batch) -> metrics + maintenance (real data only, fail-closed)
+  validation/      Pandera schemas + quarantine + pan_guard (issuer-prefixed Luhn) + file_registry (sha256)
+  pipeline.py      WAP branch -> validate (PAN/registry) -> reconcile (bank leg, mart, metrics) -> maintenance (fail-closed)
 config/
   fee_rates.yaml   versioned rate cards (effective_from/to, merchant overrides)
-  providers.yaml   per-provider lag_days / late_sla_days / cutoff
+  providers.yaml   per-provider lag_days / cutoff + a global late_sla_days
 sql/marts/         fact_reconciliation mart (migrations/V*__fact_reconciliation.sql is source of truth)
 ```
 
-## Contributing
+## Security
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Security policy: [SECURITY.md](SECURITY.md).
-PR checklist: `.github/PULL_REQUEST_TEMPLATE.md`.
+Deployment and secret-handling notes: [SECURITY.md](SECURITY.md).
 
 ## Roadmap
 
@@ -144,11 +160,11 @@ PR checklist: `.github/PULL_REQUEST_TEMPLATE.md`.
 
 Shipped: `fact_reconciliation` TABLE mart (migration-sourced), DLQ replay with maker-checker
 (`scripts/replay_dlq.py --reason --approved-by`), match-rate SLO (`MATCH_RATE_SLO` strict fail-closed),
-per-provider late SLA (`LATE_SLA_DAYS` → `config/providers.yaml` per-provider `late_sla_days` → `LATE_UNRESOLVED`),
-bucket(16) partitioning, WAP branches (`src/processing/wap.py`), bank third leg (MT940 via `mt-940` → `EXCEPTION_MISSING_BANK_STATEMENT`),
+late SLA (global `LATE_SLA_DAYS` threshold → `LATE_UNRESOLVED`, aging rows from earlier batches too),
+bucket(16) partitioning, WAP branch isolation (`src/processing/wap.py`), bank third leg (MT940 via `mt-940` → `EXCEPTION_MISSING_BANK_STATEMENT`),
 PAN guard + file registry, `provider` canonical column, bucketed maintenance order (expire → orphan 3d → binpack → manifests),
-real-data scale proof (12.6M, 91.7% coverage). CI: `pip-audit` blocking with 92 ignores (all pip-only locals).
+real-data scale proof (12.6M rows). CI: `pip-audit` blocking with a reviewed, dated ignore list.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+No license is granted. This is a private portfolio project.
