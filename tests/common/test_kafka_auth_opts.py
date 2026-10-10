@@ -1,5 +1,3 @@
-"""SASL/auth config surface (hermetic, no Spark session)."""
-
 from src.common.settings import Settings
 
 
