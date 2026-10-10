@@ -1,4 +1,4 @@
-# Usage: terraform init -backend-config="key=tx-recon/prod/terraform.tfstate"
+# Usage: terraform init -backend-config=envs/prod.backend.hcl
 #        terraform apply -var-file=envs/prod.tfvars
 # Promote only after stage ran a full batch with zero drift alerts.
 project    = "tx-recon"
