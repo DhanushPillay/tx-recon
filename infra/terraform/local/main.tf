@@ -8,10 +8,9 @@ terraform {
   }
 }
 
-# Zero-cost local cloud simulation — LocalStack S3 instead of real AWS.
+# LocalStack S3 instead of real AWS. Same code ships by changing var + removing endpoints.
 # Run: docker compose -f docker-compose.yml -f docker-compose.localstack.yml up -d
 # Then: terraform -chdir=infra/terraform/local init && terraform -chdir=infra/terraform/local plan
-# Same code ships to real AWS by changing var below + removing endpoints block.
 provider "aws" {
   access_key = "test"
   secret_key = "test"
