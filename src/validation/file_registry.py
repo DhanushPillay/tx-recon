@@ -1,10 +1,3 @@
-"""Processed-file registry: idempotency on content, not delivery.
-
-Same bytes under a different name (or a redelivered drop) share a sha256,
-so re-ingest is a deliberate idempotent re-merge, never a double count.
-Registry is a small JSON sidecar next to the data dir (ops-visible, auditable).
-"""
-
 import hashlib
 import json
 import logging
@@ -37,7 +30,6 @@ def load_registry(data_dir: str) -> dict:
 
 
 def record_file(data_dir: str, path: str, batch_date: str | None) -> dict:
-    """Record a processed file. Returns {sha256, seen_before}."""
     digest = file_hash(path)
     reg = load_registry(data_dir)
     seen_before = digest in reg
