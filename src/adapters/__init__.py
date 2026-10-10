@@ -1,5 +1,3 @@
-"""Settlement PG adapters — normalize Razorpay/Cashfree/PayU to canonical."""
-
 from src.adapters.settlement import (
     CashfreeAdapter,
     GenericAdapter,
