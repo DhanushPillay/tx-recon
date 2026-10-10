@@ -1,5 +1,3 @@
-"""DLQ replay gating: read-only default, maker-checker before purge (mocked Spark)."""
-
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,10 +8,10 @@ pytestmark = pytest.mark.unit
 
 
 def _drive(argv, replay_n=3):
-    """Run main() with mocked Spark/settings; returns (out, mock_spark, journal)."""
     mock_spark = MagicMock()
     replayable = MagicMock()
     replayable.count.return_value = replay_n
+    replayable.collect.return_value = [{"n": 0}]
     mock_spark.sql.return_value = replayable
     settings = MagicMock(
         dlq_table="nessie.db.webhooks_dlq",
@@ -25,6 +23,7 @@ def _drive(argv, replay_n=3):
         patch.object(rd, "get_spark_session", return_value=mock_spark),
         patch.object(rd, "get_settings", return_value=settings),
         patch.object(rd, "journal_correction") as journal,
+        patch("src.validation.pan_guard.count_spark_pan_hits", return_value=0),
     ):
         return rd.main(), mock_spark, journal
 
@@ -35,16 +34,19 @@ def _sqls(mock_spark):
 
 def test_empty_dlq_noop():
     out, mock_spark, journal = _drive([], replay_n=0)
-    assert out == {"replayable": 0}
-    assert len(mock_spark.sql.call_args_list) == 1  # count query only
+    assert out == {"replayable": 0, "inserted": 0}
+    assert len(mock_spark.sql.call_args_list) == 1
     journal.assert_not_called()
 
 
 def test_readonly_default_no_delete_no_journal():
     out, mock_spark, journal = _drive([])
-    assert out == {"replayable": 3, "deleted": False}
+    assert out == {"replayable": 3, "inserted": 3, "deleted": False}
     sqls = _sqls(mock_spark)
     assert any("WHEN NOT MATCHED THEN INSERT" in s for s in sqls)
+    merge = next(s for s in sqls if "WHEN NOT MATCHED THEN INSERT" in s)
+    assert "PENDING_RECONCILIATION" in merge
+    assert "current_timestamp()" in merge
     assert not any("WHEN MATCHED THEN DELETE" in s for s in sqls)
     journal.assert_not_called()
 
@@ -53,6 +55,7 @@ def test_delete_without_reason_fails_before_purge():
     mock_spark = MagicMock()
     replayable = MagicMock()
     replayable.count.return_value = 3
+    replayable.collect.return_value = [{"n": 0}]
     mock_spark.sql.return_value = replayable
     settings = MagicMock(
         dlq_table="nessie.db.webhooks_dlq",
@@ -64,6 +67,7 @@ def test_delete_without_reason_fails_before_purge():
         patch.object(rd, "get_spark_session", return_value=mock_spark),
         patch.object(rd, "get_settings", return_value=settings),
         patch.object(rd, "journal_correction") as journal,
+        patch("src.validation.pan_guard.count_spark_pan_hits", return_value=0),
         pytest.raises(ValueError, match="--reason"),
     ):
         rd.main()
@@ -75,6 +79,7 @@ def test_delete_without_approver_fails_before_purge():
     mock_spark = MagicMock()
     replayable = MagicMock()
     replayable.count.return_value = 3
+    replayable.collect.return_value = [{"n": 0}]
     mock_spark.sql.return_value = replayable
     settings = MagicMock(
         dlq_table="nessie.db.webhooks_dlq",
@@ -85,6 +90,7 @@ def test_delete_without_approver_fails_before_purge():
         patch("sys.argv", ["replay_dlq.py", "--delete", "--reason", "T-1"]),
         patch.object(rd, "get_spark_session", return_value=mock_spark),
         patch.object(rd, "get_settings", return_value=settings),
+        patch("src.validation.pan_guard.count_spark_pan_hits", return_value=0),
         pytest.raises(ValueError, match="--approved-by"),
     ):
         rd.main()
@@ -93,7 +99,7 @@ def test_delete_without_approver_fails_before_purge():
 
 def test_delete_with_maker_checker_purges_and_journals():
     out, mock_spark, journal = _drive(["--delete", "--reason", "T-1", "--approved-by", "alice"])
-    assert out == {"replayable": 3, "deleted": True}
+    assert out == {"replayable": 3, "inserted": 3, "deleted": True}
     assert any("WHEN MATCHED THEN DELETE" in s for s in _sqls(mock_spark))
     journal.assert_called_once()
     _call = journal.call_args
