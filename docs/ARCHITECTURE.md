@@ -6,7 +6,7 @@ System design for the tx-recon reconciliation pipeline.
 
 tx-recon has three data legs that converge on a single Iceberg table:
 
-1. **Streaming ingestion** (real-time): Webhooks arrive via Kafka, are decoded from Avro, deduplicated, and upserted into the `webhooks` Iceberg table via a `MERGE ... WHEN NOT MATCHED` inside `foreachBatch`. This path runs continuously. Table layout is `PARTITIONED BY bucket(16, transaction_id)` so MERGE prunes to file groups.
+1. **Streaming ingestion** (real-time): Webhooks arrive via Kafka, are decoded from Avro, deduplicated, and upserted into the `webhooks` Iceberg table via a `MERGE ... WHEN NOT MATCHED` inside `foreachBatch`. This path runs continuously. Table layout is `PARTITIONED BY bucket(16, transaction_id)`, which colocates MERGE join keys on both sides.
 
 2. **Batch reconciliation** (daily, by provider batch): A settlement CSV arrives, is scanned for PAN (Luhn), de-duplicated by content hash, validated by Pandera, normalized by an adapter that stamps `provider`, and merged by provider batch `{provider}:{batch_date}` against the webhook table via `MERGE INTO ... ON transaction_id` on an Iceberg WAP branch. The branch merges to `main` only on gate pass. This path runs once per day per provider via `pipeline.py` or Airflow.
 
@@ -14,63 +14,76 @@ tx-recon has three data legs that converge on a single Iceberg table:
 
 ```mermaid
 flowchart LR
-    W([Gateway]) -->|Avro| K[Redpanda]
-    K -->|Structured Streaming<br/>bucket 16| S[dropDuplicates + MERGE NOT MATCHED]
-    S --> I[(Iceberg webhooks)]
+  L1["LEG 01 · STREAMING<br/>Gateway webhooks<br/>Kafka + Avro, continuous"]
+  L2["LEG 02 · BATCH<br/>Curated settlement<br/>validated CSV, once per day"]
+  L3["LEG 03 · BANK<br/>MT940 statement<br/>credit evidence"]
 
-    C([Settlement CSV]) -->|PAN guard<br/>registry sha256| V{Valid?}
-    V -->|yes| N[Adapter normalize<br/>+ provider]
-    V -->|no| Q[(Quarantine)]
-    N -->|WAP ingest/YYYY-MM-DD| M[MERGE INTO webhooks<br/>provider batch]
-    M --> I
+  T["nessie.db.webhooks<br/>one row per transaction_id<br/>the MERGE is the only writer<br/>MATCHED or an EXCEPTION"]
 
-    B([Bank MT940]) -->|mt-940<br/>link_tx or amount/date| BK[(bank_statements)]
-    BK -. independent evidence .-> M
-    M -. demote if missing .-> I
+  L1 -->|"may insert rows"| T
+  L2 -->|"may insert rows"| T
+  L3 -->|"evidence only"| T
 
-    I --> T[Trino / Metabase]
+  BL["Bank leg<br/>no credit in tolerance<br/>demotes MATCHED"]
+  RS["Residual scorer<br/>second opinion ≥ 0.9"]
+  BL -.->|"demote only"| T
+  RS -.->|"downgrade only"| T
+
+  T --> RO["read-only"]
+  RO --> BI["Trino + Metabase<br/>the BI layer"]
 ```
+
+Only two legs may insert. The bank leg has no insert arm, so it can never create a row. Both the bank leg and the residual scorer only ever demote; nothing promotes a row back to MATCHED.
 
 ## MERGE decision tree
 
-The batch MERGE in `reconcile.py` evaluates rows in this order. The first matching clause wins.
+The batch MERGE in `reconcile.py` evaluates rows in this order. The tree below hoists the existence check first for readability; in SQL the three `WHEN MATCHED` arms (placeholder-preserve, null-amount, tolerance CASE gated on non-terminal status) come first and `WHEN NOT MATCHED` last — first matching clause wins either way.
 
 ```mermaid
 flowchart TD
-    A[Settlement row arrives] --> B{transaction_id<br/>exists in webhooks?}
-    B -->|no| C[EXCEPTION_MISSING_WEBHOOK<br/>insert placeholder]
-    B -->|yes| L{Existing status is<br/>LATE_UNRESOLVED?}
-    L -->|yes| M[No-op preserve<br/>late SLA is terminal for batch]
-    L -->|no| D{Existing status is<br/>MISSING_WEBHOOK?}
-    D -->|yes| E[Keep status, refresh bank_ref_id<br/>placeholder -> real settlement]
-    D -->|no| F{amount_paise<br/>IS NULL?}
-    F -->|yes| G[EXCEPTION_FEE_MISMATCH<br/>cannot compute fee]
-    F -->|no| H{"abs(webhook - fee - gst<br/>- settled) <= tolerance?"}
-    H -->|yes| I[MATCHED]
-    H -->|no| J[EXCEPTION_FEE_MISMATCH]
+  IN["curated rows<br/>validated CSV only"] --> DD["dedup<br/>keep row 1 per txn id"]
+
+  DD --> C1{"no matching row?"}
+  C1 -->|yes| ARM1["INSERT · MISSING_WEBHOOK<br/>gateway_status = UNKNOWN<br/>the only arm that creates a row"]
+  C1 -->|no| C2{"status is a placeholder?"}
+  C2 -->|yes| ARM2["UPDATE · keep status<br/>enrich bank_ref + instrument"]
+  C2 -->|no| C3{"amount_paise is null?"}
+  C3 -->|yes| ARM3["UPDATE · FEE_MISMATCH<br/>settled amount missing"]
+  C3 -->|no| C4{"status not terminal?"}
+  C4 -->|yes| ARM4["UPDATE · tolerance case<br/>amount - fee - gst vs settled"]
+  C4 -->|no| FROZEN["no UPDATE arm matches<br/>terminal status frozen"]
+
+  subgraph POST["POST-MERGE · SAME JOB, BEFORE PUBLISH"]
+    direction LR
+    PM1["Residual demotion<br/>downgrade-only scorer"] --> PM2["Late-SLA ageing<br/>unresolved rows age out"] --> PM3["Publish gate<br/>match-rate decides fast-forward"]
+  end
 ```
 
-The fee and tolerance in step H are computed per-row via a `CASE` expression that selects the correct rate card by instrument type, merchant ID, and settlement date. See "Versioned rate cards" below.
+First matching clause wins. There is no DELETE arm: a row is never removed. Duplicate settlement rows are counted in `batch_EXCEPTION_DUPLICATE_SETTLEMENT`, not silently merged away.
 
-Rows already marked `LATE_UNRESOLVED` by the late-SLA pass (`LATE_SLA_DAYS`, default 7) hit the preserving no-op clause first, so re-runs stay idempotent; only a late-arriving webhook heals them via the ingestion MERGE.
+The fee and tolerance in the tolerance-case arm are computed per-row via a `CASE` expression that selects the correct rate card by instrument type, merchant ID, and settlement date. See "Versioned rate cards" below.
+
+That is the whole batch MERGE: **3 `UPDATE SET` clauses and 1 `WHEN NOT MATCHED` INSERT, no DELETE**. `tests/processing/test_reconcile.py::test_run_reconciliation_wiring` pins exactly that shape.
+
+Rows already marked `LATE_UNRESOLVED` by the late-SLA pass (`LATE_SLA_DAYS`, default 7) hit the shared placeholder-preserve clause first (they are placeholders, not terminal rows), so the batch never demotes them on re-run and stays idempotent; only a late-arriving webhook heals them via the ingestion MERGE. Genuinely terminal rows (`MATCHED`, `MISSING_BANK_STATEMENT`) are frozen by the `NOT IN TERMINAL` guard on the tolerance arm.
 
 ## Table layout
 
-`ensure_webhook_table()` (`src/ingestion/ingest_webhooks.py`) creates `PARTITIONED BY bucket(16, transaction_id)` with `WRITE ORDERED BY transaction_id` and `merge-on-read` for data/deletes/updates. This co-locates MERGE join keys so batches prune to file groups instead of full-scanning history (verified live). The spec applies to new tables only (`IF NOT EXISTS`); migrating an unpartitioned table requires create-new + insert + swap, never in-place alteration.
+`ensure_webhook_table()` (`src/ingestion/ingest_webhooks.py`) creates `PARTITIONED BY bucket(16, transaction_id)` with `merge-on-read` for data/deletes/updates. Bucketing colocates the MERGE join keys so the settlement side and the target side agree on partition count, which cuts the shuffle. It does not prune the target scan: a `MERGE ... ON a = b` equi-condition is a join predicate, and Iceberg only prunes a scan filter translatable via `Expressions.bucket`. An earlier `WRITE ORDERED BY` clause was removed because `requiredOrdering()` sorts only the rows of the write in progress, so it bought a `SortExec` per micro-batch and left the table as a union of independently-sorted runs. The spec applies to new tables only (`IF NOT EXISTS`); migrating an unpartitioned table requires create-new + insert + swap, never in-place alteration.
 
 ## Streaming dedup
 
 The ingestion path (`ingest_webhooks.py`) uses `foreachBatch` with a single sink (not dual `toTable`). Each micro-batch:
 
 1. Strips the Confluent wire header (magic byte + schema ID) and carries `schema_id` alongside `fixed_value`.
-2. Decodes Avro via `from_avro` with the pinned `WEBHOOK_AVRO_SCHEMA` and checks schema-id drift against the registry (warn-only unless `REQUIRE_SCHEMA_REGISTRY=1`).
+2. Decodes Avro via `from_avro` with the pinned `WEBHOOK_AVRO_SCHEMA` and compares schema-id against the registry, raising on drift because the MERGE would otherwise silently drop any new producer field.
 3. Splits valid (`amount_paise > 0 AND transaction_id IS NOT NULL`) from invalid using `coalesce` to catch `NULL` from corrupt decode (3VL problem).
 4. Deduplicates valid rows by `transaction_id` via `dropDuplicates` (watermark `STREAM_WATERMARK_DELAY`, default `1 day`, bounds state).
-5. Upserts valid rows via `MERGE INTO ... WHEN NOT MATCHED THEN INSERT *` (with healing of `EXCEPTION_MISSING_WEBHOOK` placeholders when a late webhook arrives).
+5. Upserts valid rows via `MERGE INTO ... WHEN NOT MATCHED THEN INSERT (<named columns>)` (with healing of `EXCEPTION_MISSING_WEBHOOK` placeholders when a late webhook arrives). Columns are named explicitly, never `INSERT *`, so a schema addition cannot silently misalign the write.
 6. Appends invalid rows to the DLQ table (single guarded write; skipped when the batch has none).
 7. Counts late rows (`event_time < now - INTERVAL`) as a side-output warning.
 
-Checkpoint at `warehouse/checkpoints/webhooks_all` gives Spark streaming exactly-once semantics. Registry unreachable disables the drift comparison without blocking ingestion unless `REQUIRE_SCHEMA_REGISTRY=1` (fail-closed).
+Checkpoint at `warehouse/checkpoints/webhooks_all` gives Spark streaming exactly-once semantics. Registry unreachable disables the drift comparison without blocking ingestion unless `REQUIRE_SCHEMA_REGISTRY=1` (fail-closed). A stream failure is retried by a supervisor loop with exponential backoff (5 attempts, 5s to 300s), so one corrupt message no longer halts ingestion permanently; the checkpoint is derived from the warehouse unless `STREAM_CHECKPOINT_LOCATION` overrides it.
 
 ## Versioned rate cards
 
@@ -96,7 +109,7 @@ This means a credit card payment from `merch_001` (180 bps) is reconciled differ
 Calendar-date joins create false MISSINGs (cross-midnight cutoffs, holidays, multi-day cycles). Every settlement belongs to a provider batch `{provider}:{batch_date}` defined in `config/providers.yaml` (see `src/processing/batches.py`):
 
 - `lag_days` — webhook..settlement window still considered on-time (used for `within_lag` and the `missing_within_lag` gauge).
-- `late_sla_days` — MISSING older than this flips to `LATE_UNRESOLVED` per-provider (global default 7, overridden by env `LATE_SLA_DAYS`).
+- `late_sla_days` — MISSING or `PENDING_RECONCILIATION` rows older than this flip to `LATE_UNRESOLVED`. One global threshold (default 7, overridden by env `LATE_SLA_DAYS`), because the sweep reads the target table and has no provider to read per row. `lag_days` stays per-provider: it is a judgement about a specific row's bank.
 - `cadence`/`cutoff` — documents expected drop frequency and rail cut-off (e.g. Razorpay `22:00 Asia/Kolkata`).
 
 The settlement adapter stamps `provider` into the canonical row; `_settlement_source` and the late-SLA MERGE consult `load_providers`/`provider_spec` so each provider's rows are evaluated against its own window. The `missing_within_lag` gauge is computed before the late-SLA MERGE (which consumes MISSING rows) and is excluded from `check_batch_drift`.
@@ -117,7 +130,7 @@ Production scoring runs in SQL: `score_match_sql()` ports the exact curve (merch
 
 `maintain_tables()` runs in dependency order after each successful MERGE (verified order: `expire_snapshots -> remove_orphan_files (minAge 3d, never sweeps in-flight WAP) -> rewrite_data_files(binpack) -> rewrite_manifests`, see `src/processing/reconcile.py: maintain_tables`). Default `retain_last=7` (via `MAINTAIN_RETAIN_LAST`) preserves roughly a week of time-travel while bounding delete-file debt. Each step is logged and recorded per-table (`files_before/after`, `status: failed` with `error` when a statement throws); maintenance never raises — it never fails a batch — but failures are visible in the `Maintenance complete` log and the returned dict. Callers gate on `status` (see RUNBOOK), not on silence.
 
-The 64–128 MB `write.target-file-size-bytes` plus hash distribution keeps file counts bounded; `MAINTAIN_AFTER_MERGE=0` disables the post-MERGE run (bench hygiene runs its own).
+The 64–128 MB `write.target-file-size-bytes` plus hash distribution keeps file counts bounded; `MAINTAIN_AFTER_MERGE=0` disables the post-MERGE run (bench hygiene runs its own). Tables are created with `gc.enabled=true` — Nessie defaults it off (branches share files), which makes `expire_snapshots` fail; expiry only ever runs after the WAP branch is dropped or published, so no open branch is collected.
 
 ## Write-Audit-Publish
 
@@ -143,7 +156,7 @@ This prevents corrupt data (negative amounts, duplicate IDs, bad dates, PAN) fro
 
 ## Fail-closed switches
 
-Defaults are strict (`src/common/settings.py`): `strict_slo=true` (sub-SLO match rate, stale mart, volume/staleness fail the batch), `REQUIRE_KAFKA_SASL`/`REQUIRE_SCHEMA_REGISTRY` refuse plaintext/trust-on-bad-registry, `ALLOW_DESTRUCTIVE_SEED` must be set for real-data webhook seeding (MERGE-DELETE). Secrets follow `*_FILE` (mounted file wins over empty env, explicit env wins over file). Unknown PG instruments normalize to `UNKNOWN` and quarantine via the schema `isin` check — never silently priced as `CREDIT_CARD`.
+Defaults are strict (`src/common/settings.py`): `strict_slo=true` (sub-SLO match rate, stale mart, volume truncation fail the batch; a stale settlement file only warns, since backfilling an older date legitimately looks stale), `REQUIRE_KAFKA_SASL`/`REQUIRE_SCHEMA_REGISTRY` refuse plaintext/trust-on-bad-registry, `ALLOW_DESTRUCTIVE_SEED` must be set for real-data webhook seeding (MERGE-DELETE). Secrets follow `*_FILE` (mounted file wins over empty env, explicit env wins over file). Unknown PG instruments normalize to `UNKNOWN` and quarantine via the schema `isin` check — never silently priced as `CREDIT_CARD`.
 
 ## Integer paise
 
@@ -172,11 +185,11 @@ src/
   adapters/        PG settlement normalizers (Razorpay/Cashfree/PayU/Generic) + bank_statement (MT940) + real_data (thiru 13.3M)
   common/          Settings (strict flags, *_FILE secrets), Spark session, domain contracts
   ingestion/       Spark streaming Kafka -> Iceberg (+DLQ, schema-id drift, late-data, bucket 16)
-  processing/      FeeEngine + MERGE reconciliation (4×UPDATE/1×INSERT) + residual scorer + batches (provider windows) + wap (branches) + corrections (journal)
+  processing/      FeeEngine + MERGE reconciliation (3×UPDATE/1×INSERT) + residual scorer + batches (provider windows) + wap (branches) + corrections (journal)
   validation/      Pandera schemas + quarantine + pan_guard (Luhn) + file_registry (sha256)
-  pipeline.py      validate (PAN/registry/curated) -> reconcile (provider batch, per-provider SLA, bank leg) -> metrics.json + maintenance (real data only, fail-closed)
+  pipeline.py      validate (PAN/registry/curated) -> reconcile (bank leg, WAP branch, metrics) -> metrics_<YYYYMMDD>.json + maintenance (real data only, fail-closed)
 config/
   fee_rates.yaml   versioned rate cards (effective_from/to, merchant overrides, instruments)
-  providers.yaml   per-provider lag_days / late_sla_days / cutoff / cadence
+  providers.yaml   per-provider lag_days / cutoff / cadence, plus the global late_sla_days
 sql/marts/         fact_reconciliation mart (migrations/V* is source of truth)
 ```
