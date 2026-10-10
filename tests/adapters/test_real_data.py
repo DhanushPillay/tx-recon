@@ -1,5 +1,3 @@
-"""Loader pure-logic pins: hardcoded fee math (never FeeEngine), stable buckets."""
-
 from unittest.mock import MagicMock
 
 import pytest
@@ -27,7 +25,6 @@ def test_loader_net_debit_hardcoded():
 
 
 def test_loader_net_matches_v1_card():
-    """Loader schedule must equal fee_rates.yaml v1 or real rows mismatch."""
     from src.processing.fee_engine import FeeEngine
 
     e = FeeEngine()
@@ -43,11 +40,10 @@ def test_loader_net_matches_v1_card():
 def test_bucket_stable_and_bounded():
     assert _bucket("7475327", 7) == _bucket("7475327", 7)
     assert 0 <= _bucket("7475327", 7) < 100
-    assert _bucket("7475327", 8) != _bucket("7475327", 7) or True  # seed sensitivity not guaranteed
+    assert _bucket("7475327", 8) != _bucket("7475327", 7) or True
 
 
 def test_noise_delta_clamped_for_dust_amounts():
-    """Regression: gross=1 paisa + noise -1 produced settled=0 (quarantined 1/12.9M)."""
     assert _noise_delta("whatever", 7) in (-1, 1)
     net = loader_net(1, "CREDIT_CARD")[2]
     assert net == 1
@@ -61,7 +57,6 @@ def test_thiru_instrument_map():
 
 
 def _fake_spark(rows):
-    """Spark stub: read.parquet -> select -> toLocalIterator over plain tuples."""
     spark = MagicMock(name="spark")
     staged = MagicMock(name="staged")
     staged.toLocalIterator.return_value = iter(rows)
@@ -70,7 +65,6 @@ def _fake_spark(rows):
 
 
 def test_build_real_files_end_to_end_small(tmp_path):
-    # (tx, amount, merchant, card_type, day): clean, negative, zero, bad-amount
     rows = [
         ("1001", 1000.0, "59935", "Credit", "2015-06-15"),
         ("1002", 250.5, "27092", "Debit", "2016-01-02"),
@@ -84,7 +78,7 @@ def test_build_real_files_end_to_end_small(tmp_path):
     out_hooks = str(tmp_path / "hooks.csv")
     counts = build_real_files("dummy.parquet", out_csv, out_hooks, seed=7, spark=spark)
     assert counts["rows"] == 6
-    assert counts["dropped_invalid"] == 3  # negative, zero, non-numeric
+    assert counts["dropped_invalid"] == 3
     assert counts["kept"] >= 2
     import pandas as pd
 
@@ -97,7 +91,7 @@ def test_build_real_files_end_to_end_small(tmp_path):
         "instrument_type",
     ]
     assert set(df["transaction_id"].astype(str)) <= {"1001", "1002", "1006"}
-    assert (df["instrument_type"] == "CREDIT_CARD").sum() >= 1  # Weird -> fallback
+    assert (df["instrument_type"] == "CREDIT_CARD").sum() >= 1
     hooks = pd.read_csv(out_hooks)
     assert set(hooks.columns) == {
         "transaction_id",
@@ -106,12 +100,10 @@ def test_build_real_files_end_to_end_small(tmp_path):
         "merchant_id",
         "instrument_type",
     }
-    # orphans withheld from hooks, everyone else present
     assert len(hooks) <= len(df)
 
 
 def test_build_real_files_all_branches(tmp_path, monkeypatch):
-    """Scripted buckets hit mismatch/noise/orphan/dup/clean + chunk flush + sample skip."""
     import src.adapters.real_data as rd
 
     buckets = {"2001": 3, "2002": 6, "2003": 10, "2004": 12, "2005": 50, "2006": 50}
@@ -119,30 +111,26 @@ def test_build_real_files_all_branches(tmp_path, monkeypatch):
     monkeypatch.setattr(rd, "_FLUSH_EVERY", 2)
     monkeypatch.setattr(rd, "_bucket", lambda tx, seed: buckets.get(tx.split("|")[-1], 50))
     rows = [
-        ("2001", 1000.0, "1", "Credit", "2015-01-01"),  # mismatch
-        ("2002", 1000.0, "1", "Credit", "2015-01-01"),  # noise
-        ("2003", 1000.0, "1", "Debit", "2015-01-01"),  # orphan
-        ("2004", 1000.0, "1", "Debit", "2015-01-01"),  # dup
-        ("2005", 1000.0, "1", "Credit", "2015-01-01"),  # clean
-        ("2006", 1000.0, "1", "Credit", "2015-01-01"),  # sample-skipped
+        ("2001", 1000.0, "1", "Credit", "2015-01-01"),
+        ("2002", 1000.0, "1", "Credit", "2015-01-01"),
+        ("2003", 1000.0, "1", "Debit", "2015-01-01"),
+        ("2004", 1000.0, "1", "Debit", "2015-01-01"),
+        ("2005", 1000.0, "1", "Credit", "2015-01-01"),
+        ("2006", 1000.0, "1", "Credit", "2015-01-01"),
     ]
     spark = _fake_spark(rows)
     out_csv = str(tmp_path / "s.csv")
     out_hooks = str(tmp_path / "h.csv")
-    # sample path: only buckets < 100 pass; force-skip 2006 via sample_pct=0? no:
-    # sample uses _bucket(tx) too — scripted 50 for all, so run sample_pct=100 then
-    # a second run with a bucket override for sampling.
     counts = rd.build_real_files("d.pq", out_csv, out_hooks, seed=7, spark=spark)
     assert counts["mismatch"] == 1
     assert counts["orphans"] == 1
     assert counts["dups"] == 1
-    assert counts["kept"] == 7  # 6 tx + 1 dup row
+    assert counts["kept"] == 7
     import pandas as pd
 
     df = pd.read_csv(out_csv)
     assert len(df) == 7
     assert "2003" not in pd.read_csv(out_hooks)["transaction_id"].astype(str).values
-    # sampling gate: bucket >= pct skipped
     monkeypatch.setattr(rd, "_bucket", lambda tx, seed: 99)
     c2 = rd.build_real_files(
         "d.pq", str(tmp_path / "s2.csv"), str(tmp_path / "h2.csv"), sample_pct=50, spark=spark
@@ -171,7 +159,6 @@ def test_seed_real_webhooks_wiring(monkeypatch):
 
 
 def test_seed_real_webhooks_requires_opt_in(monkeypatch):
-    """Destructive seed refuses without explicit confirmation."""
     monkeypatch.delenv("ALLOW_DESTRUCTIVE_SEED", raising=False)
     with pytest.raises(RuntimeError, match="ALLOW_DESTRUCTIVE_SEED"):
         seed_real_webhooks(MagicMock(), "nessie.db.webhooks", "hooks.csv", "2020-01-01")
