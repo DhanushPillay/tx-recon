@@ -1,5 +1,3 @@
-"""Provider batch model: config loading, batch identity, lag windows."""
-
 import pytest
 
 from src.processing.batches import assign_batch, load_providers, provider_spec, within_lag
@@ -11,7 +9,7 @@ def test_load_providers_real_config():
     cfg = load_providers()
     assert "razorpay" in cfg["providers"]
     assert provider_spec(cfg, "razorpay")["lag_days"] == 2
-    assert provider_spec(cfg, "nope")["late_sla_days"] == 7  # unknown -> defaults
+    assert provider_spec(cfg, "nope")["late_sla_days"] == 7
 
 
 def test_load_providers_missing_raises(tmp_path):
@@ -32,10 +30,10 @@ def test_assign_batch():
 
 
 def test_within_lag():
-    assert within_lag("2025-04-01", "2025-04-02", 2) is True  # next-day batch
+    assert within_lag("2025-04-01", "2025-04-02", 2) is True
     assert within_lag("2025-04-02", "2025-04-02", 2) is True
-    assert within_lag("2025-03-28", "2025-04-02", 2) is False  # beyond lag
-    assert within_lag("2025-04-03", "2025-04-02", 2) is False  # webhook after settlement
+    assert within_lag("2025-03-28", "2025-04-02", 2) is False
+    assert within_lag("2025-04-03", "2025-04-02", 2) is False
     assert within_lag("bad-date", "2025-04-02", 2) is False
 
 
