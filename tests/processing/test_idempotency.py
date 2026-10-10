@@ -1,15 +1,20 @@
 import os
 
 import pytest
+from pyspark.errors import AnalysisException
 
 from src.common.config import get_spark_session
 from src.common.settings import get_settings
 from src.processing.reconcile import run_reconciliation
 
+
+def _statuses(df):
+    rows = df.groupBy("reconciliation_status").count().collect()
+    return {r["reconciliation_status"]: r["count"] for r in rows}
+
+
 pytestmark = pytest.mark.integration
 
-# ponytail: hermetic fixture — data/ is gitignored so CI has no CSVs;
-# the test seeds its own and deletes it afterwards.
 SEED_STAMP = "19990101"
 SEED_ROWS = """bank_ref_id,transaction_id,settled_amount_paise,settlement_date
 bnk_idem001,tx_idem_001,100000,1999-01-01
@@ -19,15 +24,9 @@ bnk_idem003,tx_idem_003,50000,1999-01-01
 
 
 def test_reconciliation_is_idempotent():
-    """
-    Integration test to ensure that running the reconciliation process twice
-    yields the exact same row count and identical data in the target Iceberg table.
-    """
     settings = get_settings()
     spark = get_spark_session("IdempotencyTest")
 
-    # Self-seed: same DDL as src/ingestion/ingest_webhooks.py __main__.
-    # The test needs the table to exist; the pipeline creates it at deploy.
     spark.sql("CREATE NAMESPACE IF NOT EXISTS nessie.db")
     spark.sql(
         f"""CREATE TABLE IF NOT EXISTS {settings.webhook_table} (
@@ -44,12 +43,6 @@ def test_reconciliation_is_idempotent():
         ) USING iceberg"""
     )
 
-    # Seed matching webhooks: the seed settlements carry NULL instrument, so
-    # the MERGE prices them at the default 150bps/18% card. These amounts net
-    # to the settled paise exactly (FeeEngine v1 == v2 defaults). Without
-    # webhooks every row lands MISSING_WEBHOOK, batch_MATCHED is 0, and the
-    # strict match-rate SLO (on by default) fails the batch before the
-    # idempotency comparison below can run.
     spark.sql(
         f"""INSERT INTO {settings.webhook_table} (
             transaction_id, amount_paise, gateway_status, timestamp_utc,
@@ -65,7 +58,6 @@ def test_reconciliation_is_idempotent():
         """
     )
 
-    # Run once
     data_dir = os.path.join(settings.project_root, "data")
     os.makedirs(data_dir, exist_ok=True)
     seed_path = os.path.join(data_dir, f"settlement_{SEED_STAMP}.csv")
@@ -74,23 +66,21 @@ def test_reconciliation_is_idempotent():
     try:
         run_reconciliation(SEED_STAMP)
 
-        # Capture state after first run
         try:
             df_run1 = spark.table(settings.webhook_table)
             count_run1 = df_run1.count()
             checksum_run1 = df_run1.orderBy("transaction_id").collect()
-        except Exception as e:
-            pytest.skip(f"Could not read Iceberg table (ensure infra is up): {e}")
+        except AnalysisException as e:
+            pytest.skip(f"Iceberg table unreadable (is infra up?): {e}")
 
-        # Run second time
+        assert _statuses(df_run1) == {"MATCHED": 3}, _statuses(df_run1)
+
         run_reconciliation(SEED_STAMP)
 
-        # Capture state after second run
         df_run2 = spark.table(settings.webhook_table)
         count_run2 = df_run2.count()
         checksum_run2 = df_run2.orderBy("transaction_id").collect()
 
-        # Verify exact match
         assert count_run1 == count_run2, "Row count changed on second run!"
         assert checksum_run1 == checksum_run2, "Data changed on second run!"
     finally:
