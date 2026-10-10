@@ -1,6 +1,5 @@
--- Daily batch health: totals + match rate per day (table).
 SELECT
-    date(substr(timestamp_utc, 1, 10)) AS day,
+    to_date(try_cast(timestamp_utc AS TIMESTAMP)) AS day,
     COUNT(*) AS total,
     SUM(CASE WHEN reconciliation_status = 'MATCHED' THEN 1 ELSE 0 END) AS matched,
     ROUND(
