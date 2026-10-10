@@ -1,9 +1,3 @@
-"""Trino leg: the BI path (Trino -> Nessie/Iceberg) must serve the mart tables.
-
-Uses the Trino HTTP API via httpx (already a dependency) — no new client dep.
-Needs the `trino` compose service up (CI starts it in the integration job).
-"""
-
 import os
 import time
 
@@ -17,7 +11,6 @@ _HEADERS = {"X-Trino-User": "ci", "X-Trino-Catalog": "nessie", "X-Trino-Schema":
 
 
 def _run(sql: str, timeout_s: int = 120) -> list:
-    """Submit one statement, follow nextUri until data/error, return data rows."""
     with httpx.Client(timeout=30) as c:
         r = c.post(f"{TRINO}/v1/statement", headers=_HEADERS, content=sql)
         r.raise_for_status()
@@ -28,7 +21,6 @@ def _run(sql: str, timeout_s: int = 120) -> list:
                 raise AssertionError(f"trino failed {sql!r}: {info['error']}")
             if "data" in info:
                 return info["data"]
-            # DDL (CREATE/INSERT/DROP) completes with FINISHED and no data rows.
             if info.get("stats", {}).get("state") == "FINISHED" or "nextUri" not in info:
                 return []
             time.sleep(1)
@@ -45,3 +37,28 @@ def test_trino_serves_iceberg_roundtrip():
     rows = _run("SELECT count(*), sum(amount) FROM trino_probe")
     assert rows == [[2, 3]]
     _run("DROP TABLE trino_probe")
+
+
+def test_trino_serves_the_mart_columns():
+    try:
+        cols = _run(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'fact_reconciliation'"
+        )
+    except AssertionError as e:
+        if "does not exist" in str(e):
+            pytest.skip("mart not built yet (run a reconciliation batch first)")
+        raise
+    names = {r[0] for r in cols}
+    expected = {
+        "transaction_id",
+        "amount_paise",
+        "merchant_id",
+        "instrument_type",
+        "gateway_status",
+        "status",
+        "bank_ref_id",
+        "transacted_at",
+        "matched_amount_paise",
+    }
+    assert expected <= names, f"mart missing columns BI questions need: {expected - names}"
