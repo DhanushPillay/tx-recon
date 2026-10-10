@@ -1,14 +1,16 @@
-"""Polars schema + validate_and_quarantine edge branches."""
+import logging
 
 import pandas as pd
 import pytest
 
-from src.validation.settlement_schema import settlement_schema
+from src.validation.pan_guard import scan_frame
+from src.validation.settlement_schema import bad_calendar_date_mask, settlement_schema
 from src.validation.settlement_schema_pl import settlement_schema_pl
 from src.validation.validate_settlement import (
     SettlementValidationError,
     _warn_volume_shift,
     validate_and_quarantine,
+    validate_latest_settlement,
 )
 
 pytestmark = pytest.mark.unit
@@ -51,6 +53,29 @@ def test_pl_schema_accepts_minimal():
     assert len(out) == 1
 
 
+def test_pl_schema_matches_pandas_twin_columns():
+    from src.validation.settlement_schema import settlement_schema
+
+    assert set(settlement_schema_pl.columns) == set(settlement_schema.columns)
+
+
+def test_pl_schema_rejects_non_inr_currency():
+    import polars as pl
+    from pandera.errors import SchemaError, SchemaErrors
+
+    base = {
+        "transaction_id": "tx_abcdef123456",
+        "settled_amount_paise": 100,
+        "bank_ref_id": "b1",
+        "settlement_date": "2025-04-02",
+        "instrument_type": "UPI",
+    }
+    with pytest.raises((SchemaError, SchemaErrors)):
+        settlement_schema_pl.validate(pl.DataFrame([{**base, "currency": "USD"}]))
+    out = settlement_schema_pl.validate(pl.DataFrame([{**base, "currency": "INR"}]))
+    assert len(out) == 1
+
+
 def test_quarantine_unexpected_failure_shape_raises(monkeypatch):
     from pandera.errors import SchemaErrors
 
@@ -69,22 +94,37 @@ def test_quarantine_unexpected_failure_shape_raises(monkeypatch):
         validate_and_quarantine(df, settlement_schema)
 
 
-def test_bad_calendar_date_passes_regex_only():
-    # Schema pins format (regex) not calendar validity: 2024-02-30 matches
-    # YYYY-MM-DD so it validates — documents a known residual gap.
-    df = pd.DataFrame(
-        [
-            {
-                "transaction_id": "tx_abcdef123456",
-                "settled_amount_paise": 100,
-                "bank_ref_id": "b1",
-                "settlement_date": "2024-02-30",
-                "instrument_type": "UPI",
-            }
-        ]
-    )
-    valid, invalid = validate_and_quarantine(df, settlement_schema)
-    assert len(valid) == 1 and len(invalid) == 0
+def test_calendar_mask_flags_only_impossible_dates():
+    s = pd.Series(["2024-02-30", "2025-13-01", "2024-02-29", "2025-04-02", None, "2024-02-29"])
+    assert list(bad_calendar_date_mask(s)) == [True, True, False, False, False, False]
+
+
+def test_impossible_calendar_date_is_quarantined(tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+
+    def _row(tx, date):
+        return {
+            "transaction_id": tx,
+            "settled_amount_paise": 100,
+            "bank_ref_id": f"bank_{tx}",
+            "settlement_date": date,
+            "instrument_type": "UPI",
+        }
+
+    rows = [
+        _row("tx_fakeday1", "2024-02-30"),
+        _row("tx_fakemonth1", "2025-13-01"),
+        _row("tx_leapday01", "2024-02-29"),
+    ]
+    pd.DataFrame(rows).to_csv(data / "settlement_20260901.csv", index=False)
+
+    with pytest.raises(SettlementValidationError, match="2 rows quarantined"):
+        validate_latest_settlement(project_root=str(tmp_path))
+
+    quarantine = pd.read_csv(data / "quarantine_20260901.csv")
+    assert sorted(quarantine["transaction_id"]) == ["tx_fakeday1", "tx_fakemonth1"]
+    assert not (data / "curated_settlement_20260901.csv").exists()
 
 
 def test_validate_latest_empty_file_raises(tmp_path, monkeypatch):
@@ -114,7 +154,6 @@ def test_quarantine_path_nonstandard_basename(tmp_path, monkeypatch):
 
 
 def test_bad_date_str_rejected_before_glob(tmp_path, monkeypatch):
-    """Path traversal / glob chars in date_str fail closed, never reach the glob."""
     import src.validation.validate_settlement as vs
 
     d = tmp_path / "data"
@@ -126,7 +165,6 @@ def test_bad_date_str_rejected_before_glob(tmp_path, monkeypatch):
 
 
 def test_quarantined_batch_not_recorded_in_registry(tmp_path, monkeypatch):
-    """A quarantined batch must not look processed to the redelivery guard."""
     import src.validation.validate_settlement as vs
     from src.validation.file_registry import load_registry
 
@@ -142,7 +180,6 @@ def test_quarantined_batch_not_recorded_in_registry(tmp_path, monkeypatch):
 
 
 def test_warn_volume_shift_flags_collapse(tmp_path, caplog):
-    """Previous curated batch 10 rows, current 2 -> >50% drop warning."""
     import logging
 
     d = tmp_path / "data"
@@ -157,7 +194,6 @@ def test_warn_volume_shift_flags_collapse(tmp_path, caplog):
 
 
 def test_warn_volume_shift_first_run_silent(tmp_path, caplog):
-    """No previous curated batch -> no warning, never raises."""
     import logging
 
     d = tmp_path / "data"
@@ -170,7 +206,6 @@ def test_warn_volume_shift_first_run_silent(tmp_path, caplog):
 
 
 def test_warn_volume_shift_flags_stale_file(tmp_path, caplog):
-    """Current file >48h old -> stale warning even when volume is normal."""
     import logging
     import os
     import time
@@ -190,7 +225,6 @@ def test_warn_volume_shift_flags_stale_file(tmp_path, caplog):
 
 
 def test_pan_gate_rejects_card_number(tmp_path, monkeypatch):
-    """A Luhn-valid PAN anywhere in id columns fails the batch closed."""
     import src.validation.validate_settlement as vs
 
     d = tmp_path / "data"
@@ -217,8 +251,6 @@ def test_pan_guard_unit():
     df = pd.DataFrame({"transaction_id": ["tx_1", "4111111111111111"], "x": ["a", "b"]})
     assert scan_frame(df, ["transaction_id"]) == {"transaction_id": 1}
     assert scan_frame(df, ["x"]) == {}
-    # columns=None scans every object column: a PAN outside the id columns
-    # must still trip the gate (PCI scope), and skips non-object dtypes.
     df2 = pd.DataFrame(
         {
             "notes": ["ok", "card 4111111111111111 here"],
@@ -230,7 +262,6 @@ def test_pan_guard_unit():
 
 
 def test_file_registry_redelivery(tmp_path):
-    """Same bytes, different name: same hash, seen_before on second record."""
     from src.validation.file_registry import load_registry, record_file
 
     d = str(tmp_path)
@@ -247,7 +278,6 @@ def test_file_registry_redelivery(tmp_path):
 
 
 def test_file_registry_write_failure_warns_but_returns(tmp_path, caplog):
-    """Unwritable registry degrades to logging; validation itself continues."""
     import logging
 
     from src.validation.file_registry import record_file
@@ -267,7 +297,7 @@ def test_pan_guard_edge_cases():
 
     assert find_pans("") == []
     assert find_pans("no digits here") == []
-    assert find_pans("411111111114") == []  # 12 digits: below PAN length floor
+    assert find_pans("411111111114") == []
     import pandas as pd
 
     df = pd.DataFrame({"transaction_id": ["tx_1"]})
@@ -276,7 +306,6 @@ def test_pan_guard_edge_cases():
 
 
 def test_adapter_failure_fails_closed(tmp_path, monkeypatch):
-    """Unparseable file: explicit error, never a raw-CSV fallback merge."""
     import src.validation.validate_settlement as vs
 
     d = tmp_path / "data"
@@ -288,7 +317,6 @@ def test_adapter_failure_fails_closed(tmp_path, monkeypatch):
 
 
 def test_volume_shift_raises_when_strict(tmp_path):
-    """Strict mode turns a >50% drop from warning into batch failure."""
     import pytest as _pytest
 
     from src.validation.validate_settlement import SettlementValidationError
@@ -303,20 +331,100 @@ def test_volume_shift_raises_when_strict(tmp_path):
         _warn_volume_shift(str(d), str(cur), 2, strict=True)
 
 
-def test_stale_file_raises_when_strict(tmp_path):
-    """Strict mode turns a >48h-old file from warning into batch failure."""
+def test_pan_gate_requires_an_issuer_prefix():
+    from src.validation.pan_guard import find_pans
+
+    for pan in (
+        "4111111111111111",
+        "5500005555555559",
+        "2223003122003222",
+        "378282246310005",
+        "6011111111111117",
+        "6500000000000002",
+        "8100000000000002",
+        "4111 1111 1111 1111",
+        "4111-1111-1111-1111",
+    ):
+        assert find_pans(pan) == [pan.replace(" ", "").replace("-", "")], pan
+
+    for not_a_pan in (
+        "1234567890123460",
+        "0000000000000000",
+        "9000000000000000",
+        "1234567890123456789012",
+    ):
+        assert find_pans(not_a_pan) == [], not_a_pan
+
+    assert scan_frame(pd.DataFrame({"transaction_id": ["tx_4111111111111111"]})) == {
+        "transaction_id": 1
+    }
+
+
+def test_latest_settlement_file_is_the_newest_date_not_the_newest_mtime(tmp_path, monkeypatch):
     import os
     import time
 
-    from src.validation.validate_settlement import SettlementValidationError
+    d = tmp_path / "data"
+    d.mkdir()
+    old = d / "settlement_20250101.csv"
+    new = d / "settlement_20250102.csv"
+    for f in (old, new):
+        f.write_text(
+            "transaction_id,settled_amount_paise,bank_ref_id,settlement_date,instrument_type\n"
+            "tx_abcdef123456,100,b1,2025-01-01,UPI\n"
+        )
+    stale_but_touched = time.time()
+    os.utime(old, (stale_but_touched, stale_but_touched))
+
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    validate_latest_settlement(project_root=str(tmp_path))
+
+    assert (d / "curated_settlement_20250102.csv").exists()
+    assert not (d / "curated_settlement_20250101.csv").exists()
+
+
+def test_redelivery_of_the_same_date_is_volume_checked(tmp_path, monkeypatch):
+    d = tmp_path / "data"
+    d.mkdir()
+    cols = "transaction_id,settled_amount_paise,bank_ref_id,settlement_date,instrument_type"
+    body10 = "".join(f"tx_abcdef1234{i:02d},100,b1,2025-01-02,UPI\n" for i in range(10))
+    (d / "settlement_20250102.csv").write_text(cols + "\n" + body10)
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    validate_latest_settlement(project_root=str(tmp_path), date_str="2025-01-02")
+
+    (d / "settlement_20250102.csv").write_text(cols + "\n" + body10[:110])
+    with pytest.raises(SettlementValidationError, match="volume shift") as exc:
+        validate_latest_settlement(project_root=str(tmp_path), date_str="2025-01-02")
+
+    assert "curated_settlement_20250102.csv" in str(exc.value)
+
+
+def test_stale_file_warns_even_when_strict(tmp_path, caplog):
+    from src.validation.validate_settlement import _warn_volume_shift
 
     d = tmp_path / "data"
     d.mkdir()
     prev = d / "curated_settlement_20250101.csv"
     prev.write_text("a\n" + "1\n" * 10)
     cur = d / "settlement_20250102.csv"
-    cur.write_text("a\n" + "1\n" * 10)  # same volume: only the stale tripwire fires
-    old = time.time() - 72 * 3600
-    os.utime(cur, (old, old))
-    with pytest.raises(SettlementValidationError, match="stale settlement file"):
+    cur.write_text("a\n" + "1\n" * 10)
+
+    with caplog.at_level(logging.WARNING):
         _warn_volume_shift(str(d), str(cur), 10, strict=True)
+
+    assert "stale settlement file" in caplog.text
+    assert "2025-01-02" in caplog.text
+
+
+def test_stale_file_uses_filename_date_not_mtime(tmp_path, caplog):
+    from src.validation.validate_settlement import _warn_volume_shift
+
+    d = tmp_path / "data"
+    d.mkdir()
+    cur = d / "settlement_20250102.csv"
+    cur.write_text("a\n1\n")
+
+    with caplog.at_level(logging.WARNING):
+        _warn_volume_shift(str(d), str(cur), 1, strict=False)
+
+    assert "stale settlement file" in caplog.text
