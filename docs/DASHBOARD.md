@@ -10,7 +10,11 @@ Iceberg `webhooks` table. Full screenshot:
 
 Open it: `docker compose up -d` → run a batch (`python -m src.pipeline --date 2026-09-04`)
 → Metabase → Trino database (host `trino`, port `8080`, catalog `nessie`, schema `db`).
-Two dashboard filters (merchant, status) apply to every card.
+Every card is a native query that runs live on each load — no cached results,
+so the numbers always match the tables. Card SQL is synced from
+`sql/questions/` by `python scripts/refresh_dashboard.py` (needs
+`METABASE_URL`/`METABASE_USER`/`METABASE_PASSWORD`/`METABASE_DB_ID` in `.env`;
+re-run it after editing any question file).
 
 ## KPI row
 
@@ -38,7 +42,7 @@ Four headline scalars, the first things to check each morning:
 Share of transactions per `reconciliation_status`
 ([match_rate.sql](../sql/questions/match_rate.sql)). On the real-data mix the
 pie reads ~90% MATCHED, ~5% `EXCEPTION_FEE_MISMATCH`, ~5%
-`EXCEPTION_MISSING_WEBHOOK`. A new slice appearing (duplicates, invalid) is the
+`EXCEPTION_LATE_UNRESOLVED` (missing webhooks age into this past the SLA). A new slice appearing (duplicates, invalid) is the
 signal that a new failure mode started.
 
 ## Fee-mismatch exposure by merchant
