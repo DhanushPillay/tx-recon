@@ -1,5 +1,3 @@
-"""Adapter edge cases + property tests."""
-
 import pandas as pd
 import pytest
 from hypothesis import given
@@ -10,6 +8,7 @@ from src.adapters.settlement import (
     _paise_inr_series,
     _to_iso_date,
     _to_iso_series,
+    blank_to_na,
     load_settlement_csv,
     normalize_settlement_df,
 )
@@ -53,8 +52,6 @@ def test_unknown_provider_falls_back_to_generic(tmp_path):
 
 
 def test_map_instrument_unknown_quarantined():
-    # Unknown methods map to UNKNOWN (not a real instrument): the Pandera isin
-    # check quarantines the row instead of mispricing it as CREDIT_CARD.
     assert _map_instrument("something-weird-xyz") == "UNKNOWN"
     assert _map_instrument(None) == "UNKNOWN"
     assert _map_instrument("card - visa credit") == "CREDIT_CARD"
@@ -67,8 +64,6 @@ def test_paise_inr_series_symbols():
 
 
 def test_paise_inr_series_half_up():
-    # 2.675 Rs is unrepresentable below .5 in float64; half-even .round()
-    # gives 267. Money rounds half up -> 268.
     s = _paise_inr_series(pd.Series(["2.675", "1.005", "100.00"]))
     assert s.iloc[0] == 268
     assert s.iloc[1] == 101
@@ -82,6 +77,32 @@ def test_iso_series_mixed_and_empty():
     assert out.iloc[1] == "2025-04-02"
 
 
+def test_none_merchant_maps_to_unknown():
+    from src.adapters.settlement import _merchant
+
+    df = pd.DataFrame({"merchant_id": [None, "", "  ", "merch_001"]})
+    assert _merchant(df, {"merchant_id": "merchant_id"}).tolist() == [
+        "UNKNOWN",
+        "UNKNOWN",
+        "UNKNOWN",
+        "merch_001",
+    ]
+
+
+def test_none_bank_ref_maps_to_na():
+    from src.adapters.settlement import _bank_ref
+
+    df = pd.DataFrame({"bank_ref_id": [None, "", "b1"]})
+    out = _bank_ref(
+        df,
+        {"bank_ref_id": "bank_ref_id"},
+        ("bank_ref_id",),
+        pd.Series([pd.NA] * 3),
+    ).tolist()
+    assert out[2] == "b1"
+    assert pd.isna(out[0]) and pd.isna(out[1])
+
+
 def test_semicolon_csv(tmp_path):
     f = tmp_path / "s.csv"
     f.write_text(
@@ -90,6 +111,40 @@ def test_semicolon_csv(tmp_path):
     df, name = load_settlement_csv(str(f))
     assert name == "cashfree"
     assert df.iloc[0]["settled_amount_paise"] == 10000
+
+
+def test_blank_to_na_matches_the_regex_it_replaced():
+    raw = pd.DataFrame(
+        {
+            "a": [" ", "", None, "NA", "\t", "keep"],
+            "b": ["x", "  ", "y", "null", "\n", "NULL"],
+            "c": [1.5, 2.5, 3.5, 4.5, 5.5, 6.5],
+        }
+    )
+    expected = raw.replace(r"^\s*$", pd.NA, regex=True)
+    got = blank_to_na(raw.copy())
+    for col in raw.columns:
+        assert got[col].tolist() == expected[col].tolist(), col
+    assert pd.isna(got["a"][0]) and pd.isna(got["a"][1]) and pd.isna(got["b"][1])
+    assert pd.isna(got["b"][4])
+    assert got["a"][5] == "keep" and got["b"][2] == "y"
+    assert got["a"][3] == "NA" and got["b"][3] == "null" and got["b"][5] == "NULL"
+
+
+def test_blank_to_na_leaves_clean_frame_untouched():
+    clean = pd.DataFrame({"a": ["x", "y"], "b": [1, 2]})
+    assert blank_to_na(clean) is clean
+
+
+def test_blank_to_na_does_not_wipe_non_string_columns():
+    mixed = pd.DataFrame({"a": [" ", "x"], "n": [1.5, 2.5]})
+    out = blank_to_na(mixed)
+    assert out["n"].tolist() == [1.5, 2.5]
+
+
+def test_blank_to_na_survives_all_na_object_column():
+    out = blank_to_na(pd.DataFrame({"a": [None, None]}))
+    assert out["a"].isna().all()
 
 
 def test_generic_case_insensitive():
@@ -150,8 +205,40 @@ def test_direct_alias_and_series_substring():
     assert list(out) == ["UPI", "CREDIT_CARD", "UNKNOWN"]
 
 
+def test_map_instrument_survives_missing_and_blank_values():
+    assert _map_instrument(pd.NA) == "UNKNOWN"
+    assert _map_instrument(None) == "UNKNOWN"
+    assert _map_instrument("") == "UNKNOWN"
+    assert _map_instrument("   ") == "UNKNOWN"
+    assert _map_instrument(float("nan")) == "UNKNOWN"
+    assert _map_instrument("credit card") == "CREDIT_CARD"
+
+    from src.adapters.settlement import _map_instrument_series
+
+    s = pd.Series([pd.NA, "credit_card", "  ", None, "upi"], dtype="object")
+    assert list(_map_instrument_series(s)) == [
+        "UNKNOWN",
+        "CREDIT_CARD",
+        "UNKNOWN",
+        "UNKNOWN",
+        "UPI",
+    ]
+
+
+def test_absent_instrument_column_normalizes_to_unknown():
+    df = pd.DataFrame(
+        {
+            "Payment ID": ["pay_1"],
+            "Settlement ID": ["set_1"],
+            "Settled Amount": [100.0],
+        }
+    )
+    out, provider = normalize_settlement_df(df)
+    assert provider == "razorpay"
+    assert list(out["instrument_type"]) == ["UNKNOWN"]
+
+
 def test_unknown_instrument_quarantined_by_schema():
-    """UNKNOWN is not in INSTRUMENT_TYPES: validation quarantines, never merges."""
     import pandera.pandas as pa
     from pandera.errors import SchemaErrors
 
@@ -173,7 +260,6 @@ def test_unknown_instrument_quarantined_by_schema():
 
 
 def test_date_fallback_fills_partial_nulls():
-    """Fallback fills per-row NULLs, not only all-NULL columns."""
     from src.adapters.settlement import _date_with_fallback, _lc
 
     df = pd.DataFrame(
@@ -187,7 +273,6 @@ def test_date_fallback_fills_partial_nulls():
 
 
 def test_payu_space_variant_amount():
-    """'Settlement Amount' header (space variant) normalizes like underscore."""
     df = pd.DataFrame({"mihpayid": ["a1"], "Settlement Amount": ["100.00"]})
     norm, pg = normalize_settlement_df(df)
     assert pg == "payu"
@@ -195,7 +280,6 @@ def test_payu_space_variant_amount():
 
 
 def test_chunked_and_direct_reads_agree_on_nulls(tmp_path):
-    """Chunked (>256MB) and direct reads treat NA/null literals identically."""
     from src.validation.validate_settlement import _validate_large_file
 
     p = tmp_path / "s.csv"
