@@ -1,13 +1,3 @@
-"""Infra-free accuracy quick gate on real data (no Spark/Kafka/Java).
-
-Runs the real-data accuracy gate and writes a results JSON carrying the
-hardware fingerprint, so check_regression.py can tell real drift from a
-different machine.
-
-Usage:
-    python tests/performance/quick_perf.py [--out results_accuracy.json]
-"""
-
 import argparse
 import datetime
 import json
@@ -33,6 +23,7 @@ def main(out):
             "mismatched": rep["mismatched"],
             "orphans": rep["orphans"],
             "n": rep["n"],
+            "mismatch_delta_abs": rep["mismatch_delta_abs"],
         },
     }
     print(f"accuracy_match_rate={rep['match_rate']:.2%}")
