@@ -1,22 +1,9 @@
-"""Derived bank statement: MT940 built from real settlement rows.
-
-No public dataset links webhooks + settlements + bank credits (real bank
-statements carry real account numbers, banks never publish them), so the
-third leg is derived from our own real settlement file: every row becomes
-one :61: credit line with its real bank_ref, settled amount, value date and
-transaction id (behind an explicit ReconRef marker the parser extracts).
-All three legs are then real-anchored and mutually consistent.
-
-Streaming: two passes over the CSV (sum, then emit), constant memory.
-Usage: python -m src.adapters.build_bank_statement data/real_thiru_full_settlement.csv data/real_thiru_full_statement.sta
-"""
-
 import csv
 import logging
 
 logger = logging.getLogger(__name__)
 
-_CURRENCY = "INR"  # source currency column is empty; PG data is INR paise
+_CURRENCY = "INR"
 
 
 def _inr(amount_paise: int) -> str:
@@ -30,7 +17,6 @@ def _yymmdd(iso_date: str) -> str:
 
 
 def build_bank_statement(input_csv: str, output_sta: str) -> int:
-    """Write one :61:/:86: credit line per settlement row. Returns line count."""
     total = 0
     first_date = last_date = None
     with open(input_csv, newline="", encoding="utf-8") as fh:
