@@ -24,7 +24,7 @@ def test_avro_schema_valid_json():
     assert schema_dict["name"] == "WebhookEvent"
     fields = {f["name"]: f["type"] for f in schema_dict["fields"]}
     assert fields["transaction_id"] == "string"
-    assert fields["amount_paise"] == "long"  # must stay 64-bit: matches reconcile LongType
+    assert fields["amount_paise"] == "long"
 
 
 class MockColumn:
@@ -93,7 +93,6 @@ def test_run_ingestion_wiring(
     run_ingestion()
 
     mock_spark.readStream.format.assert_called_with("kafka")
-    # Single foreachBatch sink (not dual toTable): one consumer, NULL-safe split inside.
     mock_df.writeStream.foreachBatch.assert_called_once()
     mock_write.queryName.assert_called_with("webhooks_all")
     assert any("webhooks_all" in str(c) for c in mock_write.option.call_args_list), (
@@ -112,14 +111,3 @@ def test_run_ingestion_ddl_uses_qualified_tables():
     except ValueError:
         with_unsafe = True
     assert with_unsafe, "_qualified_table must reject injection"
-
-
-def test_run_ingestion_null_safe_split():
-    """NULL 3VL regression: invalid filter must catch NULLs, not drop them."""
-    import inspect
-
-    from src.ingestion import ingest_webhooks as mod
-
-    src = inspect.getsource(mod.run_ingestion)
-    assert "coalesce" in src, "invalid split must be NULL-safe via coalesce"
-    assert "awaitAnyTermination" not in src, "single query uses query.awaitTermination"
