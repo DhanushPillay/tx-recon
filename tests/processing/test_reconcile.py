@@ -1,5 +1,4 @@
-"""Reconcile wiring tests: pure builder logic + MERGE SQL shape (mocked Spark)."""
-
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -7,6 +6,8 @@ import pytest
 from src.processing.fee_engine import FeeEngine
 from src.processing.reconcile import (
     _qualified_table,
+    _run_bank_leg,
+    _settlement_source,
     build_bank_leg_sql,
     build_fee_case_sql,
     maintain_tables,
@@ -23,8 +24,9 @@ def _run_with_collects(
     late_total_n=0,
     strict_slo=False,
     lag_n=0,
+    fail_at=None,
+    fail_exc=None,
 ):
-    """Drive run_reconciliation with a mocked Spark; returns (counts, mock_spark)."""
     with (
         patch("pyspark.sql.functions.row_number"),
         patch("pyspark.sql.functions.col"),
@@ -55,28 +57,36 @@ def _run_with_collects(
         _valid.count.return_value = 4
         _dedup = _valid.withColumn.return_value.filter.return_value.drop.return_value
         _dedup.count.return_value = 4
-        # Late UPDATE runs only when late_n > 0; gauges are one UNION collect.
-        # Provider-aware late block first resolves DISTINCT providers, then the
-        # side count, the within-lag gauge, and the optional late MERGE.
-        _side = [
-            MagicMock(),  # MERGE
-            MagicMock(),  # mart CTAS (runs before counts)
-            MagicMock(collect=MagicMock(return_value=table_collect)),  # table-level
-            MagicMock(collect=MagicMock(return_value=batch_collect)),  # batch-scoped
-            MagicMock(collect=MagicMock(return_value=[{"provider": "generic"}])),
-            # Late + within-lag gauges share one conditional-aggregation job.
-            MagicMock(collect=MagicMock(return_value=[{"late_n": late_n, "lag_n": lag_n}])),
-        ]
-        if late_n:
-            _side.append(MagicMock())  # late-SLA MERGE
-        _side.append(
-            MagicMock(
+        _dedup.filter.return_value.count.return_value = 4
+        count_collect = [
+            {"scope": "table", "st": r["reconciliation_status"], "n": r["n"]} for r in table_collect
+        ] + [{"scope": "batch", "st": r["st"], "n": r["n"]} for r in batch_collect]
+        _stages = {
+            "MERGE INTO": None,
+            "CREATE OR REPLACE": None,
+            "SELECT DISTINCT provider": MagicMock(
+                collect=MagicMock(return_value=[{"provider": "generic"}])
+            ),
+            "UPDATE ": None,
+            "date_sub(current_date()": MagicMock(collect=MagicMock(return_value=[{"n": late_n}])),
+            "BETWEEN 0 AND": MagicMock(collect=MagicMock(return_value=[{"n": lag_n}])),
+            "AS scope": MagicMock(collect=MagicMock(return_value=count_collect)),
+            "'dlq'": MagicMock(
                 collect=MagicMock(
                     return_value=[{"k": "dlq", "n": dlq_n}, {"k": "late", "n": late_total_n}]
                 )
-            )
-        )
-        mock_spark.sql.side_effect = _side
+            ),
+        }
+
+        def _sql(_query, _stages=_stages, _fail_at=fail_at, _fail_exc=fail_exc):
+            for _needle, _mock in _stages.items():
+                if _needle in _query:
+                    if _fail_at is not None and _fail_at == _needle:
+                        raise _fail_exc or RuntimeError("boom")
+                    return _mock or MagicMock()
+            raise AssertionError(f"unmatched query in test: {_query[:120]}")
+
+        mock_spark.sql.side_effect = _sql
         return run_reconciliation(date_str="2025-04-02"), mock_spark
 
 
@@ -88,7 +98,6 @@ def test_run_reconciliation_requires_date():
 
 
 def test_run_reconciliation_slo_breach_raises_strict(monkeypatch):
-    """Strict mode (prod default): sub-SLO batch fails instead of warning."""
     monkeypatch.setenv("MATCH_RATE_SLO", "0.95")
     with pytest.raises(RuntimeError, match="SLO breach"):
         _run_with_collects(
@@ -102,9 +111,9 @@ def test_fee_case_sql_matches_fee_engine():
     engine = FeeEngine()
     fee_sql, gst_sql = build_fee_case_sql(engine)
     assert "CREDIT_CARD" in fee_sql and "UPI" in fee_sql
-    assert "(t.amount_paise * 200 + 5000) DIV 10000" in fee_sql  # 200bps CC
-    assert "(t.amount_paise * 0 + 5000) DIV 10000" in fee_sql  # 0bps UPI
-    assert "DIV 10000" in gst_sql and "1800" in gst_sql  # 18% GST in bps
+    assert "(t.amount_paise * 200 + 5000) DIV 10000" in fee_sql
+    assert "(t.amount_paise * 0 + 5000) DIV 10000" in fee_sql
+    assert "DIV 10000" in gst_sql and "1800" in gst_sql
     for inst in ("DEBIT_CARD", "NETBANKING", "WALLET", "INTERNATIONAL"):
         assert inst in fee_sql
     assert "ELSE" in fee_sql, "unknown instruments must fall back to default rate"
@@ -160,12 +169,13 @@ def test_run_reconciliation_wiring(
 
     mock_bank_df = MagicMock()
     mock_spark.read.format.return_value.option.return_value.schema.return_value.load.return_value = mock_bank_df
-    # counts path: 4 deduped settlement rows; table holds 3 MATCHED + 1 FEE_MISMATCH
     _valid = mock_bank_df.filter.return_value
     _valid.repartition.return_value = _valid
     _valid.cache.return_value = _valid
     _valid.count.return_value = 4
-    _valid.withColumn.return_value.filter.return_value.drop.return_value.count.return_value = 4
+    _dedup = _valid.withColumn.return_value.filter.return_value.drop.return_value
+    _dedup.count.return_value = 4
+    _dedup.filter.return_value.count.return_value = 4
     table_collect = [
         {"reconciliation_status": "MATCHED", "n": 3},
         {"reconciliation_status": "EXCEPTION_FEE_MISMATCH", "n": 1},
@@ -174,19 +184,18 @@ def test_run_reconciliation_wiring(
         {"st": "MATCHED", "n": 3},
         {"st": "EXCEPTION_FEE_MISMATCH", "n": 1},
     ]
+    count_collect = [
+        {"scope": "table", "st": r["reconciliation_status"], "n": r["n"]} for r in table_collect
+    ] + [{"scope": "batch", "st": r["st"], "n": r["n"]} for r in batch_collect]
     mock_spark.sql.side_effect = [
-        MagicMock(),  # MERGE
-        MagicMock(),  # mart table (runs before counts)
-        MagicMock(collect=MagicMock(return_value=table_collect)),  # table-level
-        MagicMock(collect=MagicMock(return_value=batch_collect)),  # batch-scoped
+        MagicMock(),
+        MagicMock(),
         MagicMock(collect=MagicMock(return_value=[{"provider": "generic"}])),
-        MagicMock(
-            collect=MagicMock(return_value=[{"late_n": 2, "lag_n": 1}])
-        ),  # late+lag gauges, one job
-        MagicMock(),  # late-SLA MERGE (late_n=2 > 0)
-        MagicMock(
-            collect=MagicMock(return_value=[{"k": "dlq", "n": 1}, {"k": "late", "n": 2}])
-        ),  # gauges UNION
+        MagicMock(collect=MagicMock(return_value=[{"n": 2}])),
+        MagicMock(),
+        MagicMock(collect=MagicMock(return_value=[{"n": 0}])),
+        MagicMock(collect=MagicMock(return_value=count_collect)),
+        MagicMock(collect=MagicMock(return_value=[{"k": "dlq", "n": 1}, {"k": "late", "n": 2}])),
     ]
 
     counts = run_reconciliation(date_str="2025-04-02")
@@ -199,57 +208,53 @@ def test_run_reconciliation_wiring(
     assert "MERGE INTO" in merge_sql
     assert "nessie.db.webhooks" in merge_sql
     assert "bank_settlements" in merge_sql
-    assert "ABS(" in merge_sql  # tolerance-aware matching
+    assert "ABS(" in merge_sql
     assert "EXCEPTION_MISSING_WEBHOOK" in merge_sql
-    # USING source must be settlements only: joining the target filters out
-    # orphans and makes WHEN NOT MATCHED dead (regression pin for the P0 bug).
     using_clause = merge_sql.split("ON t.transaction_id")[0]
     assert "JOIN" not in using_clause
     assert "IS NOT NULL" in merge_sql, "null guards required on both branches"
-    assert (
-        merge_sql.count("UPDATE SET") == 3
-    )  # placeholder-keep (MISSING+LATE) + null-amount + single-pass CASE (matched/mismatched)
+    assert merge_sql.count("UPDATE SET") == 3
     assert merge_sql.count("WHEN NOT MATCHED") == 1
     assert "CASE WHEN ABS(" in merge_sql, "single-pass CASE replaces double ABS eval"
-    # Placeholder rows (inserted by WHEN NOT MATCHED on an earlier run) must
-    # keep EXCEPTION_MISSING_WEBHOOK on rerun, not flip to FEE_MISMATCH.
     placeholder_clause = merge_sql.split("WHEN MATCHED AND t.amount_paise IS NULL")[0]
     assert "EXCEPTION_MISSING_WEBHOOK" in placeholder_clause
     assert "DELETE" not in merge_sql
-    # Late-SLA rows must survive rerun: LATE_UNRESOLVED is terminal for the
-    # batch MERGE (only the late-SLA UPDATE writes it), else reruns flap
-    # LATE -> MATCHED -> LATE and idempotency breaks.
     assert "EXCEPTION_LATE_UNRESOLVED" in merge_sql
     assert counts["settlement_rows_deduped"] == 4
     assert counts["MATCHED"] == 3
     assert counts["EXCEPTION_FEE_MISMATCH"] == 1
     assert counts["batch_MATCHED"] == 3
     assert counts["batch_EXCEPTION_FEE_MISMATCH"] == 1
-    # Match-rate SLO: 3/4 = 0.75 < 0.95 -> breach recorded as float rate.
     assert counts["batch_match_rate"] == 0.75
-    # Late-SLA side-output count + ops depth gauges.
     assert counts["late_unresolved_marked"] == 2
-    assert counts["missing_within_lag"] == 1
+    assert counts["missing_within_lag"] == 0
     assert counts["dlq_depth"] == 1
     assert counts["late_unresolved_total"] == 2
     update_sqls = [c[0][0] for c in mock_spark.sql.call_args_list if c[0][0].startswith("UPDATE ")]
-    assert len(update_sqls) == 0  # late pass is MERGE (Iceberg has no UPDATE..FROM)
+    assert len(update_sqls) == 1
+    assert "EXCEPTION_LATE_UNRESOLVED" in update_sqls[0]
+    assert "PENDING_RECONCILIATION" in update_sqls[0]
     late_merges = [
         c[0][0]
         for c in mock_spark.sql.call_args_list
         if c[0][0].startswith("MERGE INTO") and "EXCEPTION_LATE_UNRESOLVED" in c[0][0]
     ]
-    assert len(late_merges) == 1
-    # Mart table must be materialized on the same namespace as the target table.
+    assert len(late_merges) == 0
     mart_sqls = [c[0][0] for c in mock_spark.sql.call_args_list if "fact_reconciliation" in c[0][0]]
     assert len(mart_sqls) == 1
     assert "CREATE OR REPLACE TABLE" in mart_sqls[0]
     assert "nessie.db.fact_reconciliation" in mart_sqls[0]
     assert "FROM nessie.db.webhooks" in mart_sqls[0]
+    count_sqls = [c[0][0] for c in mock_spark.sql.call_args_list if " AS scope" in c[0][0]]
+    assert len(count_sqls) == 1
+    assert count_sqls[0].count("UNION ALL") == 1
+    assert "SELECT 'table' AS scope" in count_sqls[0]
+    assert "SELECT 'batch' AS scope" in count_sqls[0]
+    assert "IN (SELECT transaction_id FROM bank_settlements)" in count_sqls[0]
+    assert "JOIN bank_settlements" not in count_sqls[0]
 
 
 def test_run_reconciliation_slo_satisfied(monkeypatch):
-    """4/4 batch MATCHED -> rate 1.0, no breach; zero late rows -> no late warning."""
     monkeypatch.setenv("MATCH_RATE_SLO", "0.95")
     counts, _ = _run_with_collects(
         batch_collect=[{"st": "MATCHED", "n": 4}],
@@ -261,7 +266,6 @@ def test_run_reconciliation_slo_satisfied(monkeypatch):
 
 
 def test_maintain_tables_own_session(monkeypatch):
-    """spark=None opens its own session and stops it (own_session branch)."""
     monkeypatch.setenv("MAINTAIN_RETAIN_LAST", "7")
     with (
         patch("src.common.config.get_spark_session") as mock_get_spark,
@@ -275,14 +279,25 @@ def test_maintain_tables_own_session(monkeypatch):
         mock_spark.sql.return_value = MagicMock(collect=MagicMock(return_value=[{"n": 5}]))
         out = maintain_tables()
     mock_get_spark.assert_called_once_with("Maintenance")
-    mock_spark.stop.assert_called_once()
+    mock_spark.stop.assert_not_called()  # shared singleton: stopping kills the caller's session
     assert out["nessie.db.webhooks"]["status"] == "ok"
     assert out["nessie.db.webhooks"]["files_before"] == 5
     assert out["nessie.db.webhooks_dlq"]["files_after"] == 5
 
 
+def test_maintain_tables_skips_before_opening_session():
+    with (
+        patch("src.processing.reconcile.get_settings") as mock_get_settings,
+        patch("src.processing.reconcile.get_spark_session") as mock_get_spark,
+    ):
+        mock_get_settings.return_value = MagicMock(maintain_after_merge=False)
+        out = maintain_tables()
+
+    mock_get_spark.assert_not_called()
+    assert out == {"status": "skipped", "reason": "MAINTAIN_AFTER_MERGE=0"}
+
+
 def test_reconcile_bank_leg_counts():
-    """Bank leg arithmetic: evidence kept, gap demoted, orphans counted."""
     spark = MagicMock()
     spark.sql.return_value.collect.side_effect = [
         [{"k": "matched", "n": 10}, {"k": "orphans", "n": 2}],
@@ -298,18 +313,18 @@ def test_reconcile_bank_leg_counts():
 
 
 def test_bank_leg_tolerance_threaded():
-    """Bank evidence window uses the passed tolerance, defaulting to engine default."""
     default_merge, default_orphan = build_bank_leg_sql("nessie.db.webhooks")
-    assert "<= 1" in default_merge  # engine default tolerance is 1 paise
-    assert "<= 1" in default_orphan
+    for sql in (default_merge, default_orphan):
+        assert "CASE" in sql
+        assert "'merch_001'" in sql
+        assert "CREDIT_CARD" in sql
     merge, orphan = build_bank_leg_sql("nessie.db.webhooks", lag_days=2, tolerance_paise=5)
     assert "<= 5" in merge
     assert "<= 5" in orphan
-    assert "<= 1" not in merge
+    assert "CASE" not in merge
 
 
 def test_late_rows_preserved_not_self_assigned():
-    """LATE shares the MISSING preserve clause (no self-assign rewrite)."""
     from src.common.schemas import EXCEPTION_LATE_UNRESOLVED, EXCEPTION_MISSING_WEBHOOK
 
     counts, mock_spark = _run_with_collects(
@@ -325,7 +340,6 @@ def test_late_rows_preserved_not_self_assigned():
 
 
 def test_bank_leg_single_union_for_before_and_orphans():
-    """before-MATCHED + orphan counts ride one UNION ALL action (was 2 scans)."""
     spark = MagicMock()
     bank_df = MagicMock()
 
@@ -346,8 +360,6 @@ def test_bank_leg_single_union_for_before_and_orphans():
 
 
 def test_maintain_tables_statement_order(monkeypatch):
-    """Expire -> orphan -> binpack -> manifests. Reversed order wastes work
-    (compacting files about to expire) or corrupts (sweeping live files)."""
     monkeypatch.setenv("MAINTAIN_RETAIN_LAST", "7")
     with (
         patch("src.common.config.get_spark_session") as mock_get_spark,
@@ -369,11 +381,31 @@ def test_maintain_tables_statement_order(monkeypatch):
         "remove_orphan_files",
         "rewrite_data_files",
         "rewrite_manifests",
-    ] * 2  # once per table (webhooks + dlq)
+    ] * 3
+
+
+def test_maintain_tables_expires_the_mart_to_one_generation(monkeypatch):
+    monkeypatch.setenv("MAINTAIN_RETAIN_LAST", "7")
+    with (
+        patch("src.common.config.get_spark_session") as mock_get_spark,
+        patch("src.common.settings.get_settings") as mock_get_settings,
+    ):
+        mock_get_settings.return_value = MagicMock(
+            webhook_table="nessie.db.webhooks", dlq_table="nessie.db.webhooks_dlq"
+        )
+        mock_spark = MagicMock()
+        mock_get_spark.return_value = mock_spark
+        mock_spark.sql.return_value = MagicMock(collect=MagicMock(return_value=[{"n": 5}]))
+        maintain_tables()
+    stmts = [c[0][0] for c in mock_spark.sql.call_args_list]
+    mart = [s for s in stmts if "'db.fact_reconciliation'" in s and "expire_snapshots" in s]
+    assert mart, "mart is never expired, so every batch's orphaned files leak"
+    assert "retain_last => 1" in mart[0]
+    hooks = [s for s in stmts if "'db.webhooks'" in s and "expire_snapshots" in s]
+    assert "retain_last => 7" in hooks[0]
 
 
 def test_fee_sql_gst_zero_branch():
-    """Zero-GST card emits THEN 0 (no DIV-by-zero-fee math in the MERGE)."""
     from src.processing.reconcile import _build_single_card_fee_sql
 
     card = {"default": {"mdr_rate_bps": 150, "gst_on_mdr": 0, "tolerance_paise": 1}}
@@ -384,7 +416,6 @@ def test_fee_sql_gst_zero_branch():
 
 
 def test_maintain_tables_records_statement_failure(monkeypatch):
-    """A throwing statement is recorded (status failed + error), never raised."""
     monkeypatch.setenv("MAINTAIN_RETAIN_LAST", "7")
     with (
         patch("src.common.config.get_spark_session") as mock_get_spark,
@@ -407,3 +438,227 @@ def test_maintain_tables_records_statement_failure(monkeypatch):
     assert out["nessie.db.webhooks"]["status"] == "failed"
     assert out["nessie.db.webhooks"]["error"] == "statement: boom"
     assert out["nessie.db.webhooks_dlq"]["status"] == "failed"
+
+
+def test_settlement_source_rejects_a_date_that_escapes_the_data_dir(tmp_path):
+    for bad in ("../../etc/passwd", "2025-04-02/../../x", "20250402; DROP", "not-a-date"):
+        with pytest.raises(ValueError, match="Bad date_str"):
+            _settlement_source(str(tmp_path), bad)
+
+
+def test_settlement_source_fails_closed_without_a_curated_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("ALLOW_UNVALIDATED_SETTLEMENT", raising=False)
+    with pytest.raises(FileNotFoundError, match="curated settlement not found"):
+        _settlement_source(str(tmp_path), "2025-04-02")
+
+
+def test_settlement_source_escape_hatch_is_opt_in_only(tmp_path, monkeypatch):
+    raw = tmp_path / "settlement_20250402.csv"
+    raw.write_text("transaction_id\ntx_1\n")
+    for value in ("0", "", "yes", "TRUEISH"):
+        monkeypatch.setenv("ALLOW_UNVALIDATED_SETTLEMENT", value)
+        with pytest.raises(FileNotFoundError):
+            _settlement_source(str(tmp_path), "2025-04-02")
+    for value in ("1", "true", "TRUE"):
+        monkeypatch.setenv("ALLOW_UNVALIDATED_SETTLEMENT", value)
+        path, files = _settlement_source(str(tmp_path), "2025-04-02")
+        assert path.endswith("settlement_20250402.csv")
+        assert len(files) == 1
+
+
+def test_settlement_source_prefers_the_curated_file_over_the_raw_drop(tmp_path):
+    (tmp_path / "settlement_20250402.csv").write_text("transaction_id\ntx_1\n")
+    curated = tmp_path / "curated_settlement_20250402.csv"
+    curated.write_text("transaction_id\ntx_1\n")
+    path, files = _settlement_source(str(tmp_path), "2025-04-02")
+    assert path.endswith("curated_settlement_20250402.csv")
+    assert files == [str(curated)]
+
+
+def test_merge_failure_raises_a_runtime_error_naming_the_merge():
+    with pytest.raises(RuntimeError, match="Reconciliation MERGE failed"):
+        _run_with_collects(
+            batch_collect=[],
+            table_collect=[],
+            fail_at="MERGE INTO",
+            fail_exc=ValueError("spark exploded"),
+        )
+
+
+def test_mart_refresh_failure_fails_the_batch_under_strict():
+    with pytest.raises(RuntimeError, match="Could not refresh fact_reconciliation"):
+        _run_with_collects(
+            batch_collect=[], table_collect=[], strict_slo=True, fail_at="CREATE OR REPLACE"
+        )
+
+
+def test_mart_refresh_failure_only_warns_when_not_strict():
+    counts, _ = _run_with_collects(
+        batch_collect=[{"st": "MATCHED", "n": 1}],
+        table_collect=[{"reconciliation_status": "MATCHED", "n": 1}],
+        fail_at="CREATE OR REPLACE",
+    )
+    assert counts["batch_MATCHED"] == 1
+
+
+def test_late_sweep_failure_publishes_the_flag_the_alert_reads():
+    counts, _ = _run_with_collects(
+        batch_collect=[{"st": "MATCHED", "n": 1}],
+        table_collect=[{"reconciliation_status": "MATCHED", "n": 1}],
+        late_n=1,
+        fail_at="UPDATE ",
+    )
+    assert counts["late_sla_failed"] == 1
+    assert "late_unresolved_marked" not in counts
+
+
+def test_status_count_failure_raises():
+    with pytest.raises(RuntimeError, match="Could not fetch reconciliation counts"):
+        _run_with_collects(batch_collect=[], table_collect=[], fail_at="AS scope")
+
+
+def test_depth_gauge_failure_degrades_to_defaults():
+    counts, _ = _run_with_collects(
+        batch_collect=[{"st": "MATCHED", "n": 1}],
+        table_collect=[{"reconciliation_status": "MATCHED", "n": 1}],
+        fail_at="'dlq'",
+    )
+    assert counts["dlq_depth"] == 0
+    assert counts["late_unresolved_total"] == 0
+
+
+def test_unparseable_env_knobs_fall_back_instead_of_crashing(monkeypatch):
+    monkeypatch.setenv("MATCH_RATE_SLO", "not-a-number")
+    monkeypatch.setenv("LATE_SLA_DAYS", "seven")
+    counts, _ = _run_with_collects(
+        batch_collect=[{"st": "MATCHED", "n": 1}],
+        table_collect=[{"reconciliation_status": "MATCHED", "n": 1}],
+    )
+    assert counts["batch_MATCHED"] == 1
+
+
+def test_bad_maintain_retain_last_falls_back(monkeypatch):
+    monkeypatch.setenv("MAINTAIN_RETAIN_LAST", "forever")
+    with (
+        patch("src.common.config.get_spark_session") as mock_get_spark,
+        patch("src.common.settings.get_settings") as mock_get_settings,
+    ):
+        mock_get_settings.return_value = MagicMock(
+            webhook_table="nessie.db.webhooks", dlq_table="nessie.db.webhooks_dlq"
+        )
+        mock_spark = MagicMock()
+        mock_spark.sql.return_value = MagicMock(collect=MagicMock(return_value=[{"n": 3}]))
+        mock_get_spark.return_value = mock_spark
+        maintain_tables()
+    expires = [c.args[0] for c in mock_spark.sql.call_args_list if "expire_snapshots" in c.args[0]]
+    assert any("retain_last => 7" in q for q in expires)
+
+
+def _bank_leg_settings(**kw):
+    base = dict(
+        project_root=".",
+        webhook_table="nessie.db.webhooks",
+        dlq_table="nessie.db.webhooks_dlq",
+        strict_slo=False,
+        wired_legs="",
+    )
+    base.update(kw)
+    return MagicMock(**base)
+
+
+def test_bank_leg_is_skipped_when_not_in_wired_legs(tmp_path):
+    with patch("src.processing.reconcile.get_settings") as g:
+        g.return_value = _bank_leg_settings(wired_legs="wap,residual")
+        out = _run_bank_leg(
+            MagicMock(), "nessie.db.webhooks", str(tmp_path), "2025-04-02", g.return_value
+        )
+    assert out == {"bank_statement": 0}
+
+
+def test_missing_statement_file_keeps_the_batch_rather_than_failing(tmp_path, caplog):
+    settings = _bank_leg_settings()
+    with patch("src.processing.reconcile.get_settings") as g:
+        g.return_value = settings
+        with caplog.at_level(logging.WARNING):
+            out = _run_bank_leg(
+                MagicMock(), "nessie.db.webhooks", str(tmp_path), "2025-04-02", settings
+            )
+    assert out == {"bank_statement": 0}
+    assert "no statement file" in caplog.text
+
+
+def test_bank_leg_failure_fails_the_batch_only_under_strict(tmp_path):
+    settings = _bank_leg_settings(strict_slo=True)
+    (tmp_path / "statement_20250402.sta").write_text("garbage\n")
+    with patch("src.processing.reconcile.get_settings") as g:
+        g.return_value = settings
+        with pytest.raises(RuntimeError, match="Bank leg failed"):
+            _run_bank_leg(MagicMock(), "nessie.db.webhooks", str(tmp_path), "2025-04-02", settings)
+
+
+def test_bank_leg_failure_only_warns_when_not_strict(tmp_path):
+    settings = _bank_leg_settings()
+    (tmp_path / "statement_20250402.sta").write_text("garbage\n")
+    with patch("src.processing.reconcile.get_settings") as g:
+        g.return_value = settings
+        out = _run_bank_leg(
+            MagicMock(), "nessie.db.webhooks", str(tmp_path), "2025-04-02", settings
+        )
+    assert out == {"bank_statement": 0}
+
+
+_BANK_PDF_ROWS = [
+    {
+        "bank_ref": "b1",
+        "amount_paise": 100000,
+        "value_date": "2025-04-02",
+        "direction": "CREDIT",
+        "link_tx": "tx_abcdef",
+        "narration": "TXN123456",
+    }
+]
+
+
+def test_bank_leg_bridges_pandas_statements_to_spark():
+    import pandas as pd
+
+    spark = MagicMock()
+    spark.sql.return_value.collect.side_effect = [
+        [{"k": "matched", "n": 1}, {"k": "orphans", "n": 0}],
+        [{"n": 1}],
+    ]
+    pdf = pd.DataFrame(_BANK_PDF_ROWS)
+    view = MagicMock(name="bank_view")
+    spark.createDataFrame.return_value = view
+    out = reconcile_bank_leg(spark, "nessie.db.webhooks", pdf, lag_days=2)
+    spark.createDataFrame.assert_called_once_with(pdf)
+    view.createOrReplaceTempView.assert_called_once_with("bank_statements")
+    assert out == {"bank_evidence": 1, "bank_missing": 0, "bank_orphans": 0}
+
+
+def test_run_bank_leg_hands_parse_output_to_reconcile(tmp_path):
+    import pandas as pd
+
+    pdf = pd.DataFrame(_BANK_PDF_ROWS)
+    (tmp_path / "statement_20250402.sta").write_text("dummy\n")
+    settings = _bank_leg_settings()
+    with (
+        patch("src.adapters.bank_statement.parse_mt940", return_value=pdf),
+        patch("src.processing.batches.load_providers", return_value={}),
+        patch("src.processing.batches.provider_spec", return_value={"lag_days": 2}),
+        patch(
+            "src.processing.reconcile.reconcile_bank_leg",
+            return_value={"bank_evidence": 1, "bank_missing": 0, "bank_orphans": 0},
+        ) as rec,
+        patch("src.processing.reconcile.get_settings", return_value=settings),
+    ):
+        out = _run_bank_leg(
+            MagicMock(), "nessie.db.webhooks", str(tmp_path), "2025-04-02", settings
+        )
+    assert rec.call_args[0][2] is pdf
+    assert out == {
+        "bank_statement": 1,
+        "bank_evidence": 1,
+        "bank_missing": 0,
+        "bank_orphans": 0,
+    }
