@@ -34,7 +34,7 @@ def _row(**kw):
 
 def test_currency_inr_and_null_pass():
     settlement_schema.validate(_row(currency="INR"))
-    settlement_schema.validate(_row())  # absent -> treated as INR
+    settlement_schema.validate(_row())
 
 
 def test_currency_non_inr_quarantined():
@@ -44,10 +44,10 @@ def test_currency_non_inr_quarantined():
 
 def test_per_merchant_tolerance_python(tmp_path):
     eng = _engine_with(tmp_path, _MERCH_TOL_YAML)
-    ok_default, _ = eng.check_match(100000, 100002, "UPI")  # diff 2 > tol 1
+    ok_default, _ = eng.check_match(100000, 100002, "UPI")
     assert not ok_default
     ok_merch, _ = eng.check_match(100000, 100005, "UPI", merchant_id="merch_loose")
-    assert ok_merch  # diff 5 <= merchant tol 5
+    assert ok_merch
 
 
 def test_per_merchant_tolerance_sql(tmp_path):
