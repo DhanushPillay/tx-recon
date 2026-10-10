@@ -21,8 +21,6 @@ def get_hardware_info():
 
 def fingerprint(info=None):
     info = info or get_hardware_info()
-    # ponytail: system/machine hang together; OS patch level is
-    # deliberately excluded so a routine update does not void the baseline.
     stable = {
         "system": platform.system(),
         "machine": platform.machine(),
