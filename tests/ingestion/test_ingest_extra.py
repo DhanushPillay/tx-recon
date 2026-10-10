@@ -1,5 +1,4 @@
-"""Ingestion listener + write-batch + run wiring."""
-
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -10,8 +9,6 @@ pytestmark = pytest.mark.unit
 
 
 class _FakeCol:
-    """JVM-free stand-in for pyspark Column (supports operators used in ingest)."""
-
     def __gt__(self, other):
         return _FakeCol()
 
@@ -28,6 +25,9 @@ class _FakeCol:
         return _FakeCol()
 
     def isNotNull(self):
+        return _FakeCol()
+
+    def isNull(self):
         return _FakeCol()
 
     def cast(self, *a):
@@ -61,7 +61,6 @@ def test_qualified_table_ok_and_bad():
 
 
 def test_registry_schema_id_success_and_failure(mocker, caplog):
-    """Registry id lookup: returns the id string; None (warn-only) when down."""
     import logging
     import sys
     import types
@@ -88,11 +87,8 @@ def test_registry_schema_id_success_and_failure(mocker, caplog):
 
 
 def _mock_stream(spark, parsed, ws, captured):
-    """Wire the readStream->foreachBatch chain; return hook capturing the batch fn."""
     rs = spark.readStream.format.return_value
     rs.option.return_value = rs
-    # run_ingestion calls withColumn twice (payload + schema_id), then
-    # select(...).select(...) to unpack the Avro struct.
     staged = MagicMock()
     staged.withColumn.return_value = staged
     staged.select.return_value.select.return_value = parsed
@@ -117,12 +113,72 @@ def _patch_ingest(ing, mocker, spark):
     mocker.patch.object(ing, "expr", return_value=MagicMock())
     mocker.patch.object(ing, "to_timestamp", return_value=_FakeCol())
     mocker.patch.object(ing, "col", side_effect=lambda *a, **k: _FakeCol())
-    # Registry lookup is a live HTTP call: pin it, the drift logic is
-    # exercised through _ids, not through the network.
     mocker.patch.object(ing, "_registry_schema_id", return_value="123")
-    # PAN gate is a live Spark collect: pin it clean here, refusal is
-    # covered by test_write_batch_pan_refuses_batch.
     mocker.patch("src.validation.pan_guard.count_spark_pan_hits", return_value=0)
+
+
+def _merge_sql(spark):
+    for call in spark.sql.call_args_list:
+        if "MERGE INTO" in call[0][0]:
+            return call[0][0]
+    return None
+
+
+def _gauge(n):
+    g = MagicMock(name="gauge")
+    g.count.return_value = n
+    return g
+
+
+def _filter_stubs(valid, invalid, late_count=0):
+    return [_gauge(late_count), _gauge(0), valid, invalid]
+
+
+def test_supervisor_delay_doubles_then_caps():
+    from src.ingestion.ingest_webhooks import (
+        _SUPERVISOR_MAX_DELAY_S,
+        supervisor_delay,
+    )
+
+    delays = [supervisor_delay(i) for i in range(12)]
+    assert delays[:7] == [5.0, 10.0, 20.0, 40.0, 80.0, 160.0, _SUPERVISOR_MAX_DELAY_S]
+    assert all(d == _SUPERVISOR_MAX_DELAY_S for d in delays[7:])
+
+
+def test_run_ingestion_restarts_a_dead_stream_then_gives_up(mocker):
+    import src.ingestion.ingest_webhooks as ing
+
+    spark, parsed, ws, captured = MagicMock(), MagicMock(), MagicMock(), {}
+    _mock_stream(spark, parsed, ws, captured)
+    _patch_ingest(ing, mocker, spark)
+    slept = []
+    mocker.patch.object(ing, "time", SimpleNamespace(sleep=slept.append))
+    ws.start.side_effect = RuntimeError("stream died")
+
+    with pytest.raises(RuntimeError, match="stream died"):
+        ing.run_ingestion()
+
+    from src.ingestion.ingest_webhooks import _SUPERVISOR_MAX_ATTEMPTS
+
+    assert ws.start.call_count == _SUPERVISOR_MAX_ATTEMPTS
+    assert len(slept) == _SUPERVISOR_MAX_ATTEMPTS - 1
+
+
+def test_run_ingestion_does_not_restart_a_clean_stop(mocker):
+    import src.ingestion.ingest_webhooks as ing
+
+    spark, parsed, ws, captured = MagicMock(), MagicMock(), MagicMock(), {}
+    _mock_stream(spark, parsed, ws, captured)
+    _patch_ingest(ing, mocker, spark)
+
+    def _no_sleep(_seconds):
+        raise AssertionError("slept")
+
+    mocker.patch.object(ing, "time", SimpleNamespace(sleep=_no_sleep))
+    ws.start.return_value.awaitTermination.return_value = None
+
+    ing.run_ingestion()
+    assert ws.start.call_count == 1
 
 
 def test_run_ingestion_wiring(mocker):
@@ -148,34 +204,27 @@ def test_write_batch_merges_and_dlqs(mocker):
     batch = MagicMock(name="batch")
     enriched = MagicMock(name="enriched")
     valid = MagicMock(name="valid")
-    # filter(valid_cond) -> valid; valid.dropDuplicates -> valid
     valid.dropDuplicates.return_value = valid
-    # valid.withColumn x3 -> enriched (has createOrReplaceTempView)
     valid.withColumn.return_value.withColumn.return_value.withColumn.return_value.withColumn.return_value = enriched
     invalid = MagicMock(name="invalid")
     invalid.dropDuplicates.return_value = invalid
     invalid.select.return_value = invalid
     invalid.count.return_value = 1
-    late = MagicMock(name="late")
-    late.count.return_value = 0
     batch.isEmpty.return_value = False
     batch.cache.return_value = batch
-    # _write_batch filters 3x: late-data count, valid split, invalid split
-    batch.filter.side_effect = [late, valid, invalid]
+    batch.filter.side_effect = _filter_stubs(valid, invalid, 0)
     mocker.patch.object(ing, "lit", return_value=MagicMock())
     mocker.patch.object(ing, "current_timestamp", return_value=MagicMock())
     mocker.patch.object(ing, "F", new=MagicMock())
     captured["fn"](batch, 0)
-    spark.sql.assert_called_once()
-    assert "MERGE INTO" in spark.sql.call_args_list[0][0][0]
+    assert "MERGE INTO" in _merge_sql(spark)
     enriched.createOrReplaceTempView.assert_called_once_with("batch_valid")
-    invalid.writeTo.assert_called_once()
+    merges = [c[0][0] for c in spark.sql.call_args_list if "MERGE INTO" in c[0][0]]
+    assert len(merges) == 2  # target MERGE + idempotent DLQ MERGE (no append)
+    assert any("webhooks_dlq" in m for m in merges)
 
 
-def test_write_batch_warns_on_schema_id_drift(mocker, caplog):
-    """Batch ids != registry id -> schema-id drift warning (warn-only, still merges)."""
-    import logging
-
+def test_write_batch_refuses_on_schema_id_drift(mocker):
     import src.ingestion.ingest_webhooks as ing
 
     spark, parsed, ws, captured = MagicMock(), MagicMock(), MagicMock(), {}
@@ -192,24 +241,16 @@ def test_write_batch_warns_on_schema_id_drift(mocker, caplog):
     invalid = MagicMock(name="invalid")
     invalid.dropDuplicates.return_value = invalid
     invalid.count.return_value = 0
-    late = MagicMock(name="late")
-    late.count.return_value = 0
-    batch.filter.side_effect = [late, valid, invalid]
+    batch.filter.side_effect = _filter_stubs(valid, invalid, 0)
     mocker.patch.object(ing, "lit", return_value=MagicMock())
     mocker.patch.object(ing, "current_timestamp", return_value=MagicMock())
     mocker.patch.object(ing, "F", new=MagicMock())
-    with caplog.at_level(logging.WARNING, logger="src.ingestion.ingest_webhooks"):
+    with pytest.raises(RuntimeError, match="schema-id drift"):
         captured["fn"](batch, 0)
-    assert any("schema-id drift" in r.message for r in caplog.records)
-    spark.sql.assert_called_once()  # warn-only: the MERGE still ran
+    assert _merge_sql(spark) is None
 
 
 def test_write_batch_uses_explicit_columns(mocker):
-    """MERGE INSERT lists columns (never positional *); DLQ selects its 6 cols.
-
-    batch carries schema_id/event_time extras vs the 10-col webhooks table
-    and 6-col DLQ table — positional writes mis-align on any drift.
-    """
     import src.ingestion.ingest_webhooks as ing
 
     spark, parsed, ws, captured = MagicMock(), MagicMock(), MagicMock(), {}
@@ -226,14 +267,12 @@ def test_write_batch_uses_explicit_columns(mocker):
     invalid.dropDuplicates.return_value = invalid
     invalid.select.return_value = invalid
     invalid.count.return_value = 1
-    late = MagicMock(name="late")
-    late.count.return_value = 0
-    batch.filter.side_effect = [late, valid, invalid]
+    batch.filter.side_effect = _filter_stubs(valid, invalid, 0)
     mocker.patch.object(ing, "lit", return_value=MagicMock())
     mocker.patch.object(ing, "current_timestamp", return_value=MagicMock())
     mocker.patch.object(ing, "F", new=MagicMock())
     captured["fn"](batch, 0)
-    merge_sql = spark.sql.call_args_list[0][0][0]
+    merge_sql = _merge_sql(spark)
     assert "INSERT *" not in merge_sql
     assert "INSERT (transaction_id, amount_paise" in merge_sql
     invalid.select.assert_called_once_with(*ing._DLQ_COLS)
@@ -260,7 +299,6 @@ def test_write_batch_uses_explicit_columns(mocker):
 
 
 def test_write_batch_pan_refuses_batch(mocker):
-    """PAN hits in the streaming batch: refuse before any MERGE/DLQ write."""
     import src.ingestion.ingest_webhooks as ing
 
     spark, parsed, ws, captured = MagicMock(), MagicMock(), MagicMock(), {}
@@ -274,12 +312,11 @@ def test_write_batch_pan_refuses_batch(mocker):
     mocker.patch.object(ing, "F", new=MagicMock())
     with pytest.raises(RuntimeError, match="PAN detected"):
         captured["fn"](batch, 0)
-    spark.sql.assert_not_called()
+    assert _merge_sql(spark) is None
     batch.unpersist.assert_called_once()
 
 
 def test_count_spark_pan_hits_luhn_verifies(mocker):
-    """Candidates from the JVM prefilter are Luhn-checked on the driver."""
     from unittest.mock import MagicMock
 
     from src.validation.pan_guard import count_spark_pan_hits
@@ -300,7 +337,6 @@ def test_count_spark_pan_hits_luhn_verifies(mocker):
 
 
 def test_write_batch_late_rows_rescued_by_webhook(mocker):
-    """Late-arriving webhooks rescue LATE_UNRESOLVED rows (not just MISSING)."""
     import src.ingestion.ingest_webhooks as ing
     from src.common.schemas import EXCEPTION_LATE_UNRESOLVED
 
@@ -309,12 +345,11 @@ def test_write_batch_late_rows_rescued_by_webhook(mocker):
     _patch_ingest(ing, mocker, spark)
     ing.run_ingestion()
     _run_batch(ing, mocker, captured)
-    merge_sql = spark.sql.call_args_list[0][0][0]
+    merge_sql = _merge_sql(spark)
     assert EXCEPTION_LATE_UNRESOLVED in merge_sql
 
 
 def _run_batch(ing, mocker, captured, *, empty=False, late_n=0, select_side_effect=None):
-    """Drive the captured foreachBatch fn with a canned batch."""
     batch = MagicMock(name="batch")
     batch.isEmpty.return_value = empty
     batch.cache.return_value = batch
@@ -330,9 +365,7 @@ def _run_batch(ing, mocker, captured, *, empty=False, late_n=0, select_side_effe
     invalid = MagicMock(name="invalid")
     invalid.dropDuplicates.return_value = invalid
     invalid.count.return_value = 0
-    late = MagicMock(name="late")
-    late.count.return_value = late_n
-    batch.filter.side_effect = [late, valid, invalid]
+    batch.filter.side_effect = _filter_stubs(valid, invalid, late_n)
     mocker.patch.object(ing, "lit", return_value=MagicMock())
     mocker.patch.object(ing, "current_timestamp", return_value=MagicMock())
     mocker.patch.object(ing, "F", new=MagicMock())
@@ -350,11 +383,10 @@ def test_write_batch_empty_is_noop(mocker):
     batch = MagicMock(name="batch")
     batch.isEmpty.return_value = True
     captured["fn"](batch, 0)
-    spark.sql.assert_not_called()
+    assert _merge_sql(spark) is None
 
 
 def test_write_batch_schema_id_check_skipped_warns(mocker, caplog):
-    """Uncollectable schema ids -> warn, batch still merges (never fail on telemetry)."""
     import logging
 
     import src.ingestion.ingest_webhooks as ing
@@ -366,11 +398,10 @@ def test_write_batch_schema_id_check_skipped_warns(mocker, caplog):
     with caplog.at_level(logging.WARNING, logger="src.ingestion.ingest_webhooks"):
         _run_batch(ing, mocker, captured, select_side_effect=RuntimeError("boom"))
     assert any("schema-id check skipped" in r.message for r in caplog.records)
-    spark.sql.assert_called_once()
+    assert "MERGE INTO" in _merge_sql(spark)
 
 
 def test_write_batch_late_data_warns(mocker, caplog):
-    """Rows older than the watermark delay are counted and warned, then merged."""
     import logging
 
     import src.ingestion.ingest_webhooks as ing
@@ -382,25 +413,23 @@ def test_write_batch_late_data_warns(mocker, caplog):
     with caplog.at_level(logging.WARNING, logger="src.ingestion.ingest_webhooks"):
         _run_batch(ing, mocker, captured, late_n=3)
     assert any("late-data" in r.message for r in caplog.records)
-    spark.sql.assert_called_once()
+    assert "MERGE INTO" in _merge_sql(spark)
 
 
-def test_ensure_webhook_table_ordering_failure_warns(mocker, caplog):
-    """ALTER WRITE ORDERED BY failing (e.g. existing table) warns, never raises."""
+def test_ensure_webhook_table_issues_no_write_ordering(mocker, caplog):
     import logging
 
     import src.ingestion.ingest_webhooks as ing
 
     spark = MagicMock()
-    spark.sql.side_effect = [MagicMock(), MagicMock(), RuntimeError("already ordered")]
     with caplog.at_level(logging.WARNING, logger="src.ingestion.ingest_webhooks"):
         ing.ensure_webhook_table(spark, "nessie.db.webhooks")
-    assert any("Write ordering skipped" in r.message for r in caplog.records)
+    issued = [c.args[0] for c in spark.sql.call_args_list if c.args and c.args[0]]
+    assert not any("WRITE ORDERED BY" in s for s in issued)
+    assert not any("Write ordering skipped" in r.message for r in caplog.records)
 
 
 def test_ensure_webhook_table_bucket_partitions_join_key():
-    """New tables partition by bucket(transaction_id): MERGE prunes to file
-    groups instead of full-scanning history (verified live on Nessie)."""
     spark = MagicMock()
     import src.ingestion.ingest_webhooks as ing
 
@@ -410,10 +439,6 @@ def test_ensure_webhook_table_bucket_partitions_join_key():
 
 
 def test_write_batch_merge_failure_propagates(mocker):
-    """MERGE failure must kill the microbatch (Spark restarts from checkpoint).
-
-    Swallowing here would ACK offsets past unmerged rows — silent money loss.
-    """
     import src.ingestion.ingest_webhooks as ing
 
     spark, parsed, ws, captured = MagicMock(), MagicMock(), MagicMock(), {}
@@ -430,9 +455,7 @@ def test_write_batch_merge_failure_propagates(mocker):
     invalid = MagicMock(name="invalid")
     invalid.dropDuplicates.return_value = invalid
     invalid.count.return_value = 0
-    late = MagicMock(name="late")
-    late.count.return_value = 0
-    batch.filter.side_effect = [late, valid, invalid]
+    batch.filter.side_effect = _filter_stubs(valid, invalid, 0)
     mocker.patch.object(ing, "lit", return_value=MagicMock())
     mocker.patch.object(ing, "current_timestamp", return_value=MagicMock())
     mocker.patch.object(ing, "F", new=MagicMock())
@@ -442,7 +465,6 @@ def test_write_batch_merge_failure_propagates(mocker):
 
 
 def test_run_ingestion_requires_sasl_when_flagged(mocker):
-    """REQUIRE_KAFKA_SASL=1 + PLAINTEXT refuses to trust forgeable records."""
     import src.ingestion.ingest_webhooks as ing
 
     spark, parsed, ws, captured = MagicMock(), MagicMock(), MagicMock(), {}
@@ -468,7 +490,6 @@ def test_run_ingestion_requires_sasl_when_flagged(mocker):
 
 
 def test_registry_required_raises_when_down(mocker):
-    """REQUIRE_SCHEMA_REGISTRY=1 turns an unreachable registry into failure."""
     import sys
     import types
 
