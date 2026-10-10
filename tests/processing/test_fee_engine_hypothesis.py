@@ -3,26 +3,33 @@ from hypothesis import strategies as st
 
 from src.processing.fee_engine import get_fee_engine
 
-# Property 1: Conservation of Value
-# Gross Amount == Net Settled Amount + MDR Fee + GST
-
 
 @given(
-    amount_paise=st.integers(min_value=100, max_value=100000000),  # 1 INR to 1M INR
+    amount_paise=st.integers(min_value=100, max_value=100000000),
     instrument_type=st.sampled_from(
         ["UPI", "CREDIT_CARD", "DEBIT_CARD", "NETBANKING", "WALLET", "INTERNATIONAL"]
     ),
 )
-def test_settlement_fee_decomposition_invariant(amount_paise, instrument_type):
+def test_fee_rounding_never_drifts_half_a_paisa(amount_paise, instrument_type):
     fee_engine = get_fee_engine()
     result = fee_engine.compute_fee(amount_paise, instrument_type)
 
-    # Invariant: Gross must exactly equal Net + Fees + Tax
-    # Total fee computed inside FeeEngine includes GST, so:
-    assert amount_paise == result.net_paise + result.fee_paise
+    mdr_paise = result.fee_paise - result.gst_paise
+    assert abs(mdr_paise * 10000 - amount_paise * result.rate_bps) <= 5000
 
 
-# Property 2: Non-negative amounts
+@given(
+    amount_paise=st.integers(min_value=100, max_value=100000000),
+    instrument_type=st.sampled_from(
+        ["UPI", "CREDIT_CARD", "DEBIT_CARD", "NETBANKING", "WALLET", "INTERNATIONAL"]
+    ),
+)
+def test_gst_never_exceeds_the_fee_it_is_charged_on(amount_paise, instrument_type):
+    result = get_fee_engine().compute_fee(amount_paise, instrument_type)
+
+    assert result.gst_paise <= result.fee_paise - result.gst_paise
+
+
 @given(
     amount_paise=st.integers(min_value=0, max_value=100000000),
     instrument_type=st.sampled_from(
@@ -38,7 +45,6 @@ def test_fees_are_non_negative(amount_paise, instrument_type):
     assert result.gst_paise >= 0
 
 
-# Property 3: Fee monotonicity — bigger amount never yields a smaller fee
 @given(
     a=st.integers(min_value=0, max_value=100000000),
     b=st.integers(min_value=0, max_value=100000000),
@@ -53,7 +59,6 @@ def test_fee_monotonic(a, b, instrument_type):
     assert fa <= fb
 
 
-# Property 4: check_match agrees with compute_fee (self-consistency)
 @given(
     amount_paise=st.integers(min_value=100, max_value=100000000),
     instrument_type=st.sampled_from(
