@@ -4,7 +4,7 @@ Schema reference for the core data structures in tx-recon. Every column, type, a
 
 ## Webhook table (`nessie.db.webhooks`)
 
-Ingested from Kafka by `src/ingestion/ingest_webhooks.py`. The Avro wire format carries 6 fields; the Iceberg table adds 4 enrichment columns at ingest time and is `PARTITIONED BY bucket(16, transaction_id)` with `WRITE ORDERED BY transaction_id` for MERGE pruning.
+Ingested from Kafka by `src/ingestion/ingest_webhooks.py`. The Avro wire format carries 6 fields; the Iceberg table adds 4 enrichment columns at ingest time and is `PARTITIONED BY bucket(16, transaction_id)` so MERGE join keys are colocated.
 
 | Column | Type | Source | Nullable | Description |
 | :--- | :--- | :--- | :--- | :--- |
@@ -34,7 +34,7 @@ Malformed or invalid webhooks (corrupt Avro decode, `amount_paise <= 0`, or `tra
 
 ## Settlement CSV (`data/settlement_YYYYMMDD.csv`)
 
-Downloaded from a real PG (thiru full files under `data/`, 10k sample checked in at `data/samples/`). Validated by Pandera (`src/validation/settlement_schema.py`) before reaching Spark. Every row is scanned for PAN (`src/validation/pan_guard.py`, Luhn) and the file's `sha256` is recorded in `data/.processed_files.json` (`src/validation/file_registry.py`) before validation — same bytes under a different name warn as redelivery.
+Downloaded from a real PG (thiru full files under `data/`, 10k sample checked in at `data/samples/`). Validated by Pandera (`src/validation/settlement_schema.py`) before reaching Spark. Every row is scanned for PAN (`src/validation/pan_guard.py`, issuer-prefixed Luhn) and the file's `sha256` is recorded in `data/.processed_files.json` (`src/validation/file_registry.py`) only once the batch validates and curates cleanly — same bytes under a different name warn as redelivery, and a quarantined batch records nothing.
 
 ### Minimal 5-column format (Generic adapter)
 
@@ -88,13 +88,13 @@ Written to `reconciliation_status` by the MERGE in `src/processing/reconcile.py`
 | Status | Meaning | Set by |
 | :--- | :--- | :--- |
 | `MATCHED` | Webhook amount minus fee (MDR + GST) equals settled amount within tolerance, *and* bank evidence exists when the third leg is run. | MERGE `WHEN MATCHED` with fee check. |
-| `EXCEPTION_FEE_MISMATCH` | Fee check failed: difference exceeds tolerance. | MERGE `WHEN MATCHED` with `> tolerance` (4th `WHEN MATCHED`). |
+| `EXCEPTION_FEE_MISMATCH` | Fee check failed: difference exceeds tolerance. Also set when the webhook amount is NULL and the fee cannot be computed at all. | MERGE `WHEN MATCHED` with `> tolerance` (3rd `WHEN MATCHED`), and the 2nd clause for NULL `amount_paise`. |
 | `EXCEPTION_MISSING_WEBHOOK` | Settlement received but no matching webhook exists. Placeholder row inserted with `amount_paise = settled_amount` and `gateway_status='UNKNOWN'`. | MERGE `WHEN NOT MATCHED`. |
 | `EXCEPTION_MISSING_BANK_STATEMENT` | Gateway pair matched but no independent bank credit found (third leg). Gateway-consistent errors are invisible without this. | Bank leg `MERGE WHEN MATCHED AND status=MATCHED -> UPDATE` (`src/processing/reconcile.py: build_bank_leg_sql`). |
 | `EXCEPTION_DUPLICATE_SETTLEMENT` | Multiple settlement rows for the same `transaction_id` in one file. | Defined in `schemas.py`; *not* quarantined (`unique=False`) — collapsed pre-MERGE by `WINDOW row_number() ORDER BY settlement_date DESC, bank_ref_id/settlement_id ASC` (deterministic latest-wins), counted as `duplicate_settlement_rows`. |
 | `EXCEPTION_DUPLICATE_WEBHOOK` | Multiple webhooks for the same `transaction_id`. | Defined in `schemas.py`; streaming `dropDuplicates` + watermark prevents this at ingest. |
 | `EXCEPTION_INVALID` | Failed schema validation or quarantine (`quarantine_*.csv` / DLQ). | Defined in `schemas.py`; Pandera quarantine + DLQ path. |
-| `EXCEPTION_LATE_UNRESOLVED` | `MISSING_WEBHOOK` placeholder older than per-provider `late_sla_days` (`config/providers.yaml`, default 7, env `LATE_SLA_DAYS` overrides all). Terminal for the batch MERGE, which preserves it via a no-op clause; only a late-arriving webhook heals it via ingestion MERGE. | Late-SLA pass in `reconcile.py` (`MERGE WHEN MATCHED AND status+LATE_WHERE`); preserved by MERGE 2nd `WHEN MATCHED` clause. |
+| `EXCEPTION_LATE_UNRESOLVED` | `MISSING_WEBHOOK` or `PENDING_RECONCILIATION` older than the `LATE_SLA_DAYS` window (default 7). Terminal for the batch MERGE, which preserves it (status untouched; only `bank_ref_id` and `instrument_type` refresh) so re-runs stay idempotent; only a late-arriving webhook heals it via ingestion MERGE. | Late-SLA sweep in `reconcile.py` (single-table `UPDATE` over the target, so it ages rows from earlier batches too); preserved by the batch MERGE's 1st `WHEN MATCHED` clause, which is shared with `EXCEPTION_MISSING_WEBHOOK`. |
 
 ## Instrument types
 
