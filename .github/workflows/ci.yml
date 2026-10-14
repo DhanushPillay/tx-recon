@@ -90,7 +90,6 @@ jobs:
           # already-ignored package still fails.
           pip-audit --desc \
             $(grep -v '^#' .github/pip-audit-ignore.txt | sed 's/#.*//' | sed 's/[[:space:]]*$//' | grep -v '^$' | sed 's/^/--ignore-vuln /' | xargs)
-            --ignore-vuln PYSEC-2026-142
 
       - name: Secret scan (gitleaks)
         uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
