@@ -91,6 +91,13 @@ ignore_missing_imports = true
 
 [tool.mutmut]
 paths_to_mutate = ["src/processing/fee_engine.py"]
+# paths_to_mutate is a single file, so mutmut copies nothing else into mutants/
+# and then strips the real repo root and src/ off sys.path. Any sibling import
+# (src.common.schemas, src.processing.reconcile via test_fee_versioning.py) then
+# fails to import. Mirroring all of src/ makes the mutant tree self-contained;
+# also_copy never widens what is mutable, walk_source_files still only walks
+# paths_to_mutate.
+also_copy = ["src"]
 # Every pure-Python test of the engine. test_fee_sql_parity.py is excluded on
 # purpose: it boots a Spark session, and mutmut re-runs the selection once per
 # mutant, which would turn a nightly job into a weekend.
