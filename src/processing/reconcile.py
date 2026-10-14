@@ -552,7 +552,10 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
     _bt = max(0, settlement_rows_evaluated - counts.get("missing_within_lag", 0))
     if _bt:
         _rate = _bm / _bt
-        counts["batch_match_rate"] = round(_rate, 4)
+        # Full precision on purpose. The publish gate in pipeline._slo_ok reads
+        # this same key, and a rate of 0.94997 rounded to 0.95 passed that gate
+        # while the comparison here below correctly called it a breach.
+        counts["batch_match_rate"] = _rate
         if _rate < _slo:
             msg = f"Match-rate SLO breach: {_rate:.2%} < {_slo:.0%} (batch)"
             if settings.strict_slo:

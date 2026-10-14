@@ -63,6 +63,19 @@ def _run_residual(counts: dict) -> bool:
     return True
 
 
+def _for_metrics(counts: dict) -> dict:
+    """Round the rate for the record, not for the gate.
+
+    ``batch_match_rate`` is kept full precision so the publish gate compares the
+    rate the batch actually produced. The metrics file is a human artifact, so
+    it gets the four decimals the runbook quotes.
+    """
+    rate = counts.get("batch_match_rate")
+    if isinstance(rate, float):
+        return {**counts, "batch_match_rate": round(rate, 4)}
+    return counts
+
+
 def _slo_ok(counts: dict) -> bool:
     try:
         slo = float(os.environ.get("MATCH_RATE_SLO", 0.95))
@@ -144,7 +157,7 @@ def run_daily(date_str: str | None = None) -> dict:
             os.path.dirname(curated_path), f"metrics_{batch_date.replace('-', '')}.json"
         )
         with open(metrics_path, "w", encoding="utf-8") as fh:
-            json.dump({"batch_date": batch_date, "counts": counts}, fh, default=str)
+            json.dump({"batch_date": batch_date, "counts": _for_metrics(counts)}, fh, default=str)
     except OSError as exc:
         logger.warning(f"metrics file skipped: {exc}")
     try:
