@@ -3,6 +3,13 @@ import sys
 
 import pytest
 
+# Spark executors launch `python` for Python workers; on machines where that
+# bare name resolves to an app-store stub (Windows) every collect() dies with
+# "Python worker failed to connect back". Pin both to the running interpreter
+# unless the operator overrode them.
+os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
+
 
 @pytest.fixture(autouse=True)
 def _reset_singletons(monkeypatch):

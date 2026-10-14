@@ -16,11 +16,28 @@ def _statuses(df):
 pytestmark = pytest.mark.integration
 
 SEED_STAMP = "19990101"
-SEED_ROWS = """bank_ref_id,transaction_id,settled_amount_paise,settlement_date
-bnk_idem001,tx_idem_001,100000,1999-01-01
-bnk_idem002,tx_idem_002,97640,1999-01-01
-bnk_idem003,tx_idem_003,50000,1999-01-01
-"""
+# UPI charges no fee, so webhook gross == settled net: exact MATCHED rows.
+SEED_TXNS = (
+    ("bnk_idem001", "tx_idem_001", 101802, "1999-01-01"),
+    ("bnk_idem002", "tx_idem_002", 99399, "1999-01-01"),
+    ("bnk_idem003", "tx_idem_003", 50902, "1999-01-01"),
+)
+SEED_SCOPE = "transaction_id LIKE 'tx_idem_%'"
+
+
+def _write_curated_seed(data_dir: str) -> str:
+    path = os.path.join(data_dir, f"curated_settlement_{SEED_STAMP}.csv")
+    with open(path, "w") as f:
+        f.write(
+            "bank_ref_id,transaction_id,settled_amount_paise,settlement_date,"
+            "instrument_type,merchant_id,fee_paise,gst_paise,settlement_id,utr,"
+            "currency,gross_amount_paise,provider\n"
+        )
+        for i, (bnk, tx, amt, dt) in enumerate(SEED_TXNS):
+            f.write(
+                f"{bnk},{tx},{amt},{dt},UPI,UNKNOWN,0,0,st_idem{i},u_idem{i},INR,{amt},gateway\n"
+            )
+    return path
 
 
 def test_reconciliation_is_idempotent():
@@ -43,31 +60,34 @@ def test_reconciliation_is_idempotent():
         ) USING iceberg"""
     )
 
+    # Hermetic on reruns: drop this test's own rows before reseeding.
+    spark.sql(f"DELETE FROM {settings.webhook_table} WHERE {SEED_SCOPE}")
     spark.sql(
         f"""INSERT INTO {settings.webhook_table} (
             transaction_id, amount_paise, gateway_status, timestamp_utc,
             merchant_id, processing_run_id, reconciliation_status,
             bank_ref_id, ingested_at, instrument_type
         ) VALUES
-        ('tx_idem_001', 101802, 'SUCCESS', '1999-01-01T00:00:00', 'UNKNOWN',
-         'idem-seed', 'PENDING_SETTLEMENT', NULL, current_timestamp(), 'UPI'),
-        ('tx_idem_002', 99399, 'SUCCESS', '1999-01-01T00:00:00', 'UNKNOWN',
-         'idem-seed', 'PENDING_SETTLEMENT', NULL, current_timestamp(), 'UPI'),
-        ('tx_idem_003', 50902, 'SUCCESS', '1999-01-01T00:00:00', 'UNKNOWN',
-         'idem-seed', 'PENDING_SETTLEMENT', NULL, current_timestamp(), 'UPI')
+        {
+            ",".join(
+                f"('{tx}', {amt}, 'SUCCESS', '{dt}T00:00:00', 'UNKNOWN', "
+                f"'idem-seed', 'PENDING_SETTLEMENT', NULL, current_timestamp(), 'UPI')"
+                for _, tx, amt, dt in SEED_TXNS
+            )
+        }
         """
     )
 
     data_dir = os.path.join(settings.project_root, "data")
     os.makedirs(data_dir, exist_ok=True)
-    seed_path = os.path.join(data_dir, f"settlement_{SEED_STAMP}.csv")
-    with open(seed_path, "w") as f:
-        f.write(SEED_ROWS)
+    # Curated (canonical, post-validation) seed: the raw drop alone no longer
+    # merges since _settlement_source fails closed without a curated file.
+    seed_path = _write_curated_seed(data_dir)
     try:
         run_reconciliation(SEED_STAMP)
 
         try:
-            df_run1 = spark.table(settings.webhook_table)
+            df_run1 = spark.table(settings.webhook_table).filter(SEED_SCOPE)
             count_run1 = df_run1.count()
             checksum_run1 = df_run1.orderBy("transaction_id").collect()
         except AnalysisException as e:
@@ -77,7 +97,7 @@ def test_reconciliation_is_idempotent():
 
         run_reconciliation(SEED_STAMP)
 
-        df_run2 = spark.table(settings.webhook_table)
+        df_run2 = spark.table(settings.webhook_table).filter(SEED_SCOPE)
         count_run2 = df_run2.count()
         checksum_run2 = df_run2.orderBy("transaction_id").collect()
 
@@ -85,3 +105,4 @@ def test_reconciliation_is_idempotent():
         assert checksum_run1 == checksum_run2, "Data changed on second run!"
     finally:
         os.remove(seed_path)
+        spark.sql(f"DELETE FROM {settings.webhook_table} WHERE {SEED_SCOPE}")
