@@ -1,17 +1,19 @@
-.PHONY: help up down wait install clean format lint typecheck test coverage integration bench accuracy regression pipeline
+.PHONY: help up down wait install lock clean format lint typecheck test coverage integration bench accuracy regression regression-full pipeline
 
 DATE ?= $(shell python -c "import datetime;print(datetime.date.today())")
 
 help:
 	@echo "up/down         - start/stop docker services (redpanda, minio, nessie, trino)"
-	@echo "install         - create .venv and install package (run from an activated env)"
+	@echo "install         - create/update .venv from uv.lock (make lock to refresh it)"
+	@echo "lock            - refresh uv.lock from pyproject.toml"
 	@echo "lint/format     - ruff check/format over src/ tests/ dags/"
 	@echo "typecheck       - mypy over src/"
 	@echo "test            - unit tests (skip integration)"
 	@echo "coverage        - unit tests with 90% branch gate"
 	@echo "integration     - live Spark + docker tests (needs 'make up')"
 	@echo "accuracy        - real-data accuracy gate (>=85% on 10k sample)"
-	@echo "regression      - accuracy gate vs checked-in baseline"
+	@echo "regression      - accuracy gate vs baseline (accuracy only)"
+	@echo "regression-full - gate kafka + latency + iceberg too (needs 'make bench')"
 	@echo "bench           - full real-data bench (accuracy + kafka/pandera/iceberg/pyspark)"
 	@echo "pipeline        - run daily recon (DATE=YYYY-MM-DD, default today)"
 	@echo "clean           - remove pycache/pyc (portable, no Unix find)"
@@ -19,16 +21,27 @@ help:
 accuracy:
 	python tests/performance/quick_perf.py
 
-regression:
-	python tests/performance/quick_perf.py
-	python tests/performance/check_regression.py --results tests/performance/results_accuracy.json --baseline tests/performance/baseline_real.json
+# Accuracy only. --require says so out loud: the accuracy harness does not
+# produce throughput or latency numbers, and the gate now fails rather than
+# warning when a required family is missing from the run.
+regression: accuracy
+	python tests/performance/check_regression.py --results tests/performance/results_accuracy.json --baseline tests/performance/baseline_real.json --require accuracy
+
+# Full set. Run `make bench` first so results_real.json has all four suites.
+# Comparing against a partially populated artifact fails instead of skipping.
+regression-full:
+	python tests/performance/check_regression.py --results tests/performance/results_real.json --baseline tests/performance/baseline_real.json --require accuracy,kafka,kafka-latency,iceberg --hardware-policy fail
 
 pipeline:
 	python -m src.pipeline --date $(DATE)
 
+# uv.lock is the record of the resolved set, so install from it rather than
+# letting a fresh resolve decide what the tests run against.
+lock:
+	uv lock
+
 install:
-	python -m venv .venv
-	python -m pip install -e ".[dev]"
+	uv sync --extra dev
 
 up:
 	docker compose up -d

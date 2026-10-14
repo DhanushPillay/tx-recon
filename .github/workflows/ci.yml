@@ -41,25 +41,30 @@ jobs:
 
       - name: Lockfile drift
         run: |
-          # uv.lock is tracked but the install below resolves fresh from PyPI,
-          # so nothing else would notice it going stale -- and it WAS stale
-          # (mt-940 missing, pytest pinned to 8.4.2 in pyproject against 8.3.4
-          # in the lock). Gate it so the lock is usable as the record of the
-          # resolved set. Run `uv lock` locally to refresh.
-          pip install uv
+          # uv.lock is the record of the resolved set, so gate it. Run
+          # `uv lock` locally to refresh. uv itself is pinned because an
+          # unpinned resolver silently changes what "frozen" means.
+          pip install uv==0.10.6
           uv lock --check
 
-      - name: Install dependencies
+      - name: Install dependencies from the lock
         run: |
           python -m pip install --upgrade pip
-          pip install "apache-airflow==2.11.2" --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.11.2/constraints-3.11.txt"
-          pip install -e ".[dev]"
+          # Install what the lock says, not what PyPI serves today. This step
+          # used to check the lock and then ignore it: pip re-resolved from
+          # PyPI with no --constraint, so the set pip-audit scanned and the
+          # set the tests ran against drifted between runs.
+          uv export --frozen --extra dev --no-emit-project --no-hashes -o "$RUNNER_TEMP/ci-requirements.txt"
+          pip install -r "$RUNNER_TEMP/ci-requirements.txt"
+          # The project itself, editable, with no dependency resolution of its
+          # own -- everything it needs is already pinned above.
+          pip install -e . --no-deps
 
       - name: Run Ruff Formatter Check
-        run: ruff format --check src/ tests/ dags/
+        run: ruff format --check src/ tests/ dags/ scripts/
 
       - name: Run Ruff Linter
-        run: ruff check src/ tests/ dags/
+        run: ruff check src/ tests/ dags/ scripts/
 
       - name: Run Mypy
         # mypy is a dev extra; installing it again here pulled whatever was
@@ -108,17 +113,22 @@ jobs:
           PYTHONPATH: .
           PROJECT_ROOT: ${{ github.workspace }}
         run: |
-          # Blocking. Accuracy match_rate < 85% fails the build.
-          # Throughput and p99 movement (>15% / >20% vs
-          # tests/performance/baseline_real.json) also fail — but only when this
-          # step measures them. It compares the accuracy-only artifact, so today
-          # those two checks are skipped and the step gates accuracy alone.
-          # check_regression.py reports each skipped metric as a failure rather
-          # than passing vacuously, so widening the measurement widens the gate.
+          # This job runs the accuracy harness only, so the gate covers accuracy
+          # only. --require makes that explicit: a required family the run does
+          # not supply is a failure, not a warning, so the step cannot report
+          # success while skipping the metrics it appears to be checking.
+          #
+          # Throughput, p95 and p99 are covered by benchmark-nightly, which
+          # actually produces those artifacts. They were never measured here:
+          # the old code warned about the skip and exited 0, so the comment on
+          # this step claimed the opposite of what happened.
+          #
           # A hardware fingerprint mismatch only warns (CI runners differ).
+          # Pass --hardware-policy fail to compare same-host numbers only.
           python tests/performance/check_regression.py \
             --results tests/performance/results_accuracy.json \
-            --baseline tests/performance/baseline_real.json
+            --baseline tests/performance/baseline_real.json \
+            --require accuracy
 
       - name: Run Pytest with Coverage
         env:
@@ -151,9 +161,22 @@ jobs:
         run: |
           cp .env.example .env
           sed -i 's/^MINIO_ROOT_PASSWORD=.*/MINIO_ROOT_PASSWORD=password/' .env
+          # MinIO and the Trino Nessie catalog both run with `password`, but
+          # .env.example kept MINIO_SECRET_KEY=change-me. Anything reading
+          # credentials through pydantic Settings saw the placeholder while
+          # docker-compose passed the real one.
+          sed -i 's/^MINIO_SECRET_KEY=.*/MINIO_SECRET_KEY=password/' .env
 
       - name: Start Docker Services for Integration Tests
         run: docker compose up -d redpanda minio minio-createbucket nessie trino
+
+      # Without this a Trino or Nessie boot failure surfaces as "readiness loop
+      # timed out" and nothing else. The logs are the whole diagnosis.
+      - name: Service logs on failure
+        if: failure()
+        run: |
+          docker compose ps -a || true
+          docker compose logs --no-color --tail 200 || true
 
       - name: Wait for services to initialize
         run: |
@@ -225,23 +248,32 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          # Same lock-driven install as test-and-lint. Mutation results only
+          # mean something against the dependency set the tests pass on, so
+          # this job used to install differently from the one that runs them.
+          pip install uv==0.10.6
+          uv lock --check
+          uv export --frozen --extra dev --no-emit-project --no-hashes -o "$RUNNER_TEMP/ci-requirements.txt"
+          pip install -r "$RUNNER_TEMP/ci-requirements.txt"
+          pip install -e . --no-deps
 
       - name: Mutation test fee engine
         run: mutmut run
 
-      # `mutmut run` only exits non-zero on infrastructure failure, never on a
-      # surviving mutant, so the score has to be asserted explicitly.
+      # `mutmut run` writes mutants/mutmut-stats.json, a resume cache with no
+      # counts in it. `export-cicd-stats` reads the per-mutant exit codes and
+      # writes mutants/mutmut-cicd-stats.json, which does have them. The gate
+      # below read the second file while only the first was ever produced.
+      - name: Export mutation counts
+        run: mutmut export-cicd-stats
+
+      # `mutmut run` exits non-zero on infrastructure failure only, never on a
+      # surviving mutant, so the score has to be asserted. The old inline
+      # `python -c` referenced MUTATION_SCORE_MIN without a `$`, so Python
+      # raised NameError, and it scored a run where every mutant was skipped as
+      # 100%. scripts/mutation_score.py fixes both and is unit tested.
       - name: Assert mutation score
-        run: |
-          python -c "
-          import json, sys
-          s = json.load(open('mutants/mutmut-cicd-stats.json'))
-          tested = s['total'] - s['skipped']
-          score = 100.0 if tested <= 0 else (s['killed'] + s['timeout']) / tested * 100
-          print(f'mutation score: {score:.1f}% ({s[\"killed\"]}/{tested} killed, {s[\"survived\"]} survived)')
-          sys.exit(0 if score >= MUTATION_SCORE_MIN else 1)
-          "
+        run: python scripts/mutation_score.py --min-score "${MUTATION_SCORE_MIN}"
         env:
           MUTATION_SCORE_MIN: '80'
 

@@ -94,6 +94,10 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-admin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+      # The trinodb/trino image defaults to -Xmx16G. CI runners are 16 GB and
+      # Spark asks for 8g on the same box, so the default heap does not fit
+      # alongside anything. 4g is ample for the queries this stack runs.
+      JAVA_OPTS: ${TRINO_JAVA_OPTS:--Xmx4G}
     depends_on:
       minio:
         condition: service_healthy

@@ -4,9 +4,14 @@ services:
   localstack:
     image: localstack/localstack:3.8
     container_name: localstack
+    security_opt:
+      - no-new-privileges:true
+    # Bound to loopback, like every other published port in docker-compose.yml.
+    # These were on 0.0.0.0 with no auth, and SERVICES includes iam and sts, so
+    # anything on the network could mint credentials. Do not drop the prefix.
     ports:
-      - "4566:4566"
-      - "4510-4559:4510-4559"
+      - "127.0.0.1:4566:4566"
+      - "127.0.0.1:4510-4559:4510-4559"
     environment:
       - SERVICES=s3,iam,sts,glue
       - PERSISTENCE=0
