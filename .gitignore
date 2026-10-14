@@ -21,6 +21,7 @@ infra/*.tfstate
 infra/*.tfstate.backup
 benchmarks/data/
 .benchmarks/
+mutants/
 .ruff_cache/
 .hypothesis/
 *.egg-info/
