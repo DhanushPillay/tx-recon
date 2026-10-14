@@ -1,0 +1,114 @@
+# pip-audit advisory baseline.
+#
+# pip-audit has no --ignore-vuln-file, so ci.yml builds the flags from this file
+# (grep -v "^#" | sed "s/^/--ignore-vuln /" | xargs). Keeping the list here instead
+# of inline in ci.yml is what makes it reviewable: 40-odd of these were appended
+# one commit at a time with no recorded reason.
+#
+# Granularity is by ADVISORY ID, not by package, on purpose: a new advisory in an
+# already-ignored package still fails the build.
+#
+# RULES
+#   - Add an entry only with a one-line reason on the same line as a trailing
+#     comment. A bare ID is not reviewable and CI enforces the review date.
+#   - REVIEW_BY is enforced: the "Audit baseline is current" step fails once the
+#     date passes, so this list cannot renew itself silently. Bump it only after
+#     re-auditing, not to silence the failure.
+#   - PYSEC-2025-184 is a KNOWN UNPATCHED Spark advisory, not an oversight: the
+#     3.5.x line has no fix. It needs tracking, not ignoring forever.
+#
+# REVIEW_BY=2026-12-24
+#
+# Format: <ID> [# <why>]
+
+CVE-2026-63374 # transitive via the airflow 2.11.2 constraint tree.
+CVE-2026-64847 # transitive via the airflow 2.11.2 constraint tree.
+PYSEC-2023-314 # transitive via the airflow 2.11.2 constraint tree.
+PYSEC-2025-184 # unpatched in pyspark 3.5.x; batch-only path, no untrusted deserialization. Needs a tracked issue, not permanent suppression.
+PYSEC-2026-10
+PYSEC-2026-12
+PYSEC-2026-120
+PYSEC-2026-13
+PYSEC-2026-1378
+PYSEC-2026-1379
+PYSEC-2026-141
+PYSEC-2026-142
+PYSEC-2026-172
+PYSEC-2026-173
+PYSEC-2026-175
+PYSEC-2026-176
+PYSEC-2026-177
+PYSEC-2026-178
+PYSEC-2026-179
+PYSEC-2026-18
+PYSEC-2026-1805
+PYSEC-2026-181
+PYSEC-2026-1845
+PYSEC-2026-186
+PYSEC-2026-187
+PYSEC-2026-2082
+PYSEC-2026-2083
+PYSEC-2026-2086
+PYSEC-2026-2087
+PYSEC-2026-2088
+PYSEC-2026-2094
+PYSEC-2026-2095
+PYSEC-2026-2096
+PYSEC-2026-2097
+PYSEC-2026-2098
+PYSEC-2026-2099
+PYSEC-2026-2100
+PYSEC-2026-2101
+PYSEC-2026-2102
+PYSEC-2026-2103
+PYSEC-2026-2104
+PYSEC-2026-2105
+PYSEC-2026-2106
+PYSEC-2026-2107
+PYSEC-2026-2108
+PYSEC-2026-2109
+PYSEC-2026-2110
+PYSEC-2026-2111
+PYSEC-2026-2112
+PYSEC-2026-2113
+PYSEC-2026-215
+PYSEC-2026-2151
+PYSEC-2026-2275
+PYSEC-2026-2338
+PYSEC-2026-2343
+PYSEC-2026-2344
+PYSEC-2026-2345
+PYSEC-2026-2346
+PYSEC-2026-2351
+PYSEC-2026-2353
+PYSEC-2026-2354
+PYSEC-2026-2356
+PYSEC-2026-2366
+PYSEC-2026-237
+PYSEC-2026-238
+PYSEC-2026-24
+PYSEC-2026-2617
+PYSEC-2026-2987
+PYSEC-2026-3036
+PYSEC-2026-3037
+PYSEC-2026-3038
+PYSEC-2026-3039
+PYSEC-2026-3040
+PYSEC-2026-3447
+PYSEC-2026-3545
+PYSEC-2026-3546
+PYSEC-2026-3547
+PYSEC-2026-3696
+PYSEC-2026-3697
+PYSEC-2026-3698
+PYSEC-2026-3699
+PYSEC-2026-3705
+PYSEC-2026-3706
+PYSEC-2026-3709
+PYSEC-2026-3710
+PYSEC-2026-3711
+PYSEC-2026-3712
+PYSEC-2026-3805
+PYSEC-2026-3806
+PYSEC-2026-3923
+PYSEC-2026-3966

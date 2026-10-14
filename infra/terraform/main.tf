@@ -25,7 +25,7 @@ resource "aws_s3_bucket_versioning" "lakehouse" {
   }
 }
 
-  # No public access, SSE-KMS by default; checkpoint churn expires.
+# No public access, SSE-KMS by default; checkpoint churn expires.
 resource "aws_s3_bucket_public_access_block" "lakehouse" {
   bucket                  = aws_s3_bucket.lakehouse.id
   block_public_acls       = true
