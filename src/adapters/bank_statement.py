@@ -22,8 +22,12 @@ def parse_mt940(path: str):
     except ImportError as exc:
         raise RuntimeError("mt-940 package required for bank statements") from exc
 
+    # mt940 signs the amount itself: D is negative, C positive. Both options
+    # default off in mt940 5.x, which leaves RC (a debit) and lowercase marks
+    # unsigned, so ask for the complete behaviour rather than guess at marks.
+    options = mt940.Options(reversal_sign=True, case_insensitive_marks=True)
     try:
-        txns = mt940.parse(path)
+        txns = mt940.parse(path, options=options)
     except Exception as exc:
         raise ValueError(f"cannot parse MT940 {path}: {exc}") from exc
     if not txns:
@@ -36,20 +40,22 @@ def parse_mt940(path: str):
         if day is None:
             raise ValueError(f"cannot parse MT940 {path}: missing value date")
         day_iso = day.strftime("%Y-%m-%d") if hasattr(day, "strftime") else str(day)[:10]
-        direction = "CREDIT" if str(d.get("status", "")).upper().startswith("C") else "DEBIT"
         narration = " ".join(
             str(d.get(k) or "") for k in ("transaction_details", "extra_details")
         ).strip()
         m = _TXN_LINK.search(narration)
         rm = _RECON_LINK.search(narration) if not m else None
         link = m.group(0) if m else (rm.group(1) if rm else None)
+        # mt940 already applied the credit/debit mark to the sign. Taking it
+        # again here once flipped every DEBIT to positive, so a chargeback read
+        # as settlement evidence.
         amt = _paise(d.get("amount", 0))
         rows.append(
             {
                 "bank_ref": str(d.get("customer_reference") or d.get("bank_reference") or ""),
-                "amount_paise": amt if direction == "CREDIT" else -amt,
+                "amount_paise": amt,
                 "value_date": day_iso,
-                "direction": direction,
+                "direction": "CREDIT" if amt >= 0 else "DEBIT",
                 "link_tx": link,
                 "narration": narration[:256],
             }

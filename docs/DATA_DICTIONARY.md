@@ -73,9 +73,9 @@ Downloaded from a real PG (thiru full files under `data/`, 10k sample checked in
 | Column | Type | Description |
 | :--- | :--- | :--- |
 | `bank_ref` | `string` | `customer_reference` / `bank_reference`. |
-| `amount_paise` | `int` | Signed paise (credit +, debit −), `Decimal` HALF_UP → int. |
+| `amount_paise` | `int` | Signed paise, `Decimal` HALF_UP → int. The sign comes from `mt940`, which negates on a `D` mark; the parser is called with `reversal_sign` and `case_insensitive_marks` on so `RC` and lowercase `d` are signed too. |
 | `value_date` | `string` | `YYYY-MM-DD` from MT940 `:61:` value date. |
-| `direction` | `string` | `CREDIT` / `DEBIT` from `status` (`C`/`D`). |
+| `direction` | `string` | `CREDIT` / `DEBIT`, read off the sign of `amount_paise` so the label cannot contradict the amount. |
 | `link_tx` | `string` | `TXN\d{6,}` from narration, or `NULL`. |
 | `narration` | `string` | `transaction_details` + `extra_details` (≤256c). |
 

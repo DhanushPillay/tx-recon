@@ -11,6 +11,16 @@ pytestmark = pytest.mark.unit
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "bank_sample.sta")
 
 
+def _sta(lines: list[str], tmp_path) -> str:
+    """Wrap bare ``:61:``/``:86:`` pairs in the minimum MT940 envelope."""
+    body = ":20:STARTUMS\n:25:12345678901234567890\n:28C:00001/001\n:60F:C160401INR100000,00\n"
+    body += "".join(lines)
+    body += ":62F:C160402INR90000,00\n"
+    p = tmp_path / "stmt.sta"
+    p.write_text(body)
+    return str(p)
+
+
 def test_parse_mt940_fixture():
     df = parse_mt940(FIXTURE)
     assert len(df) == 2
@@ -100,3 +110,87 @@ def test_parse_mt940_pan_in_narration_fails_closed(tmp_path):
     )
     with pytest.raises(ValueError, match="PAN detected"):
         parse_mt940(str(p))
+
+
+# Every mark below carries the same 9764,00 magnitude so the sign is the only
+# thing under test. The MT940 :61: regex accepts C, D, RC and RD only: C is
+# money in, D money out, RC undoes a credit, RD undoes a debit.
+_SIGNS = [
+    ("C", 976400, "CREDIT"),
+    ("D", -976400, "DEBIT"),
+    ("RC", -976400, "DEBIT"),
+    ("RD", 976400, "CREDIT"),
+    ("d", -976400, "DEBIT"),
+]
+
+
+@pytest.mark.parametrize("mark,expected,expected_direction", _SIGNS)
+def test_parse_mt940_signs_each_mark_once(tmp_path, mark, expected, expected_direction):
+    """Regression: the mark was applied by mt940 and then applied again here.
+
+    A DEBIT of 9764,00 used to land as +976400 paise, so a chargeback on a
+    transaction read as positive settlement evidence.
+    """
+    path = _sta(
+        [
+            f":61:1604020402{mark}9764,00NTRFREF000000000001\n",
+            "TXN000000001\n",
+            ":86:NEFT txn TXN000000001\n",
+        ],
+        tmp_path,
+    )
+    row = parse_mt940(path).iloc[0]
+    assert row["amount_paise"] == expected
+    assert row["direction"] == expected_direction
+
+
+def test_parse_mt940_direction_never_contradicts_the_sign(tmp_path):
+    path = _sta(
+        [
+            f":61:1604020402{mark}9764,00NTRFREF{i:06d}\nTXN000000{i}\n:86:t TXN000000{i}\n"
+            for i, (mark, _, _) in enumerate(_SIGNS, start=1)
+        ],
+        tmp_path,
+    )
+    df = parse_mt940(path)
+    assert len(df) == len(_SIGNS)
+    for _, row in df.iterrows():
+        expected = "CREDIT" if row["amount_paise"] >= 0 else "DEBIT"
+        assert row["direction"] == expected, row["narration"]
+
+
+def test_debit_line_cannot_satisfy_bank_evidence(tmp_path):
+    """A chargeback must not stand in for the payout it reversed.
+
+    ``reconcile.py`` accepts bank evidence when a line sits within tolerance of
+    the settled amount, so a same-sized DEBIT would otherwise confirm a
+    settlement the bank actually pulled back.
+    """
+    settled = 976400
+    debit = parse_mt940(
+        _sta(
+            [
+                ":61:1604020402D9764,00NTRFREF000000000001\n",
+                "TXN000000001\n",
+                ":86:NEFT chargeback TXN000000001\n",
+            ],
+            tmp_path,
+        )
+    ).iloc[0]["amount_paise"]
+    assert abs(debit - settled) > 1, "a DEBIT of the same size would match the settlement"
+
+
+def test_parse_mt940_still_signs_the_credit_leg_unchanged(tmp_path):
+    """The fix must not disturb the credit path every batch depends on."""
+    path = _sta(
+        [
+            ":61:1604020402C9764,00NTRFREF000000000001\n",
+            "TXN000000001\n",
+            ":86:NEFT payout TXN000000001\n",
+        ],
+        tmp_path,
+    )
+    row = parse_mt940(path).iloc[0]
+    assert row["amount_paise"] == 976400
+    assert row["direction"] == "CREDIT"
+    assert row["link_tx"] == "TXN000000001"
