@@ -7,7 +7,13 @@ logger = logging.getLogger(__name__)
 
 
 def check_batch_drift(counts: dict, ds: str | None = None) -> None:
-    batch_n = counts.get("settlement_rows_evaluated") or counts.get("settlement_rows_deduped", 0)
+    # A real 0 must stay 0. Only an absent key falls back to the deduped count:
+    # reconciliation reports 0 evaluated whenever every settled_amount_paise is
+    # NULL (reachable with ALLOW_UNVALIDATED_SETTLEMENT=1), and reading that as
+    # "missing" turned a degenerate batch into a bogus drift error.
+    batch_n = counts.get("settlement_rows_evaluated")
+    if batch_n is None:
+        batch_n = counts.get("settlement_rows_deduped", 0)
     batch_total = sum(
         v
         for k, v in counts.items()
