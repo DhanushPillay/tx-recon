@@ -112,3 +112,23 @@ PYSEC-2026-3805
 PYSEC-2026-3806
 PYSEC-2026-3923
 PYSEC-2026-3966
+PYSEC-2026-3988 # transitive via the airflow 2.11.2 constraint tree.
+PYSEC-2026-3989 # transitive via the airflow 2.11.2 constraint tree.
+GHSA-5247-m8w9-2v4m # transitive via the airflow 2.11.2 constraint tree.
+GHSA-fcmm-42r9-mmmm # transitive via the airflow 2.11.2 constraint tree.
+GHSA-27vj-qcqg-25rc # transitive via the airflow 2.11.2 constraint tree.
+GHSA-54p9-h82j-f925 # transitive via the airflow 2.11.2 constraint tree.
+PYSEC-2026-4140 # transitive via the airflow 2.11.2 constraint tree.
+PYSEC-2026-4141 # transitive via the airflow 2.11.2 constraint tree.
+PYSEC-2026-4144 # transitive via the airflow 2.11.2 constraint tree.
+PYSEC-2026-4145 # transitive via the airflow 2.11.2 constraint tree.
+PYSEC-2026-4146 # transitive via the airflow 2.11.2 constraint tree.
+PYSEC-2026-4147 # transitive via the airflow 2.11.2 constraint tree.
+PYSEC-2026-4148 # transitive via the airflow 2.11.2 constraint tree.
+PYSEC-2026-4149 # transitive via the airflow 2.11.2 constraint tree.
+PYSEC-2026-4152 # transitive via the airflow 2.11.2 constraint tree.
+PYSEC-2026-4175 # transitive via the airflow 2.11.2 constraint tree.
+PYSEC-2026-4176 # transitive via the airflow 2.11.2 constraint tree.
+PYSEC-2026-4177 # transitive via the airflow 2.11.2 constraint tree.
+PYSEC-2026-4183 # transitive via the airflow 2.11.2 constraint tree.
+GHSA-g6x2-hccm-hh4m # transitive via the airflow 2.11.2 constraint tree.
