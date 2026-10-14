@@ -1,6 +1,7 @@
 import hashlib
 import logging
 import re
+from decimal import Decimal
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +81,12 @@ def build_real_files(
         counts["rows"] += 1
         tx = str(r[0])
         try:
-            gross = int(round(float(r[1]) * 100))
-        except (TypeError, ValueError):
+            # Decimal HALF_UP, the same rule the adapters and the MT940 reader
+            # use. round() on a float is half-to-even, so a source amount of
+            # 0.125 rupees became 12 paise and seeded every fixture with an
+            # off-by-one gross.
+            gross = int((Decimal(str(r[1])) * 100).to_integral_value(rounding="ROUND_HALF_UP"))
+        except (TypeError, ValueError, ArithmeticError):
             counts["dropped_invalid"] += 1
             continue
         if gross <= 0:

@@ -114,7 +114,12 @@ def _paise_inr_series(s: pd.Series) -> pd.Series:
     cleaned = s.astype(str).str.replace(r"[₹,\s]", "", regex=True).str.strip()
     cleaned = cleaned.replace({"nan": pd.NA, "None": pd.NA, "": pd.NA})
     nums = pd.to_numeric(cleaned, errors="coerce")
-    return np.floor(nums * 100 + 0.5 + 1e-9).astype("Int64")
+    # Round half away from zero on the magnitude. `floor(x + 0.5)` alone sends
+    # ties towards +infinity, so -100.50 came out as -10050 where the MT940
+    # reader's Decimal HALF_UP gives -10051. The 1e-9 keeps a decimal that is
+    # a hair under a tie (0.145 -> 14.499999999999998) from losing the
+    # half-paisa to float representation.
+    return (np.sign(nums) * np.floor(np.abs(nums) * 100 + 0.5 + 1e-9)).astype("Int64")
 
 
 def _map_instrument_series(s: pd.Series) -> pd.Series:
