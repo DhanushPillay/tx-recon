@@ -4,6 +4,7 @@ import time
 
 import pyspark.sql.functions as F
 from pyspark.sql.avro.functions import from_avro
+from pyspark.sql.column import Column
 from pyspark.sql.functions import col, current_timestamp, expr, lit, to_timestamp
 from pyspark.sql.streaming.listener import StreamingQueryListener
 
@@ -44,6 +45,32 @@ _DLQ_COLS = [
 ]
 
 _WATERMARK_RE = re.compile(r"^(\d+)\s+(seconds?|minutes?|hours?|days?)$", re.IGNORECASE)
+
+
+class PermanentIngestError(RuntimeError):
+    """A batch that will fail identically however many times it is retried.
+
+    Schema drift and a PAN in the payload both need a config or a producer
+    change before the batch could ever succeed. The supervisor used to retry
+    them like a broker blip, spending about nine minutes of backoff and five
+    replays of the same offsets to arrive at the same refusal.
+    """
+
+
+def _dlq_dedupe_hash(cols: list[str]) -> Column:
+    """A content key for a DLQ row, so a replayed poison message lands once.
+
+    The DLQ MERGE keys on `transaction_id`, and `NULL != NULL`, so a record
+    with no transaction id matched nothing and appended a fresh row on every
+    replay -- unbounded, and `replay_dlq.py --delete` filters on a non-null id
+    so it could never remove them. Hashing the row's own content gives every
+    DLQ row a key that is both present and stable.
+
+    A NULL field reads as the empty string rather than propagating, so one
+    missing column cannot null the key.
+    """
+    parts = [F.coalesce(F.col(c).cast("string"), F.lit("")) for c in cols]
+    return F.sha2(F.concat_ws("\x1f", *parts), 256)
 
 
 def _reversal_condition():
@@ -201,7 +228,12 @@ def run_ingestion():
     ).select("data.*", "schema_id", "decodable")
     _wm_n, _wm_unit = parse_watermark_delay(settings.stream_watermark_delay)
     parsed_df = parsed_df.withColumn(
-        "event_time", to_timestamp(col("timestamp_utc"))
+        # Same pattern the batch side uses, so a timestamp that reads here reads
+        # there. A shape this rejects is NULL, and a NULL never ages to
+        # LATE_UNRESOLVED and never reaches missing_within_lag, which would
+        # read as a better batch than it is.
+        "event_time",
+        to_timestamp(col("timestamp_utc")),
     ).withWatermark("event_time", f"{_wm_n} {_wm_unit}")
 
     reversal_cond = _reversal_condition()
@@ -232,10 +264,13 @@ def run_ingestion():
                 {str(r["schema_id"]) for r in batch_df.select("schema_id").distinct().collect()}
             )
         except Exception as exc:
-            _ids = []
-            logger.warning(f"schema-id check skipped: {exc}")
+            # Not drift, so still retryable -- but not silent either. An empty
+            # _ids made the guard below fall through, so a batch nobody could
+            # verify was merged with any new producer field quietly dropped.
+            logger.error(f"schema-id check failed, batch not verified: {exc}")
+            raise
         if _ids and _expected_schema_id and any(i != _expected_schema_id for i in _ids):
-            raise RuntimeError(
+            raise PermanentIngestError(
                 f"schema-id drift: batch ids {_ids} vs registry {_expected_schema_id} "
                 f"({settings.topic_name}-value). Fields outside {_WEBHOOK_COLS} are "
                 "dropped by the MERGE, so the batch is refused. Update "
@@ -259,7 +294,7 @@ def run_ingestion():
 
         _pan_n = count_spark_pan_hits(batch_df)
         if _pan_n:
-            raise RuntimeError(
+            raise PermanentIngestError(
                 f"PAN detected in streaming batch ({_pan_n} rows): refusing batch "
                 "(store last-4 + issuer only)"
             )
@@ -307,15 +342,18 @@ def run_ingestion():
         n_inv = inv.count()
         if n_inv:
             logger.warning(f"DLQ batch: {n_inv} invalid rows -> {dlq_table}")
-            # MERGE not append: supervisor replays make appends duplicate DLQ rows.
-            # NULL transaction_ids never match (NULL != NULL) and still insert per
-            # retry — keyed rows, the common case, converge idempotently.
-            inv.dropDuplicates(["transaction_id"]).createOrReplaceTempView("batch_invalid")
-            _dlq_cols = ", ".join(_DLQ_COLS)
-            _dlq_vals = ", ".join(f"s.{c}" for c in _DLQ_COLS)
+            # Keyed on a hash of the row's own content, not transaction_id:
+            # NULL != NULL meant every replay of a poison record with no id
+            # appended another one, and replay_dlq.py --delete could never
+            # reach them because it filters on a non-null id.
+            inv.withColumn("payload_hash", _dlq_dedupe_hash(_DLQ_COLS)).dropDuplicates(
+                ["payload_hash"]
+            ).createOrReplaceTempView("batch_invalid")
+            _dlq_cols = ", ".join([*_DLQ_COLS, "payload_hash"])
+            _dlq_vals = ", ".join(f"s.{c}" for c in [*_DLQ_COLS, "payload_hash"])
             spark.sql(
                 f"MERGE INTO {dlq_table} t USING batch_invalid s "
-                "ON t.transaction_id = s.transaction_id "
+                "ON t.payload_hash = s.payload_hash "
                 f"WHEN NOT MATCHED THEN INSERT ({_dlq_cols}) VALUES ({_dlq_vals})"
             )
 
@@ -336,6 +374,15 @@ def run_ingestion():
             )
             query.awaitTermination()
             break
+        except PermanentIngestError:
+            # Nothing about a retry changes the answer: the config or the
+            # producer has to change first. Retrying here burned five replays
+            # and about nine minutes of backoff on the same refusal.
+            logger.error(
+                "ingestion refused a batch for a reason a retry cannot fix; "
+                "not restarting the stream"
+            )
+            raise
         except Exception:
             _attempt += 1
             if _attempt >= _SUPERVISOR_MAX_ATTEMPTS:
@@ -405,7 +452,8 @@ def ensure_dlq_table(spark, table: str) -> None:
             gateway_status string,
             timestamp_utc string,
             merchant_id string,
-            processing_run_id string
+            processing_run_id string,
+            payload_hash string
         ) USING iceberg
         TBLPROPERTIES (
             'write.target-file-size-bytes' = '134217728',
@@ -418,6 +466,7 @@ def ensure_dlq_table(spark, table: str) -> None:
         )
     """
     )
+    spark.sql(f"ALTER TABLE {table} ADD COLUMNS IF NOT EXISTS (payload_hash string)")
 
 
 if __name__ == "__main__":
