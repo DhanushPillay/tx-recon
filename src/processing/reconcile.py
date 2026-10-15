@@ -99,6 +99,62 @@ def fold_fallback_rows(rows) -> dict[str, int]:
     return {key: seen.get(reason, 0) for reason, key in FEE_FALLBACK_COUNT_KEYS.items()}
 
 
+def fold_settlements(bank_df):
+    """Collapse redeliveries, then combine the instalments of a split payout.
+
+    Returns (distinct_rows, one_row_per_transaction, partial_txn_count).
+
+    The old behaviour took row_number() == 1 per transaction and dropped the
+    rest. That is correct for a provider re-sending the same settlement line
+    and wrong for a merchant paid in two instalments: the second instalment was
+    discarded before the MERGE saw it, and whichever row sorted first became
+    the whole settlement. A transaction that settled 400 then 600 was compared
+    as 600 alone, and if the tolerance happened to cover it the row was marked
+    MATCHED with 400 paise of settled revenue unrecorded and unflagged. The
+    discarded rows were then reported as duplicate_settlement_rows, which is
+    how an instalment plan got filed as a delivery problem.
+
+    So the two cases are separated by content instead of by arrival:
+
+      - rows identical on amount, date and bank reference are redeliveries and
+        collapse to one;
+      - whatever survives that is summed per transaction, with the latest date
+        as the effective one, because that is the instalment that completed it.
+    """
+    import pyspark.sql.functions as F
+    from pyspark.sql.window import Window
+
+    order = F.struct("settlement_date", "bank_ref_id", "settlement_id")
+    redelivery_window = Window.partitionBy(
+        "transaction_id", "settled_amount_paise", "settlement_date", "bank_ref_id"
+    ).orderBy(order)
+    distinct = (
+        bank_df.withColumn("row_num", F.row_number().over(redelivery_window))
+        .filter(F.col("row_num") == 1)
+        .drop("row_num")
+    )
+    # max_by on the same ordering the old tiebreak used, so a split payout with
+    # two rows sharing a date still resolves to one of them deterministically.
+    latest = F.max_by
+    folded = distinct.groupBy("transaction_id").agg(
+        F.sum("settled_amount_paise").alias("settled_amount_paise"),
+        F.max("settlement_date").alias("settlement_date"),
+        latest("bank_ref_id", order).alias("bank_ref_id"),
+        F.first("instrument_type", ignorenulls=True).alias("instrument_type"),
+        F.first("merchant_id", ignorenulls=True).alias("merchant_id"),
+        F.first("currency", ignorenulls=True).alias("currency"),
+        F.first("provider", ignorenulls=True).alias("provider"),
+        F.sum("fee_paise").alias("fee_paise"),
+        F.sum("gst_paise").alias("gst_paise"),
+        latest("settlement_id", order).alias("settlement_id"),
+        latest("utr", order).alias("utr"),
+        latest("gross_amount_paise", order).alias("gross_amount_paise"),
+        F.count("*").alias("installment_rows"),
+    )
+    partial = folded.filter(F.col("installment_rows") > 1).count()
+    return distinct, folded.drop("installment_rows"), partial
+
+
 def _append_leg(fee_cases, gst_cases, tol_cases, pred, amount_col, mdr_bps, gst_bps, tol):
     fee_cases.append(f"WHEN {pred} THEN (({amount_col} * {mdr_bps} + 5000) DIV 10000)")
     if gst_bps > 0:
@@ -449,25 +505,16 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
         raise FileNotFoundError(f"No settlement file readable at {data_path}: {exc}") from exc
 
     import pyspark.sql.functions as F
-    from pyspark.sql.window import Window
 
-    window_spec = Window.partitionBy("transaction_id").orderBy(
-        F.col("settlement_date").desc(),
-        F.col("bank_ref_id").asc(),
-        F.col("settlement_id").asc(),
-    )
     bank_df_valid = (
         bank_df.filter(F.col("transaction_id").isNotNull())
         .repartition(_DEDUP_PARTITIONS, "transaction_id")
         .cache()
     )
     settlement_rows_total = bank_df_valid.count()
-    bank_df_dedup = (
-        bank_df_valid.withColumn("row_num", F.row_number().over(window_spec))
-        .filter(F.col("row_num") == 1)
-        .drop("row_num")
-    )
+    bank_df_distinct, bank_df_dedup, partial_settlement_txns = fold_settlements(bank_df_valid)
     bank_df_dedup.cache()
+    settlement_rows_distinct = bank_df_distinct.count()
     settlement_rows_deduped = bank_df_dedup.count()
     settlement_rows_evaluated = bank_df_dedup.filter(
         F.col("settled_amount_paise").isNotNull()
@@ -574,9 +621,9 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
     counts: dict[str, int | float] = {"settlement_rows_total": settlement_rows_total}
     counts["settlement_rows_deduped"] = settlement_rows_deduped
     counts["settlement_rows_evaluated"] = settlement_rows_evaluated
-    counts["duplicate_settlement_rows"] = max(
-        0, settlement_rows_total - counts["settlement_rows_deduped"]
-    )
+    counts["duplicate_settlement_rows"] = max(0, settlement_rows_total - settlement_rows_distinct)
+    counts["settlement_rows_distinct"] = settlement_rows_distinct
+    counts["partial_settlement_txns"] = partial_settlement_txns
     # A settlement that declares no currency cannot be proven comparable to a
     # webhook that declares one, and the fee tolerance has no meaning across
     # currencies. Counted, not assumed. Deliberately not batch_-prefixed: it is
@@ -593,9 +640,15 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
     if counts["duplicate_settlement_rows"]:
         counts["batch_EXCEPTION_DUPLICATE_SETTLEMENT"] = counts["duplicate_settlement_rows"]
         logger.warning(
-            "Duplicate settlements deduped: %d rows collapsed (deterministic tiebreak "
-            "settlement_date DESC, bank_ref_id/settlement_id ASC)",
+            "Duplicate settlements deduped: %d row(s) were byte-identical redeliveries "
+            "of a settlement already in the batch (same amount, date and bank reference)",
             counts["duplicate_settlement_rows"],
+        )
+    if counts["partial_settlement_txns"]:
+        logger.warning(
+            "%d transaction(s) settled in more than one instalment; the instalments "
+            "were summed rather than one of them being kept",
+            counts["partial_settlement_txns"],
         )
     import os as _os
 

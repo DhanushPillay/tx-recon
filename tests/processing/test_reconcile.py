@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.processing import reconcile as reconcile_module
 from src.processing.fee_engine import FeeEngine
 from src.processing.reconcile import (
     _qualified_table,
@@ -29,6 +30,8 @@ def _run_with_collects(
     fail_exc=None,
     fallback_rows=None,
     sql_log=None,
+    partial_settlement_txns=0,
+    settlement_rows_distinct=4,
 ):
     with (
         patch("pyspark.sql.functions.row_number"),
@@ -58,9 +61,19 @@ def _run_with_collects(
         _valid.repartition.return_value = _valid
         _valid.cache.return_value = _valid
         _valid.count.return_value = 4
-        _dedup = _valid.withColumn.return_value.filter.return_value.drop.return_value
+        # fold_settlements is exercised on its own, against a real session, in
+        # tests/test_partial_settlement.py. Here it is a stub so the wiring
+        # test does not have to imitate a Spark aggregation chain.
+        _distinct = MagicMock()
+        _distinct.count.return_value = settlement_rows_distinct
+        _dedup = MagicMock()
         _dedup.count.return_value = 4
         _dedup.filter.return_value.count.return_value = 4
+        fold = patch(
+            "src.processing.reconcile.fold_settlements",
+            return_value=(_distinct, _dedup, partial_settlement_txns),
+        )
+        fold.start()
         count_collect = [
             {"scope": "table", "st": r["reconciliation_status"], "n": r["n"]} for r in table_collect
         ] + [{"scope": "batch", "st": r["st"], "n": r["n"]} for r in batch_collect]
@@ -95,7 +108,10 @@ def _run_with_collects(
             raise AssertionError(f"unmatched query in test: {_query[:120]}")
 
         mock_spark.sql.side_effect = _sql
-        return run_reconciliation(date_str="2025-04-02"), mock_spark
+        try:
+            return run_reconciliation(date_str="2025-04-02"), mock_spark
+        finally:
+            fold.stop()
 
 
 def test_run_reconciliation_requires_date():
@@ -181,9 +197,13 @@ def test_run_reconciliation_wiring(
     _valid.repartition.return_value = _valid
     _valid.cache.return_value = _valid
     _valid.count.return_value = 4
+    _distinct = MagicMock()
+    _distinct.count.return_value = 4
     _dedup = _valid.withColumn.return_value.filter.return_value.drop.return_value
     _dedup.count.return_value = 4
     _dedup.filter.return_value.count.return_value = 4
+    # See _run_with_collects: the folding itself is tested on a real session.
+    monkeypatch.setattr(reconcile_module, "fold_settlements", lambda _df: (_distinct, _dedup, 0))
     table_collect = [
         {"reconciliation_status": "MATCHED", "n": 3},
         {"reconciliation_status": "EXCEPTION_FEE_MISMATCH", "n": 1},
