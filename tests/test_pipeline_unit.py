@@ -62,7 +62,7 @@ def test_run_daily_publishes_only_after_the_gates_pass(tmp_path, monkeypatch):
         patch("src.common.config.get_spark_session", return_value=spark),
         patch(
             "src.processing.residual.apply_residual",
-            return_value={"demoted": 2},
+            return_value=0,
         ),
         patch(
             "src.processing.reconcile.run_reconciliation",
@@ -71,7 +71,8 @@ def test_run_daily_publishes_only_after_the_gates_pass(tmp_path, monkeypatch):
         patch("src.processing.reconcile.maintain_tables", return_value={"m": {}}),
     ):
         out = run_daily(date_str="2025-04-02")
-    assert out["residual"] == {"demoted": 2}
+    # apply_residual returns a row count, not a report dict.
+    assert out["residual"] == 0
     stmts = [c[0][0] for c in spark.sql.call_args_list]
     assert any("DROP BRANCH IF EXISTS `ingest/2025-04-02`" in s for s in stmts)
     assert any("CREATE BRANCH IF NOT EXISTS `ingest/2025-04-02`" in s for s in stmts)

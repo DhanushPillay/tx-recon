@@ -59,7 +59,9 @@ def _run_residual(counts: dict) -> bool:
         logger.info("residual pass skipped: not in WIRED_LEGS")
         return True
     try:
-        counts["residual"] = apply_residual(get_spark_session("residual"), settings.webhook_table)
+        demoted = apply_residual(get_spark_session("residual"), settings.webhook_table)
+        counts["residual"] = demoted
+        _fold_residual(counts, demoted)
     except Exception as exc:
         msg = f"Residual pass failed: {exc}"
         if settings.strict_slo:
@@ -94,6 +96,30 @@ def _slo_ok(counts: dict) -> bool:
         return float(rate) >= slo
     except (TypeError, ValueError):
         return False
+
+
+def _fold_residual(counts: dict, demoted: int) -> None:
+    """Fold the residual pass's demotions back into the batch counts.
+
+    run_reconciliation counts statuses and computes batch_match_rate before the
+    residual runs, and apply_residual then moves MATCHED rows to
+    EXCEPTION_FEE_MISMATCH. Nothing recomputed the counts afterwards, so the
+    publish gate judged the rate the batch had before a second opinion acted on
+    it.
+
+    The status *sum* is unchanged by a demotion, which is why check_batch_drift
+    kept passing and nobody noticed the rate going stale. Only the rate and the
+    two buckets move here.
+    """
+    from src.processing.reconcile import batch_match_rate
+
+    if demoted <= 0:
+        return
+    counts["batch_MATCHED"] = max(0, counts.get("batch_MATCHED", 0) - demoted)
+    counts["batch_EXCEPTION_FEE_MISMATCH"] = counts.get("batch_EXCEPTION_FEE_MISMATCH", 0) + demoted
+    _rate = batch_match_rate(counts)
+    if _rate is not None:
+        counts["batch_match_rate"] = _rate
 
 
 def run_daily(date_str: str | None = None) -> dict:

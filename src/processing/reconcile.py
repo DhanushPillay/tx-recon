@@ -261,6 +261,22 @@ def _load_mart_sql(project_root: str, source_table: str, mart_table: str) -> tup
     )
 
 
+def batch_match_rate(counts: dict) -> float | None:
+    """MATCHED over the rows a settlement could legitimately account for.
+
+    Shared with pipeline._fold_residual so the publish gate, the SLO breach
+    warning and the metrics record cannot each derive a rate their own way.
+    Returns None when no settlement row survived evaluation, since there is
+    nothing to be a percentage of.
+    """
+    _bm = counts.get("batch_MATCHED", 0)
+    _bt = max(
+        0,
+        int(counts.get("settlement_rows_evaluated", 0)) - int(counts.get("missing_within_lag", 0)),
+    )
+    return _bm / _bt if _bt else None
+
+
 def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
     if not date_str:
         raise ValueError("run_reconciliation requires date_str YYYY-MM-DD (no date-less runs)")
@@ -548,10 +564,8 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
             bank_df_valid.unpersist()
     logger.info(f"Reconciliation batch complete: {counts}")
 
-    _bm = counts.get("batch_MATCHED", 0)
-    _bt = max(0, settlement_rows_evaluated - counts.get("missing_within_lag", 0))
-    if _bt:
-        _rate = _bm / _bt
+    _rate = batch_match_rate(counts)
+    if _rate is not None:
         # Full precision on purpose. The publish gate in pipeline._slo_ok reads
         # this same key, and a rate of 0.94997 rounded to 0.95 passed that gate
         # while the comparison here below correctly called it a breach.
