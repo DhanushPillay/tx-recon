@@ -18,6 +18,11 @@ so the numbers always match the tables. Card SQL is synced from
 `METABASE_URL`/`METABASE_USER`/`METABASE_PASSWORD`/`METABASE_DB_ID` in `.env`;
 re-run it after editing any question file).
 
+Cards name the Trino catalog explicitly (`nessie.db.webhooks`) because that is what
+`trino/catalog/nessie.properties` is called. `TABLE_PREFIX=glue` moves the tables the
+pipeline writes and nothing else, so a Glue deployment has to rename the Trino catalog
+as well; a contract test fails if the questions and the catalog files disagree.
+
 ## KPI row
 
 ![KPI row](img/dash-kpi-row.png)
