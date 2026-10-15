@@ -96,10 +96,11 @@ Full architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - Bucket partitioning `PARTITIONED BY bucket(16, transaction_id)` so MERGE join keys land in the same bucket on both sides. This colocates writes and reduces the shuffle; it does not prune the target scan, because a `MERGE ... ON a = b` equi-condition is a join predicate rather than a scan filter (`src/ingestion/ingest_webhooks.py: ensure_webhook_table`)
 - Per-micro-batch `dropDuplicates` plus an idempotent `MERGE WHEN NOT MATCHED` for cross-batch idempotency, with schema-id drift detection that fails closed and a supervisor loop that restarts a dead stream with backoff
 - Append-only corrections journal with maker-checker (`src/processing/corrections.py`, `scripts/replay_dlq.py --reason/--approved-by`)
-- Strict fail-closed defaults (`strict_slo`, `REQUIRE_KAFKA_SASL`, `REQUIRE_SCHEMA_REGISTRY`, `ALLOW_DESTRUCTIVE_SEED`) — real-data seeding is opt-in
+- Fail-closed where it is cheap: `strict_slo` and `ALLOW_DESTRUCTIVE_SEED` default to on/false respectively. Off by default and off by design: `REQUIRE_KAFKA_SASL` and `REQUIRE_SCHEMA_REGISTRY` both default `false`, because a local Redpanda has no SASL to require — see [SECURITY.md](SECURITY.md)
 - Differential test proving `FeeEngine` and its Spark SQL mirror agree over the full instrument × merchant × date × amount grid, on generated rate cards, in the default test pass (`tests/processing/test_fee_sql_parity.py`)
 - Downgrade-only residual scorer with a property test that false positives never increase (`docs/PROOF.md`)
-- Real-data accuracy gate: 10k sample joined through `FeeEngine.check_match`, match_rate >= 85% (`tests/performance/recon_accuracy.py`, measured 94.6%)
+- Hand-labelled reconciliation fixture: 41 cases with a written reason for each expected status, checked against the MERGE's own arms (`tests/fixtures/recon_cases.yaml`), plus a second tier that runs the real `MERGE INTO` end to end (`tests/processing/test_recon_cases_integration.py`)
+- Sample-mix gate on the 10k real sample: confirms the checked-in fixture still holds 8,813 / 500 / 492 and a 94.63% mix match rate. It measures the mix, not fee-engine accuracy — the correctness gate is the labelled fixture above (`tests/performance/recon_accuracy.py`)
 
 ## Dashboard
 
