@@ -128,6 +128,7 @@ def run_daily(date_str: str | None = None) -> dict:
     from src.common.config import get_spark_session
     from src.common.settings import get_settings
     from src.processing.reconcile import (
+        drop_batch_temp_views,
         leg_enabled,
         maintain_tables,
         refresh_mart,
@@ -193,6 +194,9 @@ def run_daily(date_str: str | None = None) -> dict:
                 if published:
                     raise
             use_branch(spark, None)
+        # Last. The residual pass above reads bank_settlements, so the batch
+        # owns that view until every gate has run -- including a gate that raised.
+        drop_batch_temp_views(spark)
     logger.info(f"Pipeline done: {counts}")
     try:
         metrics_path = os.path.join(

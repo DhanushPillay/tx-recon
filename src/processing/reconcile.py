@@ -392,6 +392,32 @@ def _mart_table(source_table: str) -> str:
     return f"{source_table.rsplit('.', 1)[0]}.fact_reconciliation"
 
 
+BATCH_TEMP_VIEWS = ("bank_settlements", "bank_statements")
+
+
+def drop_batch_temp_views(spark) -> None:
+    """Release what a batch parked in the session.
+
+    ``run_reconciliation`` leaves the folded settlement frame cached behind
+    ``bank_settlements`` so ``apply_residual`` reads the same rows the MERGE
+    did, and the bank leg leaves ``bank_statements`` behind it. Neither is
+    dropped anywhere, so they outlive the batch and the next run's
+    ``createOrReplaceTempView`` shadows them rather than replacing them.
+
+    Safe to call when nothing is registered: Spark drops a view that is not
+    there without complaint.
+    """
+    for name in BATCH_TEMP_VIEWS:
+        try:
+            spark.catalog.dropTempView(name)
+        except Exception:
+            logger.debug("no temp view to drop: %s", name, exc_info=True)
+    try:
+        spark.catalog.clearCache()
+    except Exception:
+        logger.debug("cache clear failed", exc_info=True)
+
+
 def refresh_mart(spark, settings) -> None:
     """Rebuild fact_reconciliation from whatever the webhook table holds now.
 
@@ -793,8 +819,15 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
     finally:
         import contextlib
 
-        with contextlib.suppress(Exception):
-            bank_df_dedup.unpersist()
+        # bank_df_valid goes: nothing reads it after this point.
+        #
+        # bank_df_dedup deliberately stays cached. bank_settlements is a lazy
+        # view over it, and apply_residual() reads that view after this function
+        # returns. Dropping the cache now would make Spark re-read the CSV, so
+        # if the settlement file moved between the MERGE and the residual pass
+        # the second opinion would be scored against different numbers than the
+        # MERGE compared -- and it demotes rows on that basis. The caller drops
+        # it with drop_batch_temp_views() once the batch is finished.
         with contextlib.suppress(Exception):
             bank_df_valid.unpersist()
     if counts["settlement_currency_missing_rows"]:
