@@ -10,6 +10,8 @@ demotion moves a row between two batch_* buckets, so the sum the drift check
 tiles against is unchanged. The check passed while the rate went stale.
 """
 
+import os
+
 import pytest
 
 from src.pipeline import _fold_residual, _slo_ok
@@ -187,6 +189,63 @@ def test_batch_match_rate(matched, evaluated, missing_lag, expected):
 
 def test_batch_match_rate_on_an_empty_dict_is_none():
     assert batch_match_rate({}) is None
+
+
+# --- the cleanup must not hide the failure --------------------------------
+
+
+def test_a_failure_with_the_wap_leg_off_surfaces_as_itself(tmp_path):
+    """The temp-view cleanup used to raise UnboundLocalError over the real error.
+
+    `spark` was only bound when the WAP leg opened a session. With WAP off --
+    the default for a local run -- the `finally` reached `drop_batch_temp_views(spark)`
+    with nothing bound, raised UnboundLocalError, and that replaced whatever the
+    batch had actually raised. An operator reading the traceback saw a cleanup
+    bug instead of a failed merge.
+    """
+    from unittest.mock import MagicMock, patch
+
+    from src.pipeline import run_daily
+
+    boom = RuntimeError("the MERGE failed")
+    with (
+        patch(
+            "src.validation.validate_settlement.validate_latest_settlement",
+            return_value=str(tmp_path / "curated_settlement_20250402.csv"),
+        ),
+        patch("src.common.config.get_spark_session", return_value=MagicMock()),
+        patch("src.processing.reconcile.run_reconciliation", side_effect=boom),
+        patch.dict(os.environ, {"WIRED_LEGS": ""}),
+        pytest.raises(RuntimeError) as exc,
+    ):
+        run_daily(date_str="2025-04-02")
+
+    assert exc.value is boom, (
+        f"the batch's own failure must reach the caller, not a cleanup error: {exc.value!r}"
+    )
+    assert not isinstance(exc.value, UnboundLocalError)
+
+
+def test_the_cleanup_runs_when_it_can(tmp_path):
+    """...and it is not skipped on the path that made it necessary."""
+    from unittest.mock import MagicMock, patch
+
+    from src.pipeline import run_daily
+
+    counts = _counts(matched=98, mismatched=2, evaluated=100)
+    with (
+        patch(
+            "src.validation.validate_settlement.validate_latest_settlement",
+            return_value=str(tmp_path / "curated_settlement_20250402.csv"),
+        ),
+        patch("src.common.config.get_spark_session", return_value=MagicMock()),
+        patch("src.processing.reconcile.run_reconciliation", return_value=dict(counts)),
+        patch("src.processing.residual.apply_residual", return_value=0),
+        patch("src.processing.reconcile.maintain_tables", return_value={}),
+        patch("src.processing.reconcile.drop_batch_temp_views") as drop,
+    ):
+        run_daily(date_str="2025-04-02")
+    assert drop.called, "the batch temp views outlive the batch otherwise"
 
 
 # --- the wiring, through run_daily --------------------------------------

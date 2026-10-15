@@ -153,6 +153,7 @@ def run_daily(date_str: str | None = None) -> dict:
 
     wap_on = leg_enabled("wap", settings)
     branch = branch_name(batch_date)
+    spark = None
     if wap_on:
         spark = get_spark_session("pipeline")
         enable_wap(spark, settings.webhook_table)
@@ -196,7 +197,11 @@ def run_daily(date_str: str | None = None) -> dict:
             use_branch(spark, None)
         # Last. The residual pass above reads bank_settlements, so the batch
         # owns that view until every gate has run -- including a gate that raised.
-        drop_batch_temp_views(spark)
+        # spark is None when the WAP leg is off and no session was ever opened;
+        # without that guard this cleanup raises UnboundLocalError and hides
+        # whatever actually went wrong.
+        if spark is not None:
+            drop_batch_temp_views(spark)
     logger.info(f"Pipeline done: {counts}")
     try:
         metrics_path = os.path.join(
