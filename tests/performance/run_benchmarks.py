@@ -87,10 +87,21 @@ def print_summary(results):
     print(f"{'=' * 60}")
 
 
-def run_real(results, hw, suite="all", partitions=16):
+def run_real(results, hw, suite="all", partitions=16, failures=None):
+    """Run the requested suites in-process and return `results`.
+
+    A suite that raises is recorded in `results` as `{"error": ...}` and appended
+    to `failures`, rather than swallowed: this used to catch everything and then
+    return normally, so `--suite all` exited 0 with all four suites broken and a
+    results file full of error blocks. The caller owns the list it passes in and
+    decides what a failure means; nothing is claimed as measured that did not run.
+    """
     import pandas_validation_benchmark as pvb
     from kafka_producer_benchmark import load_replay_events
     from kafka_producer_benchmark import run as run_kafka
+
+    if failures is None:
+        failures = []
 
     data_dir = os.path.normpath(
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../data")
@@ -115,6 +126,7 @@ def run_real(results, hw, suite="all", partitions=16):
             )
         except Exception as e:  # noqa: BLE001
             results["kafka"] = {"error": str(e)}
+            failures.append(("kafka", e))
 
     if suite in ("all", "pandera"):
         print("\n=== Pandera validation (real file) ===")
@@ -126,6 +138,7 @@ def run_real(results, hw, suite="all", partitions=16):
             results["pandera"] = out
         except Exception as e:  # noqa: BLE001
             results["pandera"] = {"error": str(e)}
+            failures.append(("pandera", e))
 
     if suite in ("all", "iceberg"):
         print("\n=== Iceberg MERGE (real) ===")
@@ -135,6 +148,7 @@ def run_real(results, hw, suite="all", partitions=16):
             results["iceberg"] = run_benchmark(None, "nessie", "mor", False, None)
         except Exception as e:  # noqa: BLE001
             results["iceberg"] = {"error": str(e)}
+            failures.append(("iceberg", e))
 
     if suite in ("all", "pyspark"):
         print("\n=== PySpark ingestion (real) ===")
@@ -144,12 +158,19 @@ def run_real(results, hw, suite="all", partitions=16):
             results["pyspark"] = pib.run_benchmark(partitions=partitions)
         except Exception as e:  # noqa: BLE001
             results["pyspark"] = {"error": str(e)}
+            failures.append(("pyspark", e))
 
     output_path = os.path.join(SCRIPT_DIR, "results_real.json")
     with open(output_path, "w") as f:
         json.dump(results, f, indent=2, default=str)
     print(f"\nResults written to {output_path}")
-    print_summary(results)
+
+    if failures:
+        print(f"\n{'=' * 60}\n  {len(failures)} suite(s) did not run\n{'=' * 60}")
+        for name, exc in failures:
+            print(f"  {name}: {exc}")
+        print(f"\n{output_path} records the failures rather than omitting them.")
+
     return results
 
 
@@ -180,8 +201,12 @@ def main():
         pass
     results = {"timestamp": datetime.now(UTC).isoformat(), "hardware": hw}
 
-    if args.suite in ("all", "kafka", "pyspark", "iceberg", "pandera"):
-        return run_real(results, hw, args.suite, args.partitions)
+    failures: list[tuple[str, Exception]] = []
+    run_real(results, hw, args.suite, args.partitions, failures)
+    if failures:
+        # run_real already wrote the partial file and named what failed. Non-zero
+        # so a caller cannot read exit 0 as a completed run.
+        sys.exit(1)
 
     output_path = os.path.join(SCRIPT_DIR, "results_real.json")
     with open(output_path, "w") as f:

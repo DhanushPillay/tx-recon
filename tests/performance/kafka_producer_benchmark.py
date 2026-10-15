@@ -241,6 +241,15 @@ def main():
         print(f"{'p50 (ms)':<30} {lat_k.get('p50', 'error'):<15} {lat_r.get('p50', 'error'):<15}")
         print(f"{'p99 (ms)':<30} {lat_k.get('p99', 'error'):<15} {lat_r.get('p99', 'error'):<15}")
 
+    # This used to return and print without writing anything, so a standalone run
+    # measured a million messages and left no artifact for anyone to cite. One
+    # artifact per broker, so a comparison run does not overwrite itself.
+    from artifacts import write_result
+
+    for label, payload in results.items():
+        path = write_result(f"results_kafka_{label}", {"kafka": payload})
+        print(f"\nResults written to {path}")
+
     return results
 
 

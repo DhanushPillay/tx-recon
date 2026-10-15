@@ -202,8 +202,30 @@ def run_benchmark(partitions=16):
 def main():
     parser = argparse.ArgumentParser(description="PySpark Ingestion Benchmark")
     parser.add_argument("--partitions", type=int, default=16)
+    parser.add_argument(
+        "--out",
+        default="results_pyspark_real.json",
+        help="artifact stem; the result used to be measured and thrown away",
+    )
     args = parser.parse_args()
-    run_benchmark(args.partitions)
+    result = run_benchmark(args.partitions)
+
+    from artifacts import write_result
+
+    path = write_result(args.out, {"pyspark": result, "config": {"partitions": args.partitions}})
+    print(f"\nResults written to {path}")
+    print(
+        f"sustained {result['sustained_throughput_rows_sec']} rows/sec over "
+        f"{result['num_batches']} batch(es), avg batch "
+        f"{result['avg_batch_duration_ms']}ms"
+    )
+    if result["sustained_throughput_rows_sec"] == 0 and result["avg_processed_rows_per_sec"]:
+        print(
+            "\nNote: sustained throughput is 0 because the topic backlog drained inside the\n"
+            "warm-up window, so the fixed measurement window saw no new rows. The stream\n"
+            "did run -- avg_processed_rows_per_sec above is the rate it processed at.\n"
+            "Re-run with a fuller topic, or read avg_processed_rows_per_sec as the figure."
+        )
 
 
 if __name__ == "__main__":

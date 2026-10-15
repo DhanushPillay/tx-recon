@@ -75,6 +75,8 @@ def run_single(rows, output_dir, warmup_runs=2, iters=7, input_csv=None, dedup=F
         REAL_SETTLEMENT_CSV if os.path.exists(REAL_SETTLEMENT_CSV) else SAMPLE_SETTLEMENT_CSV
     )
 
+    # Warm the read below. The validators are warmed after their schema and model
+    # exist; see below.
     for _ in range(warmup_runs):
         pd.read_csv(latest)
 
@@ -104,6 +106,24 @@ def run_single(rows, output_dir, warmup_runs=2, iters=7, input_csv=None, dedup=F
     )
 
     pydantic_model = build_pydantic_model()
+
+    # Warm the validators, not just the file read. This used to loop on
+    # pd.read_csv and nothing else, so the first of the seven timed iterations
+    # was the first call into every validator's code path and its cost landed in
+    # the reported mean. The read is still warmed, because the first parse is
+    # also a first call. Any warm-up that raises is reported and skipped: it is
+    # not allowed to decide the run.
+    for _ in range(warmup_runs):
+        for _name, _fn in (
+            ("pandera", lambda f: bench_pandera(f, settlement_schema)),
+            ("manual_pandas", bench_manual),
+            ("pydantic", lambda f: bench_pydantic(f, pydantic_model)),
+            ("polars", bench_polars),
+        ):
+            try:
+                _fn(df if _name != "polars" else pf)
+            except Exception as exc:  # noqa: BLE001
+                print(f"  warm-up skipped for {_name}: {exc}")
 
     methods = {}
 
@@ -164,21 +184,23 @@ def main():
     parser.add_argument(
         "--dedup",
         action="store_true",
-        help="Drop duplicate tx ids pre-timing (real files carry dup rows; bench schema needs unique)",
+        default=True,
+        help="Drop duplicate tx ids pre-timing. On by default: the bench schema declares "
+        "transaction_id unique and the manual-pandas path enforces it, so without this the "
+        "standalone run against the real file raises SchemaError. Pass --no-dedup to keep "
+        "the duplicates and skip the enforcing path.",
     )
+    parser.add_argument("--no-dedup", dest="dedup", action="store_false")
     args = parser.parse_args()
 
     hw = get_hardware_info()
     print(f"Hardware: {hw['platform']}, {hw['cpu_count']} cores, Python {hw['python_version']}")
 
-    output_dir = "benchmarks/data"
-    os.makedirs(output_dir, exist_ok=True)
-
     target = args.input or (
         REAL_SETTLEMENT_CSV if os.path.exists(REAL_SETTLEMENT_CSV) else SAMPLE_SETTLEMENT_CSV
     )
     print(f"\n--- Benchmark: real input {target} ---")
-    results_list = [run_single(0, output_dir, input_csv=target, dedup=args.dedup)]
+    results_list = [run_single(0, os.path.dirname(__file__), input_csv=target, dedup=args.dedup)]
     result = results_list[0]
     for method, m in result["methods"].items():
         print(f"  {method:<20} {m['mean_ms']:>10.2f}ms  ({m['rows_per_sec']:>12,} rows/sec)")
