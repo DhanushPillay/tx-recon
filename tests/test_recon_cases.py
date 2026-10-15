@@ -578,19 +578,15 @@ def test_the_counts_the_gate_reports_are_not_the_same_as_this_table(matrix):
 # --------------------------------------------------------------------------
 
 
-def test_bank_evidence_labels(spark):
-    """The bank-evidence half of the fixture, through the real bank-leg SQL.
+def _bank_views(spark, fx):
+    """Both sides of the bank leg as temp views, built from the fixture's rows.
 
-    These drive the real ``missing`` subquery against temp views rather than a
-    parsed MT940 file, so the signed amounts in the file are the inputs.
-    Parsing a .sta is covered by tests/adapters/test_bank_statement.py.
+    ``id`` rides along on the statements view so a label can name the line it judges.
+    It is not a column the MT940 adapter produces.
     """
     from pyspark.sql.types import LongType, StringType, StructField, StructType
 
-    fx = _fx()
     bank = fx["bank"]
-    lag = int(bank["lag_days"])
-
     spark.createDataFrame(
         [
             (
@@ -617,11 +613,12 @@ def test_bank_evidence_labels(spark):
 
     spark.createDataFrame(
         [
-            (b["value_date"], int(b["amount_paise"]), b["link_tx"], b["narrative"])
+            (b["id"], b["value_date"], int(b["amount_paise"]), b["link_tx"], b["narrative"])
             for b in bank["statements"]
         ],
         StructType(
             [
+                StructField("id", StringType()),
                 StructField("value_date", StringType()),
                 StructField("amount_paise", LongType()),
                 StructField("link_tx", StringType()),
@@ -630,14 +627,20 @@ def test_bank_evidence_labels(spark):
         ),
     ).createOrReplaceTempView("bank_statements")
 
-    missing = spark.sql(
-        "SELECT s.transaction_id AS tid FROM bank_settlements s "
-        "WHERE NOT EXISTS (SELECT 1 FROM bank_statements b WHERE "
-        "b.link_tx = s.transaction_id "
-        "OR (b.link_tx IS NULL "
-        f"AND ABS(b.amount_paise - s.settled_amount_paise) <= s.tolerance_paise "
-        f"AND ABS(DATEDIFF(b.value_date, s.settlement_date)) <= {lag}))"
-    ).collect()
+
+def test_bank_evidence_labels(spark):
+    """The bank-evidence half of the fixture, through the real bank-leg SQL.
+
+    These drive the real ``missing`` subquery against temp views rather than a
+    parsed MT940 file, so the signed amounts in the file are the inputs.
+    Parsing a .sta is covered by tests/adapters/test_bank_statement.py.
+    """
+    fx = _fx()
+    bank = fx["bank"]
+    lag = int(bank["lag_days"])
+    _bank_views(spark, fx)
+
+    missing = spark.sql(rc._bank_missing_where("s.tolerance_paise", lag)).collect()
     missing_ids = {r["tid"] for r in missing}
 
     got = {
@@ -646,4 +649,37 @@ def test_bank_evidence_labels(spark):
     }
     assert got == bank["expectations"], (
         f"the bank predicate disagrees with the fixture's hand-written reasons: {bank['why']}"
+    )
+
+
+def test_bank_orphan_labels(spark):
+    """The orphan direction, which is the same relation read backwards.
+
+    A statement is an orphan when no settlement answers for it, and only a line with
+    no ``link_tx`` may be answered by a settlement that merely shares its amount and
+    date. ``linked_elsewhere`` is what separates the two readings: it names a
+    transaction with no settlement row at all, so the fuzzy arm has to stay shut and
+    the line has to come out as an orphan.
+    """
+    fx = _fx()
+    bank = fx["bank"]
+    lag = int(bank["lag_days"])
+    _bank_views(spark, fx)
+
+    orphans = {
+        r["id"]
+        for r in spark.sql(
+            f"SELECT b.id {rc._bank_orphan_where('s.tolerance_paise', lag)}"
+        ).collect()
+    }
+    got = {
+        sid: ("ORPHAN" if sid in orphans else "NOT_ORPHAN") for sid in bank["orphan_expectations"]
+    }
+    assert set(bank["orphan_expectations"]) == {b["id"] for b in bank["statements"]}, (
+        "every statement needs a hand-written orphan label, or the fixture grows cases "
+        "nobody judged"
+    )
+    assert got == bank["orphan_expectations"], (
+        "the orphan predicate disagrees with the fixture's hand-written reasons: "
+        f"{bank['orphan_why']}"
     )

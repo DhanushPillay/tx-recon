@@ -304,11 +304,16 @@ bank:
     - {tx: bank_unlinked_debit, settled_amount_paise: 70000, settlement_date: "2025-06-11", instrument_type: CREDIT_CARD, merchant_id: null, currency: INR}
   statements:
     # amount_paise is signed the way parse_mt940 returns it: credits positive,
-    # debits negative.
-    - {value_date: "2025-06-11", amount_paise:  97640, link_tx: null,                narrative: "SETTLEMENT OF RECEIVABLES"}
-    - {value_date: "2025-06-14", amount_paise:  96460, link_tx: null,                narrative: "SETTLEMENT OF RECEIVABLES"}
-    - {value_date: "2025-06-11", amount_paise: -50000, link_tx: bank_chargeback,    narrative: "CHARGEBACK REFUND"}
-    - {value_date: "2025-06-11", amount_paise: -70000, link_tx: null,                narrative: "CHARGEBACK REVERSAL"}
+    # debits negative. `id` is a handle for the labels below, not a column of the
+    # parsed statement.
+    - {id: same_day_credit,  value_date: "2025-06-11", amount_paise:  97640, link_tx: null,                   narrative: "SETTLEMENT OF RECEIVABLES"}
+    - {id: late_credit,      value_date: "2025-06-14", amount_paise:  96460, link_tx: null,                   narrative: "SETTLEMENT OF RECEIVABLES"}
+    - {id: chargeback,       value_date: "2025-06-11", amount_paise: -50000, link_tx: bank_chargeback,        narrative: "CHARGEBACK REFUND"}
+    - {id: unlinked_debit,   value_date: "2025-06-11", amount_paise: -70000, link_tx: null,                   narrative: "CHARGEBACK REVERSAL"}
+    # The last line is what separates the two readings of the fuzzy arm: it names a
+    # transaction with no settlement at all, and its amount and date alone would
+    # otherwise answer for bank_same_day.
+    - {id: linked_elsewhere, value_date: "2025-06-11", amount_paise:  97640, link_tx: tx_without_settlement,  narrative: "SETTLEMENT OF RECEIVABLES"}
   expectations:
     bank_same_day: MATCHED
     bank_late_credit: EXCEPTION_MISSING_BANK_STATEMENT
@@ -336,3 +341,32 @@ bank:
       the negative of the settled 70000, so the amount comparison fails by
       140000 paise and nothing corroborates this transaction. Had the sign been
       lost it would have read as a matching +70000 credit on the right date.
+  # The same relation read the other way: a statement is an orphan when no
+  # settlement answers for it. Labelled by hand, before running anything.
+  orphan_expectations:
+    same_day_credit: NOT_ORPHAN
+    late_credit: ORPHAN
+    chargeback: NOT_ORPHAN
+    unlinked_debit: ORPHAN
+    linked_elsewhere: ORPHAN
+  orphan_why:
+    same_day_credit: >-
+      NOT_ORPHAN. Unlinked, 97640 on the settlement date: the fuzzy arm is open to
+      it and the settlement for bank_same_day answers.
+    late_credit: >-
+      ORPHAN. The only 96460 settlement is dated 2025-06-11 and this credit lands on
+      2025-06-14, three days out against a two-day window. Arriving the right size
+      but too late is not evidence.
+    chargeback: >-
+      NOT_ORPHAN. link_tx = bank_chargeback names the transaction, so the exact arm
+      answers and the sign of the amount never enters the comparison.
+    unlinked_debit: >-
+      ORPHAN. Unlinked, and -70000 matches no settlement magnitude: the debit sign
+      means it can only ever corroborate a settlement the bank took back.
+    linked_elsewhere: >-
+      ORPHAN, and the case the old predicate got wrong. The line carries
+      link_tx = tx_without_settlement, a transaction with no settlement row at all,
+      and 97640 on 2025-06-11 sits inside tolerance and lag of bank_same_day's
+      settlement. Without the link_tx guard the fuzzy arm absorbed this line as
+      evidence about bank_same_day, so the orphan count under-reported exactly the
+      rows it exists to surface.

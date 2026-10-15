@@ -965,12 +965,37 @@ def merge_decision_sql(
     """
 
 
+def _bank_missing_where(tol_sql: str, lag_days: int) -> str:
+    """Settlement rows no bank statement answers for.
+
+    The fuzzy arm is open only to a statement with no ``link_tx``: a line that
+    already names a transaction is evidence about that transaction, not about
+    whichever settlement happens to share its amount and date.
+    """
+    return (
+        "SELECT s.transaction_id AS tid FROM bank_settlements s "
+        "WHERE NOT EXISTS (SELECT 1 FROM bank_statements b WHERE "
+        "b.link_tx = s.transaction_id "
+        "OR (b.link_tx IS NULL "
+        f"AND ABS(b.amount_paise - s.settled_amount_paise) <= {tol_sql} "
+        f"AND ABS(DATEDIFF(b.value_date, s.settlement_date)) <= {int(lag_days)}))"
+    )
+
+
 def _bank_orphan_where(tol_sql: str, lag_days: int) -> str:
+    """Statement rows no settlement answers for: the same relation, read backwards.
+
+    The guard on the fuzzy arm belongs on both sides. This one used to lack it, so a
+    line whose link pointed at a transaction with no settlement at all was absorbed
+    by an unrelated settlement that shared its amount and date, and the orphan count
+    under-reported the rows it exists to surface.
+    """
     return (
         "FROM bank_statements b "
         "WHERE NOT EXISTS (SELECT 1 FROM bank_settlements s "
         "WHERE s.transaction_id = b.link_tx "
-        f"OR (ABS(b.amount_paise - s.settled_amount_paise) <= {tol_sql} "
+        "OR (b.link_tx IS NULL "
+        f"AND ABS(b.amount_paise - s.settled_amount_paise) <= {tol_sql} "
         f"AND ABS(DATEDIFF(b.value_date, s.settlement_date)) <= {int(lag_days)}))"
     )
 
@@ -993,14 +1018,7 @@ def build_bank_leg_sql(
             fee_engine, "s.instrument_type", "s.merchant_id", "s.settlement_date"
         )
     )
-    missing = (
-        "SELECT s.transaction_id AS tid FROM bank_settlements s "
-        "WHERE NOT EXISTS (SELECT 1 FROM bank_statements b WHERE "
-        "b.link_tx = s.transaction_id "
-        "OR (b.link_tx IS NULL "
-        f"AND ABS(b.amount_paise - s.settled_amount_paise) <= {tol} "
-        f"AND ABS(DATEDIFF(b.value_date, s.settlement_date)) <= {int(lag_days)}))"
-    )
+    missing = _bank_missing_where(tol, lag_days)
     merge_sql = (
         f"MERGE INTO {table} t USING ({missing}) m "
         "ON t.transaction_id = m.tid "
