@@ -5,7 +5,9 @@ Iceberg `webhooks` table. Full screenshot:
 
 ![Full dashboard](dashboard.png)
 
-> Dashboard data is real PG data: reconciled through the pipeline below.
+> Dashboard data comes from the real-data run: real amounts, dates and merchants
+> on the gateway leg, settlement nets from the independent loader-side schedule
+> (`docs/REAL_DATA.md`). Rows are reconciled through the pipeline below.
 > The 2,003 oldest rows predate the `instrument_type` column and show NULL there.
 
 Open it: `docker compose up -d` → run a batch (`python -m src.pipeline --date 2026-09-04`)

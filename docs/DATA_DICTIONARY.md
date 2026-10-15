@@ -34,7 +34,7 @@ Malformed or invalid webhooks (corrupt Avro decode, `amount_paise <= 0`, or `tra
 
 ## Settlement CSV (`data/settlement_YYYYMMDD.csv`)
 
-Downloaded from a real PG (thiru full files under `data/`, 10k sample checked in at `data/samples/`). Validated by Pandera (`src/validation/settlement_schema.py`) before reaching Spark. Every row is scanned for PAN (`src/validation/pan_guard.py`, issuer-prefixed Luhn) and the file's `sha256` is recorded in `data/.processed_files.json` (`src/validation/file_registry.py`) only once the batch validates and curates cleanly — same bytes under a different name warn as redelivery, and a quarantined batch records nothing.
+**Derived here, not downloaded.** The gateway leg is the public `thiru1711` dataset, but no public source pairs gateway rows with settlement rows, so the nets come from an independent loader-side schedule (`src/adapters/real_data.py`, `build_real_files`, calibrated to `fee_rates.yaml` v1 — see `docs/REAL_DATA.md`). Full files land under `data/`, the 10k sample is checked in at `data/samples/`. Validated by Pandera (`src/validation/settlement_schema.py`) before reaching Spark. Every row is scanned for PAN (`src/validation/pan_guard.py`, issuer-prefixed Luhn) and the file's `sha256` is recorded in `data/.processed_files.json` (`src/validation/file_registry.py`) only once the batch validates and curates cleanly — same bytes under a different name warn as redelivery, and a quarantined batch records nothing.
 
 ### Minimal 5-column format (Generic adapter)
 
