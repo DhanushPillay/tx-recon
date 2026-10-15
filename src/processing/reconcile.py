@@ -39,6 +39,40 @@ def _sql_str(value: str) -> str:
     return str(value).replace("\\", "\\\\").replace("'", "''")
 
 
+def webhook_timestamp_sql(col: str = "timestamp_utc") -> str:
+    """The one place `timestamp_utc` is parsed.
+
+    It is an unconstrained Avro string, and four different expressions were
+    reading it: a bare `to_date` in the late-SLA sweep, the same bare `to_date`
+    again in the lag count, Spark's `to_timestamp` in ingestion, and `TRY_CAST`
+    in the mart DDL. They do not accept the same shapes, and every shape one of
+    them rejects becomes NULL.
+
+    That matters more than it looks. A NULL timestamp is never aged to
+    `EXCEPTION_LATE_UNRESOLVED` and never counted in `missing_within_lag`, which
+    is the denominator of the match rate, so a batch of badly-formatted
+    timestamps reads as a *better* batch.
+
+    No explicit pattern, deliberately. Measured against Spark 3.5 on the shapes
+    gateways send, ``to_timestamp`` without a pattern accepts 14 of 17
+    (including ``.1234``, ``.123456``, ``2026-06-10 14:30:05`` and a bare date)
+    while ``to_timestamp`` *with* ``yyyy-MM-dd'T'HH:mm:ss[.SSS][XXX]`` accepts
+    9 -- an explicit pattern is stricter, so pinning one would have started
+    rejecting rows that parse today. It could not be pinned in SQL text anyway:
+    the pattern contains a literal ``T`` inside quotes, and Spark's pattern
+    parser rejects ``''`` as an escaped quote, so the statement does not parse.
+
+    Anything genuinely unparseable is still NULL, and ingestion counts those
+    rows rather than swallowing them.
+    """
+    return f"to_timestamp({col})"
+
+
+def webhook_date_sql(col: str = "timestamp_utc") -> str:
+    """The date part of :func:`webhook_timestamp_sql`, through the same parse."""
+    return f"to_date({webhook_timestamp_sql(col)})"
+
+
 def known_fee_merchants(fee_engine) -> set[str]:
     """Merchant ids that have a negotiated rate on at least one rate card."""
     out: set[str] = set()
@@ -396,14 +430,16 @@ def _load_mart_sql(project_root: str, source_table: str, mart_table: str) -> tup
             body = f.read()
         version = os.path.basename(path).split("__")[0]
         return (
-            body.replace("__SOURCE_TABLE__", source_table).replace("__MART_TABLE__", mart_table),
+            body.replace("__SOURCE_TABLE__", source_table)
+            .replace("__MART_TABLE__", mart_table)
+            .replace("__TIMESTAMP_UTC__", webhook_timestamp_sql("timestamp_utc")),
             version,
         )
     return (
         f"CREATE OR REPLACE TABLE {mart_table} USING iceberg AS "
         "SELECT transaction_id, amount_paise, merchant_id, instrument_type, gateway_status, "
         "reconciliation_status AS status, bank_ref_id, "
-        "TRY_CAST(timestamp_utc AS TIMESTAMP) AS transacted_at, "
+        f"{webhook_timestamp_sql('timestamp_utc')} AS transacted_at, "
         "CASE WHEN reconciliation_status = 'MATCHED' THEN amount_paise "
         f"ELSE NULL END AS matched_amount_paise FROM {source_table}",
         "inline",
@@ -480,9 +516,14 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
     )
     from src.adapters.settlement import CANONICAL_COLS
 
-    assert [f.name for f in bank_schema.fields] == CANONICAL_COLS, (
-        "bank_schema drifted from CANONICAL_COLS"
-    )
+    # An assert, not a raise: `python -O` strips assert statements entirely, so
+    # under -O the drift check vanished and the read proceeded against a schema
+    # the MERGE did not expect, silently mis-mapping every column.
+    if [f.name for f in bank_schema.fields] != CANONICAL_COLS:
+        raise RuntimeError(
+            f"bank_schema drifted from CANONICAL_COLS: "
+            f"{[f.name for f in bank_schema.fields]!r} != {list(CANONICAL_COLS)!r}"
+        )
 
     try:
         if settings.load_csv_on_driver:
@@ -574,18 +615,7 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
     _terminal_not_in = ", ".join(f"'{s}'" for s in TERMINAL_STATUSES)
     merge_sql = f"""
     MERGE INTO {table} t
-    USING (
-        SELECT
-            s.transaction_id,
-            s.bank_ref_id,
-            s.settled_amount_paise,
-            s.instrument_type,
-            COALESCE(s.merchant_id, 'UNKNOWN') AS merchant_id,
-            s.settlement_date,
-            s.currency
-        FROM bank_settlements s
-        WHERE s.transaction_id IS NOT NULL AND s.settled_amount_paise IS NOT NULL
-    ) s
+    USING ({merge_using_sql()}) s
     ON t.transaction_id = s.transaction_id
     WHEN MATCHED AND ({_placeholder_in}) THEN
         UPDATE SET
@@ -596,16 +626,14 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
             t.reconciliation_status = '{EXCEPTION_FEE_MISMATCH}',
             t.bank_ref_id = s.bank_ref_id,
             t.instrument_type = s.instrument_type
-    WHEN MATCHED AND t.reconciliation_status NOT IN ({_terminal_not_in})
-             AND t.currency IS NOT NULL AND s.currency IS NOT NULL
-             AND t.currency <> s.currency THEN
+    WHEN MATCHED AND {currency_mismatch_guard(_terminal_not_in)} THEN
         UPDATE SET
             t.reconciliation_status = '{EXCEPTION_CURRENCY_MISMATCH}',
             t.bank_ref_id = s.bank_ref_id,
             t.instrument_type = s.instrument_type
-    WHEN MATCHED AND t.reconciliation_status NOT IN ({_terminal_not_in}) THEN
+    WHEN MATCHED AND {non_terminal_guard(_terminal_not_in)} THEN
         UPDATE SET
-            t.reconciliation_status = CASE WHEN ABS((t.amount_paise - ({fee_case_sql}) - ({gst_case_sql})) - s.settled_amount_paise) <= ({tolerance_sql}) THEN '{MATCHED}' ELSE '{EXCEPTION_FEE_MISMATCH}' END,
+            t.reconciliation_status = {match_decision_sql(fee_case_sql, gst_case_sql, tolerance_sql)},
             t.bank_ref_id = s.bank_ref_id,
             t.instrument_type = s.instrument_type
     WHEN NOT MATCHED THEN
@@ -704,7 +732,10 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
             f"reconciliation_status = '{s}'"
             for s in (*PLACEHOLDER_STATUSES, PENDING_RECONCILIATION)
         )
-        _late_pred = f"({_unresolved_in}) AND to_date(timestamp_utc) < date_sub(current_date(), {int(_global_days)})"
+        _late_pred = (
+            f"({_unresolved_in}) AND {webhook_date_sql('t.timestamp_utc')} "
+            f"< date_sub(current_date(), {int(_global_days)})"
+        )
         _late_n = spark.sql(f"SELECT COUNT(*) AS n FROM {table} t WHERE {_late_pred}").collect()[0][
             "n"
         ]
@@ -731,7 +762,7 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
                 f"SELECT COUNT(*) AS n FROM {table} t "
                 f"JOIN bank_settlements s ON s.transaction_id = t.transaction_id "
                 f"WHERE t.reconciliation_status = '{EXCEPTION_MISSING_WEBHOOK}' "
-                f"AND DATEDIFF(s.settlement_date, to_date(t.timestamp_utc)) "
+                f"AND DATEDIFF(s.settlement_date, {webhook_date_sql('t.timestamp_utc')}) "
                 f"BETWEEN 0 AND ({_lag_case})"
             ).collect()[0]["n"]
             or 0
@@ -816,6 +847,89 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
         f"{_json.dumps({k: counts[k] for k in sorted(counts) if isinstance(counts[k], (int, float))})}"
     )
     return counts
+
+
+def merge_using_sql() -> str:
+    """The settlement frame the batch MERGE matches on.
+
+    One row per transaction, after the redelivery collapse and the instalment
+    sum, carrying only the columns any arm reads.
+    """
+    return """
+        SELECT
+            s.transaction_id,
+            s.bank_ref_id,
+            s.settled_amount_paise,
+            s.instrument_type,
+            COALESCE(s.merchant_id, 'UNKNOWN') AS merchant_id,
+            s.settlement_date,
+            s.currency
+        FROM bank_settlements s
+        WHERE s.transaction_id IS NOT NULL AND s.settled_amount_paise IS NOT NULL
+    """
+
+
+def non_terminal_guard(terminal_not_in: str) -> str:
+    """Rows the batch may still re-decide."""
+    return f"t.reconciliation_status NOT IN ({terminal_not_in})"
+
+
+def currency_mismatch_guard(terminal_not_in: str) -> str:
+    """Two amounts in different units must not be subtracted from each other.
+
+    Both sides have to declare a currency. A settlement that omits it cannot be
+    proven comparable, and guessing one is how a USD row ends up being read as
+    rupees; that row is counted by settlement_currency_missing_rows instead.
+    """
+    return (
+        f"{non_terminal_guard(terminal_not_in)} "
+        "AND t.currency IS NOT NULL AND s.currency IS NOT NULL "
+        "AND t.currency <> s.currency"
+    )
+
+
+def match_decision_sql(fee_case_sql: str, gst_case_sql: str, tolerance_sql: str) -> str:
+    """The status the tolerance arm sets: what the gateway captured, less fees."""
+    return (
+        f"CASE WHEN ABS((t.amount_paise - ({fee_case_sql}) - ({gst_case_sql})) "
+        f"- s.settled_amount_paise) <= ({tolerance_sql}) "
+        f"THEN '{MATCHED}' ELSE '{EXCEPTION_FEE_MISMATCH}' END"
+    )
+
+
+def merge_decision_sql(
+    fee_case_sql: str,
+    gst_case_sql: str,
+    tolerance_sql: str,
+    terminal_not_in: str,
+    webhook_table: str,
+) -> str:
+    """The batch MERGE's per-row decision, as a SELECT instead of a MERGE.
+
+    Same arms, same order, same expressions, so a labelled fixture can be checked
+    against the SQL the pipeline actually ships. Spark's session catalog cannot
+    execute MERGE INTO and the Iceberg catalog needs the docker services, which
+    means without this every reconciliation assertion would be a string
+    comparison against the generated SQL rather than a result.
+
+    Modelled for a target row that is neither a placeholder nor already
+    terminal, which is what ingestion writes and what a fresh batch reconciles.
+    The MERGE's own guard is asserted against this one in
+    tests/test_recon_cases.py::test_the_decision_select_uses_the_merge_guards.
+    """
+    return f"""
+        SELECT
+            s.transaction_id,
+            {match_decision_sql(fee_case_sql, gst_case_sql, tolerance_sql)} AS fee_verdict,
+            CASE
+                WHEN t.transaction_id IS NULL THEN '{EXCEPTION_MISSING_WEBHOOK}'
+                WHEN t.amount_paise IS NULL THEN '{EXCEPTION_FEE_MISMATCH}'
+                WHEN {currency_mismatch_guard(terminal_not_in)} THEN '{EXCEPTION_CURRENCY_MISMATCH}'
+                ELSE {match_decision_sql(fee_case_sql, gst_case_sql, tolerance_sql)}
+            END AS decided_status
+        FROM ({merge_using_sql()}) s
+        LEFT JOIN {webhook_table} t ON t.transaction_id = s.transaction_id
+    """
 
 
 def _bank_orphan_where(tol_sql: str, lag_days: int) -> str:

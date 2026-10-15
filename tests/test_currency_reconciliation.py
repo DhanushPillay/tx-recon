@@ -119,11 +119,14 @@ def test_a_conflicting_currency_gets_its_own_status():
 
 def test_the_conflict_test_needs_both_sides_declared():
     # One side unknown is not a conflict, it is an absence of evidence. The
-    # settlement_currency_missing_rows counter covers that case instead.
-    arm = _arm(EXCEPTION_CURRENCY_MISMATCH)
-    assert "t.currency IS NOT NULL" in arm
-    assert "s.currency IS NOT NULL" in arm
-    assert "t.currency <> s.currency" in arm
+    # settlement_currency_missing_rows counter covers that case instead. The
+    # predicate itself lives in currency_mismatch_guard, which both the MERGE
+    # arm and the decision SELECT call.
+    guard = rc.currency_mismatch_guard("'MATCHED'")
+    assert "t.currency IS NOT NULL" in guard
+    assert "s.currency IS NOT NULL" in guard
+    assert "t.currency <> s.currency" in guard
+    assert "currency_mismatch_guard(" in _arm(EXCEPTION_CURRENCY_MISMATCH)
 
 
 def test_a_currency_conflict_is_not_terminal():
@@ -134,12 +137,21 @@ def test_a_currency_conflict_is_not_terminal():
 
 def test_the_currency_arm_precedes_the_tolerance_case():
     # First matching clause wins. If the tolerance arm ran first a USD
-    # settlement would be priced as rupees and marked MATCHED.
-    assert _MERGE_SRC.index(EXCEPTION_CURRENCY_MISMATCH) < _MERGE_SRC.index("CASE WHEN ABS(")
+    # settlement would be priced as rupees and marked MATCHED. The verdict
+    # expression itself moved into match_decision_sql, so the order to check is
+    # the order the two are called in.
+    assert _MERGE_SRC.index("currency_mismatch_guard(") < _MERGE_SRC.index("match_decision_sql(")
 
 
 def test_the_currency_arm_carries_the_same_terminal_guard_as_the_tolerance_arm():
-    assert "NOT IN" in _arm(EXCEPTION_CURRENCY_MISMATCH)
+    # Both guards come from non_terminal_guard, so the currency arm cannot drift
+    # away from the tolerance arm by copying an edited literal: it is handed the
+    # same argument. Check that it is the same argument.
+    assert "non_terminal_guard" in rc.currency_mismatch_guard.__code__.co_names
+    assert _arm(EXCEPTION_CURRENCY_MISMATCH).count("_terminal_not_in") == 1
+    tolerance_arm = next(b for b in _MERGE_SRC.split("WHEN MATCHED") if "match_decision_sql(" in b)
+    assert "_terminal_not_in" in tolerance_arm, "the tolerance arm stopped using the shared guard"
+    assert "NOT IN" in rc.currency_mismatch_guard("'MATCHED'")
 
 
 def test_a_new_placeholder_row_records_the_settlement_currency():

@@ -1,0 +1,338 @@
+# Reconciliation fixtures with hand-written answers.
+#
+# The rule this file exists to enforce: no `expect_status` below was produced
+# by calling the code under test. Every number was worked out by hand from
+# config/fee_rates.yaml and the arithmetic stated in `meta.arithmetic`, and
+# every `why` says which branch of the MERGE should fire. If the pipeline and
+# this file disagree, one of them is wrong and the file is the one a human can
+# check without running anything.
+#
+# This is the opposite of tests/performance/recon_accuracy.py, which scored
+# FeeEngine.check_match against its own output and reported 94.63% -- an
+# arithmetic property of the generator's sha256 buckets, not a measurement of
+# the fee engine. See tests/test_recon_cases.py.
+#
+# Boundary note: the bank-evidence cases at the bottom drive the real
+# build_bank_leg_sql against temp views, not the MT940 parser. Parsing a .sta
+# is covered separately by tests/adapters/test_bank_statement.py; this file
+# does not duplicate it.
+
+meta:
+  batch_date: "2025-06-10"
+  rate_card: "v2.0.0 -- config/fee_rates.yaml, effective_from 2025-04-01, no effective_to"
+  arithmetic: >-
+    fee_paise = round_half_away_from_zero(gross_paise * mdr_bps / 10000);
+    gst_paise = round_half_away_from_zero(fee_paise * 1800 / 10000);
+    expected_net = gross_paise - fee_paise - gst_paise.
+    MATCHED when ABS(expected_net - settled_amount_paise) <= 1, because no rate
+    in this file overrides the card default tolerance of 1 paisa.
+  mdr_bps_by_instrument:
+    UPI: 0
+    CREDIT_CARD: 200
+    DEBIT_CARD: 100
+    NETBANKING: 150
+    WALLET: 150
+    INTERNATIONAL: 300
+  gst_bps: 1800
+  tolerance_paise: 1
+  merchant_note: >-
+    merchant_id is null on every routine case. config/fee_rates.yaml names only
+    merch_001 and merch_demo, so any other id would land in the merchant_unknown
+    fallback and bury that counter. A null merchant is a real settlement shape,
+    and it falls through to the instrument rate, which is what most cases are
+    meant to measure.
+  date_note: >-
+    Every settlement_date is on or after 2025-04-01 so the v2.0.0 card applies
+    cleanly, except where a case exists specifically to probe a date boundary
+    or an out-of-range date.
+
+# --------------------------------------------------------------------------
+# Gateway rows. reconciliation_status starts at PENDING_RECONCILIATION, which is
+# what ingestion writes and which is NOT in PLACEHOLDER_STATUSES, so every case
+# reaches the tolerance arm instead of the placeholder-preserve arm.
+# --------------------------------------------------------------------------
+webhooks:
+  # A: one clean settlement per instrument, gross 100000 paise (Rs 1000)
+  - {id: a_upi,   amount_paise: 100000, instrument_type: UPI,          merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T09:00:00Z"}
+  - {id: a_cc,    amount_paise: 100000, instrument_type: CREDIT_CARD,  merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T09:01:00Z"}
+  - {id: a_dc,    amount_paise: 100000, instrument_type: DEBIT_CARD,   merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T09:02:00Z"}
+  - {id: a_nb,    amount_paise: 100000, instrument_type: NETBANKING,   merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T09:03:00Z"}
+  - {id: a_wal,   amount_paise: 100000, instrument_type: WALLET,       merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T09:04:00Z"}
+  - {id: a_intl,  amount_paise: 100000, instrument_type: INTERNATIONAL, merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T09:05:00Z"}
+
+  # B: negotiated merchant rates on CREDIT_CARD
+  - {id: b_m1, amount_paise: 100000, instrument_type: CREDIT_CARD, merchant_id: merch_001,  currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T09:10:00Z"}
+  - {id: b_m2, amount_paise: 100000, instrument_type: CREDIT_CARD, merchant_id: merch_demo, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T09:11:00Z"}
+
+  # C: rate-card boundary dates
+  - {id: c_v1_last,  amount_paise: 100000, instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-03-30T09:00:00Z"}
+  - {id: c_v2_first, amount_paise: 100000, instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-04-01T09:00:00Z"}
+  - {id: c_v1_first, amount_paise: 100000, instrument_type: UPI,        merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2024-01-01T09:00:00Z"}
+  - {id: c_v2_mid,   amount_paise: 100000, instrument_type: DEBIT_CARD, merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-04-02T09:00:00Z"}
+
+  # D: fee mismatches
+  - {id: d_near_hi, amount_paise: 100000, instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T09:20:00Z"}
+  - {id: d_near_lo, amount_paise: 100000, instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T09:21:00Z"}
+  - {id: d_upi_fee, amount_paise: 100000, instrument_type: UPI,        merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T09:22:00Z"}
+  - {id: d_merchant_rate, amount_paise: 100000, instrument_type: CREDIT_CARD, merchant_id: merch_001, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T09:23:00Z"}
+
+  # E: tolerance edges
+  - {id: e_minus_one, amount_paise: 100000, instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T09:30:00Z"}
+  - {id: e_plus_one,  amount_paise: 100000, instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T09:31:00Z"}
+  - {id: e_exact,     amount_paise: 100000, instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T09:32:00Z"}
+
+  # F: missing webhook
+  - {id: f_null_amount, amount_paise: null, instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T09:40:00Z"}
+
+  # G: zero, dust and tiny amounts
+  - {id: g_zero, amount_paise: 1000,  instrument_type: UPI,        merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T09:50:00Z"}
+  - {id: g_dust, amount_paise: 25,    instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T09:51:00Z"}
+  - {id: g_tiny, amount_paise: 1,     instrument_type: UPI,        merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T09:52:00Z"}
+
+  # H: currency
+  - {id: h_match,        amount_paise: 100000, instrument_type: CREDIT_CARD, merchant_id: null, currency: INR,  gateway_status: CAPTURED, timestamp_utc: "2025-06-10T10:00:00Z"}
+  - {id: h_diff,         amount_paise: 100000, instrument_type: CREDIT_CARD, merchant_id: null, currency: INR,  gateway_status: CAPTURED, timestamp_utc: "2025-06-10T10:01:00Z"}
+  - {id: h_webhook_null, amount_paise: 100000, instrument_type: CREDIT_CARD, merchant_id: null, currency: null, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T10:02:00Z"}
+
+  # I: silent fee fallbacks
+  - {id: i_unknown_merchant,   amount_paise: 100000, instrument_type: CREDIT_CARD, merchant_id: m_new,    currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T10:10:00Z"}
+  - {id: i_null_merchant,      amount_paise: 100000, instrument_type: CREDIT_CARD, merchant_id: null,   currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T10:11:00Z"}
+  - {id: i_unknown_instrument, amount_paise: 100000, instrument_type: CRYPTO,      merchant_id: null,   currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T10:12:00Z"}
+  - {id: i_out_of_range,       amount_paise: 100000, instrument_type: CREDIT_CARD, merchant_id: null,   currency: INR, gateway_status: CAPTURED, timestamp_utc: "2010-01-01T09:00:00Z"}
+  - {id: i_unparseable_date,   amount_paise: 100000, instrument_type: CREDIT_CARD, merchant_id: null,   currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T10:13:00Z"}
+
+  # J: split payouts
+  - {id: j_two_parts,  amount_paise: 1000, instrument_type: UPI, merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T10:20:00Z"}
+  - {id: j_three_parts, amount_paise: 1000, instrument_type: UPI, merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T10:21:00Z"}
+  - {id: j_short,      amount_paise: 1000, instrument_type: UPI, merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T10:22:00Z"}
+
+  # K: provider redelivery
+  - {id: k_redelivery, amount_paise: 100000, instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T10:30:00Z"}
+
+  # L: settlement arriving long after the webhook
+  - {id: l_within_sla,  amount_paise: 100000, instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-01T09:00:00Z"}
+  - {id: l_beyond_sla,  amount_paise: 100000, instrument_type: CREDIT_CARD, merchant_id: null, currency: null, gateway_status: CAPTURED, timestamp_utc: "2025-06-01T09:01:00Z"}
+
+  # M: a reversal, which has no settlement row at all
+  - {id: m_refund, amount_paise: -2500, instrument_type: CREDIT_CARD, merchant_id: merch_001, currency: INR, gateway_status: REFUND, timestamp_utc: "2025-06-10T10:40:00Z"}
+
+  # N: a fee that is not a whole paisa
+  - {id: n_frac, amount_paise: 10001, instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, gateway_status: CAPTURED, timestamp_utc: "2025-06-10T10:50:00Z"}
+
+# --------------------------------------------------------------------------
+# Settlement rows, in the canonical order read by run_reconciliation.
+# tx = the webhook id. fee_paise / gst_paise / gross_amount_paise are carried
+# because the schema has the columns; nothing in the MERGE reads them.
+# --------------------------------------------------------------------------
+settlements:
+  # A: gross 100000.
+  #   UPI          fee 0    gst 0    net 100000
+  #   CREDIT_CARD  fee 2000 gst 360  net  97640
+  #   DEBIT_CARD   fee 1000 gst 180  net  98820
+  #   NETBANKING   fee 1500 gst 270  net  98230
+  #   WALLET       fee 1500 gst 270  net  98230
+  #   INTERNATIONAL fee 3000 gst 540 net  96460
+  - {tx: a_upi,  settled_amount_paise: 100000, settlement_date: "2025-06-11", instrument_type: UPI,          merchant_id: null, currency: INR, bank_ref_id: br_a_upi,  settlement_id: s_a_upi,  fee_paise: 0,    gst_paise: 0,   gross_amount_paise: 100000}
+  - {tx: a_cc,   settled_amount_paise:  97640, settlement_date: "2025-06-11", instrument_type: CREDIT_CARD,  merchant_id: null, currency: INR, bank_ref_id: br_a_cc,   settlement_id: s_a_cc,   fee_paise: 2000, gst_paise: 360, gross_amount_paise: 100000}
+  - {tx: a_dc,   settled_amount_paise:  98820, settlement_date: "2025-06-11", instrument_type: DEBIT_CARD,   merchant_id: null, currency: INR, bank_ref_id: br_a_dc,   settlement_id: s_a_dc,   fee_paise: 1000, gst_paise: 180, gross_amount_paise: 100000}
+  - {tx: a_nb,   settled_amount_paise:  98230, settlement_date: "2025-06-11", instrument_type: NETBANKING,   merchant_id: null, currency: INR, bank_ref_id: br_a_nb,   settlement_id: s_a_nb,   fee_paise: 1500, gst_paise: 270, gross_amount_paise: 100000}
+  - {tx: a_wal,  settled_amount_paise:  98230, settlement_date: "2025-06-11", instrument_type: WALLET,       merchant_id: null, currency: INR, bank_ref_id: br_a_wal,  settlement_id: s_a_wal,  fee_paise: 1500, gst_paise: 270, gross_amount_paise: 100000}
+  - {tx: a_intl, settled_amount_paise:  96460, settlement_date: "2025-06-11", instrument_type: INTERNATIONAL, merchant_id: null, currency: INR, bank_ref_id: br_a_intl, settlement_id: s_a_intl, fee_paise: 3000, gst_paise: 540, gross_amount_paise: 100000}
+
+  # B: merch_001 is 180 bps, merch_demo 190 bps, both CREDIT_CARD only.
+  - {tx: b_m1, settled_amount_paise: 97876, settlement_date: "2025-06-11", instrument_type: CREDIT_CARD, merchant_id: merch_001,  currency: INR, bank_ref_id: br_b_m1, settlement_id: s_b_m1, fee_paise: 1800, gst_paise: 324, gross_amount_paise: 100000}
+  - {tx: b_m2, settled_amount_paise: 97758, settlement_date: "2025-06-11", instrument_type: CREDIT_CARD, merchant_id: merch_demo, currency: INR, bank_ref_id: br_b_m2, settlement_id: s_b_m2, fee_paise: 1900, gst_paise: 342, gross_amount_paise: 100000}
+
+  # C: v1.0.0 and v2.0.0 carry identical instrument rates, so these pin that the
+  # boundary is inclusive on both ends and that neither end trips a fallback.
+  - {tx: c_v1_last,  settled_amount_paise: 97640,  settlement_date: "2025-03-31", instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, bank_ref_id: br_c1, settlement_id: s_c1, fee_paise: 2000, gst_paise: 360, gross_amount_paise: 100000}
+  - {tx: c_v2_first, settled_amount_paise: 97640,  settlement_date: "2025-04-01", instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, bank_ref_id: br_c2, settlement_id: s_c2, fee_paise: 2000, gst_paise: 360, gross_amount_paise: 100000}
+  - {tx: c_v1_first, settled_amount_paise: 100000, settlement_date: "2024-01-01", instrument_type: UPI,        merchant_id: null, currency: INR, bank_ref_id: br_c3, settlement_id: s_c3, fee_paise: 0,    gst_paise: 0,   gross_amount_paise: 100000}
+  - {tx: c_v2_mid,   settled_amount_paise: 98820,  settlement_date: "2025-04-02", instrument_type: DEBIT_CARD,  merchant_id: null, currency: INR, bank_ref_id: br_c4, settlement_id: s_c4, fee_paise: 1000, gst_paise: 180, gross_amount_paise: 100000}
+
+  # D: 97642 is 2 over the expected net and 97637 is 3 under. Tolerance is 1.
+  - {tx: d_near_hi, settled_amount_paise:  97642, settlement_date: "2025-06-11", instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, bank_ref_id: br_d1, settlement_id: s_d1, fee_paise: 2000, gst_paise: 360, gross_amount_paise: 100000}
+  - {tx: d_near_lo, settled_amount_paise:  97637, settlement_date: "2025-06-11", instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, bank_ref_id: br_d2, settlement_id: s_d2, fee_paise: 2000, gst_paise: 360, gross_amount_paise: 100000}
+  - {tx: d_upi_fee, settled_amount_paise:  99000, settlement_date: "2025-06-11", instrument_type: UPI,        merchant_id: null, currency: INR, bank_ref_id: br_d3, settlement_id: s_d3, fee_paise: 0,    gst_paise: 0,   gross_amount_paise: 100000}
+  - {tx: d_merchant_rate, settled_amount_paise: 97758, settlement_date: "2025-06-11", instrument_type: CREDIT_CARD, merchant_id: merch_001, currency: INR, bank_ref_id: br_d4, settlement_id: s_d4, fee_paise: 1900, gst_paise: 342, gross_amount_paise: 100000}
+
+  # E
+  - {tx: e_minus_one, settled_amount_paise: 97639, settlement_date: "2025-06-11", instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, bank_ref_id: br_e1, settlement_id: s_e1, fee_paise: 2000, gst_paise: 360, gross_amount_paise: 100000}
+  - {tx: e_plus_one,  settled_amount_paise: 97641, settlement_date: "2025-06-11", instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, bank_ref_id: br_e2, settlement_id: s_e2, fee_paise: 2000, gst_paise: 360, gross_amount_paise: 100000}
+  - {tx: e_exact,     settled_amount_paise: 97640, settlement_date: "2025-06-11", instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, bank_ref_id: br_e3, settlement_id: s_e3, fee_paise: 2000, gst_paise: 360, gross_amount_paise: 100000}
+
+  # F: no webhook row at all for f_cc and f_upi.
+  - {tx: f_cc,  settled_amount_paise: 97640,  settlement_date: "2025-06-11", instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, bank_ref_id: br_f1, settlement_id: s_f1, fee_paise: 2000, gst_paise: 360, gross_amount_paise: 100000}
+  - {tx: f_upi, settled_amount_paise: 100000, settlement_date: "2025-06-11", instrument_type: UPI,        merchant_id: null, currency: INR, bank_ref_id: br_f2, settlement_id: s_f2, fee_paise: 0,    gst_paise: 0,   gross_amount_paise: 100000}
+  - {tx: f_null_amount, settled_amount_paise: 97640, settlement_date: "2025-06-11", instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, bank_ref_id: br_f3, settlement_id: s_f3, fee_paise: 2000, gst_paise: 360, gross_amount_paise: 100000}
+
+  # G
+  - {tx: g_zero, settled_amount_paise: 0,  settlement_date: "2025-06-11", instrument_type: UPI,        merchant_id: null, currency: INR, bank_ref_id: br_g1, settlement_id: s_g1, fee_paise: 0, gst_paise: 0, gross_amount_paise: 1000}
+  - {tx: g_dust, settled_amount_paise: 24, settlement_date: "2025-06-11", instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, bank_ref_id: br_g2, settlement_id: s_g2, fee_paise: 1, gst_paise: 0, gross_amount_paise: 25}
+  - {tx: g_tiny, settled_amount_paise: 1,  settlement_date: "2025-06-11", instrument_type: UPI,        merchant_id: null, currency: INR, bank_ref_id: br_g3, settlement_id: s_g3, fee_paise: 0, gst_paise: 0, gross_amount_paise: 1}
+
+  # H
+  - {tx: h_match,        settled_amount_paise: 97640, settlement_date: "2025-06-11", instrument_type: CREDIT_CARD, merchant_id: null, currency: INR,  bank_ref_id: br_h1, settlement_id: s_h1, fee_paise: 2000, gst_paise: 360, gross_amount_paise: 100000}
+  - {tx: h_diff,         settled_amount_paise: 97640, settlement_date: "2025-06-11", instrument_type: CREDIT_CARD, merchant_id: null, currency: USD,  bank_ref_id: br_h2, settlement_id: s_h2, fee_paise: 2000, gst_paise: 360, gross_amount_paise: 100000}
+  - {tx: h_webhook_null, settled_amount_paise: 97640, settlement_date: "2025-06-11", instrument_type: CREDIT_CARD, merchant_id: null, currency: INR,  bank_ref_id: br_h3, settlement_id: s_h3, fee_paise: 2000, gst_paise: 360, gross_amount_paise: 100000}
+
+  # I: m_new is not in fee_rates.yaml; CRYPTO is not in INSTRUMENT_TYPES, so it
+  # takes the card default of 150 bps (fee 1500, gst 270, net 98230); 2010-01-01
+  # precedes every card so the oldest one applies; "not-a-date" makes
+  # to_date(...) null so the newest one applies.
+  - {tx: i_unknown_merchant,   settled_amount_paise: 97640, settlement_date: "2025-06-11", instrument_type: CREDIT_CARD, merchant_id: m_new,  currency: INR, bank_ref_id: br_i1, settlement_id: s_i1, fee_paise: 2000, gst_paise: 360, gross_amount_paise: 100000}
+  - {tx: i_null_merchant,      settled_amount_paise: 97640, settlement_date: "2025-06-11", instrument_type: CREDIT_CARD, merchant_id: null,   currency: INR, bank_ref_id: br_i2, settlement_id: s_i2, fee_paise: 2000, gst_paise: 360, gross_amount_paise: 100000}
+  - {tx: i_unknown_instrument, settled_amount_paise: 98230, settlement_date: "2025-06-11", instrument_type: CRYPTO,      merchant_id: null,   currency: INR, bank_ref_id: br_i3, settlement_id: s_i3, fee_paise: 1500, gst_paise: 270, gross_amount_paise: 100000}
+  - {tx: i_out_of_range,       settled_amount_paise: 97640, settlement_date: "2010-01-01", instrument_type: CREDIT_CARD, merchant_id: null,   currency: INR, bank_ref_id: br_i4, settlement_id: s_i4, fee_paise: 2000, gst_paise: 360, gross_amount_paise: 100000}
+  - {tx: i_unparseable_date,   settled_amount_paise: 97640, settlement_date: "not-a-date", instrument_type: CREDIT_CARD, merchant_id: null,   currency: INR, bank_ref_id: br_i5, settlement_id: s_i5, fee_paise: 2000, gst_paise: 360, gross_amount_paise: 100000}
+
+  # J: gross 1000 on UPI, so the expected net is the gross itself. The fold sums
+  # the instalments and takes the latest date as the effective one.
+  - {tx: j_two_parts, settled_amount_paise: 400, settlement_date: "2025-06-11", instrument_type: UPI, merchant_id: null, currency: INR, bank_ref_id: br_j1a, settlement_id: s_j1a, fee_paise: 0, gst_paise: 0, gross_amount_paise: 400}
+  - {tx: j_two_parts, settled_amount_paise: 600, settlement_date: "2025-06-12", instrument_type: UPI, merchant_id: null, currency: INR, bank_ref_id: br_j1b, settlement_id: s_j1b, fee_paise: 0, gst_paise: 0, gross_amount_paise: 600}
+  - {tx: j_three_parts, settled_amount_paise: 250, settlement_date: "2025-06-11", instrument_type: UPI, merchant_id: null, currency: INR, bank_ref_id: br_j2a, settlement_id: s_j2a, fee_paise: 0, gst_paise: 0, gross_amount_paise: 250}
+  - {tx: j_three_parts, settled_amount_paise: 250, settlement_date: "2025-06-11", instrument_type: UPI, merchant_id: null, currency: INR, bank_ref_id: br_j2b, settlement_id: s_j2b, fee_paise: 0, gst_paise: 0, gross_amount_paise: 250}
+  - {tx: j_three_parts, settled_amount_paise: 500, settlement_date: "2025-06-12", instrument_type: UPI, merchant_id: null, currency: INR, bank_ref_id: br_j2c, settlement_id: s_j2c, fee_paise: 0, gst_paise: 0, gross_amount_paise: 500}
+  - {tx: j_short, settled_amount_paise: 400, settlement_date: "2025-06-11", instrument_type: UPI, merchant_id: null, currency: INR, bank_ref_id: br_j3a, settlement_id: s_j3a, fee_paise: 0, gst_paise: 0, gross_amount_paise: 400}
+  - {tx: j_short, settled_amount_paise: 598, settlement_date: "2025-06-12", instrument_type: UPI, merchant_id: null, currency: INR, bank_ref_id: br_j3b, settlement_id: s_j3b, fee_paise: 0, gst_paise: 0, gross_amount_paise: 598}
+
+  # K: the provider sent the identical line twice. Same amount, same date, same
+  # bank reference, different settlement_id -- a redelivery, not an instalment,
+  # so it must collapse rather than sum to 195280.
+  - {tx: k_redelivery, settled_amount_paise: 97640, settlement_date: "2025-06-11", instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, bank_ref_id: br_k, settlement_id: s_k_1, fee_paise: 2000, gst_paise: 360, gross_amount_paise: 100000}
+  - {tx: k_redelivery, settled_amount_paise: 97640, settlement_date: "2025-06-11", instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, bank_ref_id: br_k, settlement_id: s_k_2, fee_paise: 2000, gst_paise: 360, gross_amount_paise: 100000}
+
+  # L: the late-SLA sweep only ages rows with no settlement, so both of these
+  # reconcile normally however late the money turned up. l_beyond_sla also
+  # declares no currency, which is the one missing-currency settlement.
+  - {tx: l_within_sla, settled_amount_paise: 97640, settlement_date: "2025-06-04", instrument_type: CREDIT_CARD, merchant_id: null, currency: INR,  bank_ref_id: br_l1, settlement_id: s_l1, fee_paise: 2000, gst_paise: 360, gross_amount_paise: 100000}
+  - {tx: l_beyond_sla, settled_amount_paise: 97640, settlement_date: "2025-07-15", instrument_type: CREDIT_CARD, merchant_id: null, currency: null, bank_ref_id: br_l2, settlement_id: s_l2, fee_paise: 2000, gst_paise: 360, gross_amount_paise: 100000}
+
+  # N: 10001 * 200 = 2000200, which is 200.02 paise of fee, so 200. Then
+  # 200 * 1800 / 10000 = 36. Net 10001 - 200 - 36 = 9765.
+  - {tx: n_frac, settled_amount_paise: 9765, settlement_date: "2025-06-11", instrument_type: CREDIT_CARD, merchant_id: null, currency: INR, bank_ref_id: br_n1, settlement_id: s_n1, fee_paise: 200, gst_paise: 36, gross_amount_paise: 10001}
+
+# --------------------------------------------------------------------------
+# The answer key. `expect_status` is what reconciliation_status must be after
+# run_reconciliation. `expect_in_batch` says whether the transaction has a
+# settlement row, which decides whether it lands in the batch_ counts or only in
+# the table_ counts.
+# --------------------------------------------------------------------------
+cases:
+  - {id: a_upi,  expect_status: MATCHED, expect_in_batch: true,  why: "UPI carries a zero MDR, so the whole 100000 reaches the merchant."}
+  - {id: a_cc,   expect_status: MATCHED, expect_in_batch: true,  why: "200 bps on 100000 is 2000, plus 360 of GST, leaves 97640."}
+  - {id: a_dc,   expect_status: MATCHED, expect_in_batch: true,  why: "100 bps on 100000 is 1000, plus 180, leaves 98820."}
+  - {id: a_nb,   expect_status: MATCHED, expect_in_batch: true,  why: "150 bps on 100000 is 1500, plus 270, leaves 98230."}
+  - {id: a_wal,  expect_status: MATCHED, expect_in_batch: true,  why: "Same 150 bps as netbanking, so the same 98230."}
+  - {id: a_intl, expect_status: MATCHED, expect_in_batch: true,  why: "300 bps on 100000 is 3000, plus 540, leaves 96460."}
+
+  - {id: b_m1, expect_status: MATCHED, expect_in_batch: true, why: "merch_001 has a negotiated 180 bps on CREDIT_CARD: 1800 + 324 = 97876, which is not the 97640 a merchant off the rate card would see."}
+  - {id: b_m2, expect_status: MATCHED, expect_in_batch: true, why: "merch_demo is 190 bps: 1900 + 342 = 97758."}
+
+  - {id: c_v1_last,  expect_status: MATCHED, expect_in_batch: true, why: "2025-03-31 is the last day of v1.0.0 and both cards agree on CREDIT_CARD, so the rate is 200 bps and the date is inside the history."}
+  - {id: c_v2_first, expect_status: MATCHED, expect_in_batch: true, why: "2025-04-01 is the first day of v2.0.0 and is inclusive, so no fallback fires."}
+  - {id: c_v1_first, expect_status: MATCHED, expect_in_batch: true, why: "2024-01-01 is the first day of v1.0.0, on the zero-fee UPI arm."}
+  - {id: c_v2_mid,   expect_status: MATCHED, expect_in_batch: true, why: "An ordinary mid-card date on DEBIT_CARD."}
+
+  - {id: d_near_hi, expect_status: EXCEPTION_FEE_MISMATCH, expect_in_batch: true, why: "2 paise over the expected net, and tolerance is 1."}
+  - {id: d_near_lo, expect_status: EXCEPTION_FEE_MISMATCH, expect_in_batch: true, why: "3 paise under. The mirror of e_minus_one, which is inside."}
+  - {id: d_upi_fee, expect_status: EXCEPTION_FEE_MISMATCH, expect_in_batch: true, why: "1000 paise missing on an instrument whose MDR is zero, so nothing in the fee model explains the gap."}
+  - {id: d_merchant_rate, expect_status: EXCEPTION_FEE_MISMATCH, expect_in_batch: true, why: "Settled at merch_demo's rate while declared as merch_001, a 118 paisa gap. Proves the merchant arm is being selected at all."}
+
+  - {id: e_minus_one, expect_status: MATCHED, expect_in_batch: true, why: "1 paisa under the net, which is exactly the tolerance."}
+  - {id: e_plus_one,  expect_status: MATCHED, expect_in_batch: true, why: "1 paisa over, also inside."}
+  - {id: e_exact,     expect_status: MATCHED, expect_in_batch: true, why: "Dead on the net."}
+
+  - {id: f_cc,  expect_status: EXCEPTION_MISSING_WEBHOOK, expect_in_batch: true, why: "No gateway row exists, so the settlement inserts a placeholder."}
+  - {id: f_upi, expect_status: EXCEPTION_MISSING_WEBHOOK, expect_in_batch: true, why: "Same, on the zero-fee arm."}
+  - {id: f_null_amount, expect_status: EXCEPTION_FEE_MISMATCH, expect_in_batch: true, why: "The gateway row exists but carries no amount, so there is nothing to compare and the second WHEN MATCHED arm takes it."}
+
+  - {id: g_zero, expect_status: EXCEPTION_FEE_MISMATCH, expect_in_batch: true, why: "A settlement of 0 against a 1000 paise payment. Only reachable with ALLOW_UNVALIDATED_SETTLEMENT=1, since the validated contract quarantines it, but the MERGE has no reason to call it matched."}
+  - {id: g_dust, expect_status: MATCHED, expect_in_batch: true, why: "25 paise gross at 200 bps is exactly 0.5 of a paisa, which rounds away from zero to 1, so the net is 24. Rounding to even would give 25 and a mismatch."}
+  - {id: g_tiny, expect_status: MATCHED, expect_in_batch: true, why: "1 paise on a zero-fee arm settles at 1."}
+
+  - {id: h_match, expect_status: MATCHED, expect_in_batch: true, why: "Both sides say INR."}
+  - {id: h_diff, expect_status: EXCEPTION_CURRENCY_MISMATCH, expect_in_batch: true, why: "The webhook says INR and the settlement says USD. Before the currency arm existed the two amounts were subtracted as if they shared a unit."}
+  - {id: h_webhook_null, expect_status: MATCHED, expect_in_batch: true, why: "The settlement declares INR and the webhook declares nothing. The guard needs both sides to be non-null, so this falls through to the arithmetic. Recorded as a known limitation, not an endorsement."}
+
+  - {id: i_unknown_merchant, expect_status: MATCHED, expect_in_batch: true, why: "m_new has no negotiated rate, so the CREDIT_CARD arm applies at 200 bps. The row reconciles and fee_merchant_unknown_rows counts it."}
+  - {id: i_null_merchant, expect_status: MATCHED, expect_in_batch: true, why: "No merchant at all, so the instrument arm applies. The fallback census reads the raw column, so null is not counted as an unknown merchant."}
+  - {id: i_unknown_instrument, expect_status: MATCHED, expect_in_batch: true, why: "CRYPTO is outside INSTRUMENT_TYPES, so the card default of 150 bps applies and the net is 98230. Counted in fee_instrument_unknown_rows."}
+  - {id: i_out_of_range, expect_status: MATCHED, expect_in_batch: true, why: "2010-01-01 precedes every rate card, so the oldest one applies silently. Counted in fee_card_out_of_range_rows."}
+  - {id: i_unparseable_date, expect_status: MATCHED, expect_in_batch: true, why: "to_date('not-a-date') is null, so the newest card applies silently. Counted in fee_card_unparseable_date_rows."}
+
+  - {id: j_two_parts, expect_status: MATCHED, expect_in_batch: true, why: "400 then 600 sums to the 1000 the gateway captured. Before instalments were summed the fold kept 600 and this row could have been marked matched with 400 paise unrecorded."}
+  - {id: j_three_parts, expect_status: MATCHED, expect_in_batch: true, why: "250 + 250 + 500, where the two 250 rows differ only in bank_ref_id, so they are instalments rather than a redelivery."}
+  - {id: j_short, expect_status: EXCEPTION_FEE_MISMATCH, expect_in_batch: true, why: "400 + 598 is 998 against an expected net of 1000, a 2 paisa gap. Proves the fold sums rather than trusting the latest row."}
+
+  - {id: k_redelivery, expect_status: MATCHED, expect_in_batch: true, why: "The identical line sent twice must collapse to one 97640. Summing it instead would give 195280 and flag the transaction."}
+
+  - {id: l_within_sla, expect_status: MATCHED, expect_in_batch: true, why: "Settled three days after capture, inside the 7 day late SLA."}
+  - {id: l_beyond_sla, expect_status: MATCHED, expect_in_batch: true, why: "Settled 45 days after capture. The late-SLA sweep only ages rows with no settlement, so age alone does not demote this one."}
+
+  - {id: m_refund, expect_status: EXCEPTION_REVERSAL, expect_in_batch: false, why: "A refund carries a negative amount, which used to be routed to the DLQ where it could be neither replayed nor purged. It parks here instead, and has no settlement row because the settlement contract still quarantines a negative settled amount."}
+
+  - {id: n_frac, expect_status: MATCHED, expect_in_batch: true, why: "A fee that is not a whole paisa: 200.02 rounds to 200, then 36 of GST, leaving 9765."}
+
+# --------------------------------------------------------------------------
+# Batch counters, worked out by hand from the rows above.
+# --------------------------------------------------------------------------
+expected_counts:
+  settlement_rows_total: 45
+  settlement_rows_distinct: 44   # the two identical k_redelivery rows collapse
+  settlement_rows_deduped: 40    # one row per transaction that has a settlement
+  settlement_rows_evaluated: 40  # every one of those has a non-null amount
+  duplicate_settlement_rows: 1
+  partial_settlement_txns: 3     # j_two_parts, j_three_parts, j_short
+  settlement_currency_missing_rows: 1   # l_beyond_sla
+  fee_merchant_unknown_rows: 1          # i_unknown_merchant
+  fee_card_out_of_range_rows: 1         # i_out_of_range
+  fee_card_unparseable_date_rows: 1     # i_unparseable_date
+  fee_instrument_unknown_rows: 1        # i_unknown_instrument
+  table_EXCEPTION_REVERSAL: 1           # m_refund, the only one of its kind
+
+# --------------------------------------------------------------------------
+# Bank evidence, driven through the real build_bank_leg_sql. amount_paise is
+# signed the way parse_mt940 now returns it: credits positive, debits negative.
+# --------------------------------------------------------------------------
+bank:
+  lag_days: 2
+  settlements:
+    - {tx: bank_same_day,      settled_amount_paise: 97640, settlement_date: "2025-06-11", instrument_type: CREDIT_CARD, merchant_id: null, currency: INR}
+    - {tx: bank_late_credit,   settled_amount_paise: 96460, settlement_date: "2025-06-11", instrument_type: CREDIT_CARD, merchant_id: null, currency: INR}
+    - {tx: bank_chargeback,    settled_amount_paise: 50000, settlement_date: "2025-06-11", instrument_type: CREDIT_CARD, merchant_id: null, currency: INR}
+    - {tx: bank_unlinked_debit, settled_amount_paise: 70000, settlement_date: "2025-06-11", instrument_type: CREDIT_CARD, merchant_id: null, currency: INR}
+  statements:
+    # amount_paise is signed the way parse_mt940 returns it: credits positive,
+    # debits negative.
+    - {value_date: "2025-06-11", amount_paise:  97640, link_tx: null,                narrative: "SETTLEMENT OF RECEIVABLES"}
+    - {value_date: "2025-06-14", amount_paise:  96460, link_tx: null,                narrative: "SETTLEMENT OF RECEIVABLES"}
+    - {value_date: "2025-06-11", amount_paise: -50000, link_tx: bank_chargeback,    narrative: "CHARGEBACK REFUND"}
+    - {value_date: "2025-06-11", amount_paise: -70000, link_tx: null,                narrative: "CHARGEBACK REVERSAL"}
+  expectations:
+    bank_same_day: MATCHED
+    bank_late_credit: EXCEPTION_MISSING_BANK_STATEMENT
+    bank_chargeback: MATCHED
+    bank_unlinked_debit: EXCEPTION_MISSING_BANK_STATEMENT
+  why:
+    bank_same_day: >-
+      MATCHED. A credit of 97640 on the settlement date with no link_tx is the
+      one shape that counts as independent corroboration: the amount is inside
+      tolerance and the value date is inside the lag window.
+    bank_late_credit: >-
+      EXCEPTION_MISSING_BANK_STATEMENT. The only 96460 credit lands on
+      2025-06-14, three days after settlement, and the lag window is two. A
+      receipt of the right size arriving too late is not evidence about this
+      transaction, which is the whole point of the third leg.
+    bank_chargeback: >-
+      MATCHED, and not because of the statement line. The chargeback carries
+      link_tx = bank_chargeback, so it is attributed to this transaction and its
+      magnitude is the exact negative of the 50000 the bank settled. Before the
+      debit sign was taken from mt940 that line parsed as +50000 and satisfied
+      the same magnitude comparison a credit would, so a chargeback could
+      confirm the settlement it was reversing.
+    bank_unlinked_debit: >-
+      EXCEPTION_MISSING_BANK_STATEMENT. A -70000 line with no link_tx is exactly
+      the negative of the settled 70000, so the amount comparison fails by
+      140000 paise and nothing corroborates this transaction. Had the sign been
+      lost it would have read as a matching +70000 credit on the right date.
