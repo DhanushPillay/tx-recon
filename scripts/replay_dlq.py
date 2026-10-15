@@ -11,13 +11,19 @@ import logging
 import os
 
 from src.common.config import get_spark_session
-from src.common.schemas import PENDING_RECONCILIATION
+from src.common.schemas import PENDING_RECONCILIATION, REVERSAL_GATEWAY_STATUSES
 from src.common.settings import get_settings
 from src.processing.corrections import journal_correction
 from src.processing.reconcile import _qualified_table
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _status_list() -> str:
+    """Quoted, comma-joined status vocabulary for the SQL predicate."""
+    quoted = ",".join("'" + s.replace("'", "''") + "'" for s in sorted(REVERSAL_GATEWAY_STATUSES))
+    return quoted
 
 
 def main() -> dict:
@@ -33,12 +39,30 @@ def main() -> dict:
     target = _qualified_table(settings.webhook_table)
 
     replayable = spark.sql(
-        f"SELECT * FROM {dlq} WHERE transaction_id IS NOT NULL AND amount_paise > 0"
+        f"SELECT * FROM {dlq} WHERE transaction_id IS NOT NULL "
+        # A non-positive amount is a refund/reversal when the gateway says so, and
+        # garbage otherwise. Both used to be filtered out here on `amount_paise > 0`
+        # alone, so a DLQ row holding a reversal could never be replayed or purged.
+        # Reversals now belong to ingestion, not the DLQ, so anything still sitting
+        # here with a reversal status predates that split and is reported rather
+        # than replayed: re-emitting it would park a row nothing can reconcile.
+        f"AND (amount_paise > 0 OR UPPER(TRIM(gateway_status)) NOT IN ({_status_list()}))"
     )
     n = replayable.count()
+    stranded = spark.sql(
+        f"SELECT COUNT(*) AS n FROM {dlq} WHERE transaction_id IS NOT NULL "
+        f"AND amount_paise <= 0 AND UPPER(TRIM(gateway_status)) IN ({_status_list()})"
+    ).collect()[0]["n"]
+    if stranded:
+        logger.warning(
+            f"{stranded} DLQ rows carry a refund/reversal status. Ingestion parks those at "
+            "EXCEPTION_REVERSAL now, so these predate the split. Replay will skip them. "
+            "Purge them with --delete once you have confirmed the bank statement covers "
+            "the reversals, or leave them as evidence."
+        )
     logger.info(f"DLQ replayable rows: {n}")
     if n == 0:
-        return {"replayable": 0, "inserted": 0}
+        return {"replayable": 0, "inserted": 0, "reversal_stranded": int(stranded or 0)}
 
     from src.validation.pan_guard import count_spark_pan_hits
 
@@ -85,7 +109,12 @@ def main() -> dict:
             {"rows": n, "table": dlq},
         )
         logger.info("Deleted replayed rows from DLQ")
-    return {"replayable": n, "inserted": inserted, "deleted": bool(args.delete)}
+    return {
+        "replayable": n,
+        "inserted": inserted,
+        "deleted": bool(args.delete),
+        "reversal_stranded": int(stranded or 0),
+    }
 
 
 if __name__ == "__main__":

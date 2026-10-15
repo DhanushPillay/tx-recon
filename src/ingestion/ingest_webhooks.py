@@ -11,7 +11,9 @@ from src.common.config import get_spark_session
 from src.common.schemas import (
     EXCEPTION_LATE_UNRESOLVED,
     EXCEPTION_MISSING_WEBHOOK,
+    EXCEPTION_REVERSAL,
     PENDING_RECONCILIATION,
+    REVERSAL_GATEWAY_STATUSES,
     WEBHOOK_AVRO_SCHEMA,
 )
 from src.common.settings import get_settings
@@ -42,6 +44,53 @@ _DLQ_COLS = [
 ]
 
 _WATERMARK_RE = re.compile(r"^(\d+)\s+(seconds?|minutes?|hours?|days?)$", re.IGNORECASE)
+
+
+def _reversal_condition():
+    """Rows the gateway reported as money moving backwards.
+
+    A refund, reversal or chargeback carries a non-positive amount. Gating on
+    `amount_paise > 0` alone sent those to the DLQ with the same shape as a
+    corrupt record, and `replay_dlq.py` filtered on the same predicate, so they
+    could be neither replayed nor purged.
+    """
+    return (
+        F.coalesce(F.col("decodable"), F.lit(False))
+        & F.col("transaction_id").isNotNull()
+        & (F.col("amount_paise") <= 0)
+        & F.upper(F.trim(F.coalesce(F.col("gateway_status"), F.lit("")))).isin(
+            list(REVERSAL_GATEWAY_STATUSES)
+        )
+    )
+
+
+def _forward_condition():
+    """The original valid-row predicate: a positive payment with an id."""
+    return (
+        F.coalesce(F.col("decodable"), F.lit(False))
+        & (F.col("amount_paise") > 0)
+        & F.col("transaction_id").isNotNull()
+    )
+
+
+def _accepted_condition():
+    """What lands in the webhook table rather than the DLQ."""
+    return _forward_condition() | _reversal_condition()
+
+
+def _ingest_status_column():
+    """A reversal must not enter the settlement queue.
+
+    There is no settlement row for it yet - `settlement_schema.Check.gt(0)`
+    still quarantines a negative settled amount - so PENDING would have the
+    late-SLA sweep age it as an ordinary missing settlement. The amount is the
+    discriminator, not the status word, so a positive amount that happens to
+    carry a refund word still reconciles normally.
+    """
+    return F.when(F.col("amount_paise") <= 0, F.lit(EXCEPTION_REVERSAL)).otherwise(
+        F.lit(PENDING_RECONCILIATION)
+    )
+
 
 _SUPERVISOR_MAX_ATTEMPTS = 5
 _SUPERVISOR_BASE_DELAY_S = 5.0
@@ -155,7 +204,8 @@ def run_ingestion():
         "event_time", to_timestamp(col("timestamp_utc"))
     ).withWatermark("event_time", f"{_wm_n} {_wm_unit}")
 
-    valid_cond = col("decodable") & (col("amount_paise") > 0) & (col("transaction_id").isNotNull())
+    reversal_cond = _reversal_condition()
+    accepted_cond = _accepted_condition()
 
     warehouse = settings.iceberg_warehouse
     webhook_table = _qualified_table(settings.webhook_table)
@@ -213,9 +263,18 @@ def run_ingestion():
                 f"PAN detected in streaming batch ({_pan_n} rows): refusing batch "
                 "(store last-4 + issuer only)"
             )
-        v = batch_df.filter(valid_cond).dropDuplicates(["transaction_id"])
+        _n_reversal = batch_df.filter(reversal_cond).count()
+        if _n_reversal:
+            logger.warning(
+                f"reversals: {_n_reversal} refund/reversal/chargeback rows accepted and parked "
+                f"at {EXCEPTION_REVERSAL}. The settlement contract has no direction field yet "
+                "(`settlement_schema.Check.gt(0)` still quarantines a negative settled amount), "
+                "so these wait for the matching debit rather than being reconciled. They surface "
+                "as table_EXCEPTION_REVERSAL in the next batch's reconciliation counts."
+            )
+        v = batch_df.filter(accepted_cond).dropDuplicates(["transaction_id"])
         v = (
-            v.withColumn("reconciliation_status", lit(PENDING_RECONCILIATION))
+            v.withColumn("reconciliation_status", _ingest_status_column())
             .withColumn("bank_ref_id", lit(None).cast("string"))
             .withColumn("ingested_at", current_timestamp())
             .withColumn("instrument_type", lit(None).cast("string"))
@@ -244,7 +303,7 @@ def run_ingestion():
             "t.last_duplicate_at = current_timestamp() "
             f"WHEN NOT MATCHED THEN INSERT ({_cols}) VALUES ({_vals})"
         )
-        inv = batch_df.filter(~F.coalesce(valid_cond, F.lit(False))).select(*_DLQ_COLS)
+        inv = batch_df.filter(~F.coalesce(accepted_cond, F.lit(False))).select(*_DLQ_COLS)
         n_inv = inv.count()
         if n_inv:
             logger.warning(f"DLQ batch: {n_inv} invalid rows -> {dlq_table}")

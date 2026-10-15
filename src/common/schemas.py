@@ -16,6 +16,37 @@ EXCEPTION_MISSING_BANK_STATEMENT = "EXCEPTION_MISSING_BANK_STATEMENT"
 # a corrected settlement re-evaluates it on the next batch.
 EXCEPTION_CURRENCY_MISMATCH = "EXCEPTION_CURRENCY_MISMATCH"
 
+# Money moving backwards: the gateway told us a refund, a reversal or a
+# chargeback. These rows carry a non-positive amount, which is why they used to
+# land in the DLQ - indistinguishable from a malformed record, and
+# `replay_dlq.py` filters on `amount_paise > 0`, so they could never be replayed
+# or purged either. They are real events and belong in the ledger.
+#
+# Known gap, stated rather than papered over: the settlement side cannot yet
+# express the matching debit. `settlement_schema.Check.gt(0)` quarantines a
+# negative settled amount, so a reversal webhook parks here until the
+# settlement contract grows a direction field. It is a visible, counted wait
+# rather than a silent DLQ entry nobody can drain.
+#
+# Not terminal: a later settlement or a corrected event re-evaluates it.
+EXCEPTION_REVERSAL = "EXCEPTION_REVERSAL"
+
+# Gateway status strings this repo reads as a backward money movement.
+# Gateways disagree on spelling; this is the vocabulary, not a provider's
+# spec. Extend it for the provider you integrate. Compared case-insensitively.
+REVERSAL_GATEWAY_STATUSES = frozenset(
+    {
+        "REFUND",
+        "REFUNDED",
+        "REFUND_PENDING",
+        "PARTIAL_REFUND",
+        "REVERSED",
+        "REVERSAL",
+        "CHARGEBACK",
+        "DISPUTE",
+    }
+)
+
 # late webhooks wait here so a later batch can still judge them
 PENDING_RECONCILIATION = "PENDING_RECONCILIATION"
 

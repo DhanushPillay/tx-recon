@@ -104,16 +104,23 @@ def test_journal_write_failure_raises(tmp_path):
 # ---- DLQ replay ordering ----
 
 
-def _spark_rows(n, already=0):
+def _spark_rows(n, already=0, stranded=0):
     spark = MagicMock()
-    replayable = MagicMock()
-    replayable.count.return_value = n
-    spark.sql.side_effect = [
-        replayable,
-        MagicMock(collect=lambda: [{"n": already}]),
-        MagicMock(),
-        MagicMock(),
-    ]
+
+    def _sql(query):
+        # Dispatched on the query text, not call order, so a new census query
+        # cannot shift every later stub.
+        if "SELECT * FROM" in query:
+            replayable = MagicMock()
+            replayable.count.return_value = n
+            return replayable
+        if "amount_paise <= 0" in query:
+            return MagicMock(collect=lambda: [{"n": stranded}])
+        if "JOIN dlq_replay" in query:
+            return MagicMock(collect=lambda: [{"n": already}])
+        return MagicMock()
+
+    spark.sql.side_effect = _sql
     return spark
 
 
@@ -138,7 +145,7 @@ def _run(argv, spark):
 
 def test_dlq_inserted_math_subtracts_already_present():
     out = _run([], _spark_rows(3, already=1))
-    assert out == {"replayable": 3, "inserted": 2, "deleted": False}
+    assert out == {"replayable": 3, "inserted": 2, "deleted": False, "reversal_stranded": 0}
 
 
 def test_dlq_empty_is_noop_no_journal():
@@ -146,9 +153,10 @@ def test_dlq_empty_is_noop_no_journal():
 
     spark = MagicMock()
     spark.sql.return_value.count.return_value = 0
+    spark.sql.return_value.collect.return_value = [{"n": 0}]
     with patch.object(replay_dlq, "journal_correction") as j:
         out = _run([], spark)
-    assert out == {"replayable": 0, "inserted": 0}
+    assert out == {"replayable": 0, "inserted": 0, "reversal_stranded": 0}
     j.assert_not_called()
 
 
@@ -165,5 +173,5 @@ def test_dlq_delete_validates_before_purge():
             pytest.raises(ValueError, match=msg),
         ):
             _run(argv, spark)
-        assert spark.sql.call_count == 3  # replay MERGE done, purge never issued
+        assert spark.sql.call_count == 4  # replay MERGE done, purge never issued
         j.assert_not_called()

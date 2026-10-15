@@ -55,16 +55,23 @@ def _replay_main(argv, spark):
         return replay_dlq.main()
 
 
-def _spark_with_rows(n):
+def _spark_with_rows(n, stranded=0):
     spark = MagicMock()
-    replayable = MagicMock()
-    replayable.count.return_value = n
-    spark.sql.side_effect = [
-        replayable,  # SELECT * replayable
-        MagicMock(collect=lambda: [{"n": 0}]),  # already-present probe
-        MagicMock(),  # MERGE replay
-        MagicMock(),  # MERGE purge (delete only)
-    ]
+
+    def _sql(query):
+        # Dispatched on the query text rather than call order, so adding a
+        # census query cannot silently shift every later stub.
+        if "SELECT * FROM" in query:
+            replayable = MagicMock()
+            replayable.count.return_value = n
+            return replayable
+        if "amount_paise <= 0" in query:
+            return MagicMock(collect=lambda: [{"n": stranded}])
+        if "JOIN dlq_replay" in query:
+            return MagicMock(collect=lambda: [{"n": 0}])
+        return MagicMock()
+
+    spark.sql.side_effect = _sql
     return spark
 
 
@@ -77,7 +84,7 @@ def test_delete_without_reason_fails_before_purge():
         pytest.raises(ValueError, match="--reason"),
     ):
         _replay_main(["--delete", "--approved-by", "alice"], spark)
-    assert spark.sql.call_count == 3  # no purge MERGE issued
+    assert spark.sql.call_count == 4  # no purge MERGE issued
     j.assert_not_called()
 
 
@@ -90,7 +97,7 @@ def test_delete_without_approver_fails_before_purge():
         pytest.raises(ValueError, match="--approved-by"),
     ):
         _replay_main(["--delete", "--reason", "T-1"], spark)
-    assert spark.sql.call_count == 3
+    assert spark.sql.call_count == 4
     j.assert_not_called()
 
 

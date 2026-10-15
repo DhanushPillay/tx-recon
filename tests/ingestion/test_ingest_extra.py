@@ -115,6 +115,13 @@ def _patch_ingest(ing, mocker, spark):
     mocker.patch.object(ing, "col", side_effect=lambda *a, **k: _FakeCol())
     mocker.patch.object(ing, "_registry_schema_id", return_value="123")
     mocker.patch("src.validation.pan_guard.count_spark_pan_hits", return_value=0)
+    # These build real Spark Columns, and pyspark refuses to build one without
+    # an active context. `spark` here is a MagicMock, so stub them; the real
+    # predicates are covered against a live session in test_reversals.py.
+    mocker.patch.object(ing, "_forward_condition", return_value=_FakeCol())
+    mocker.patch.object(ing, "_reversal_condition", return_value=_FakeCol())
+    mocker.patch.object(ing, "_accepted_condition", return_value=_FakeCol())
+    mocker.patch.object(ing, "_ingest_status_column", return_value=_FakeCol())
 
 
 def _merge_sql(spark):
@@ -131,7 +138,9 @@ def _gauge(n):
 
 
 def _filter_stubs(valid, invalid, late_count=0):
-    return [_gauge(late_count), _gauge(0), valid, invalid]
+    # One entry per batch_df.filter(...) before the two sink frames, in call
+    # order: late-data gauge, unparseable-timestamp gauge, reversal gauge.
+    return [_gauge(late_count), _gauge(0), _gauge(0), valid, invalid]
 
 
 def test_supervisor_delay_doubles_then_caps():
