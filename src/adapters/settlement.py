@@ -186,8 +186,17 @@ def _merchant(df: pd.DataFrame, lc: dict[str, str]) -> pd.Series:
 
 
 def _currency(df: pd.DataFrame, lc: dict[str, str]) -> pd.Series:
-    cur = _col(df, lc, "currency").fillna("INR").astype(str).str.strip().str.upper()
-    return cur.replace("NAN", "INR").replace("", "INR")
+    """Normalise the declared currency, or return NA when the row declares none.
+
+    This used to fill blanks with "INR". That ran before validation, so the
+    ``isin(["INR"])`` check downstream could never fire on a missing value and
+    an undeclared currency quietly became an assertion that the money was
+    rupees. NA is honest about what the file actually said; the reconciliation
+    MERGE decides what an undeclared currency means, and it counts them.
+    """
+    cur = _col(df, lc, "currency").astype(str).str.strip().str.upper()
+    missing = cur.isin({"NAN", "NONE", "<NA>", "NA", ""})
+    return cur.mask(missing, pd.NA)
 
 
 def _bank_ref(

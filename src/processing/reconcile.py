@@ -7,6 +7,7 @@ from pyspark.sql.types import LongType, StringType, StructField, StructType
 
 from src.common.config import get_spark_session
 from src.common.schemas import (
+    EXCEPTION_CURRENCY_MISMATCH,
     EXCEPTION_FEE_MISMATCH,
     EXCEPTION_LATE_UNRESOLVED,
     EXCEPTION_MISSING_BANK_STATEMENT,
@@ -440,7 +441,8 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
             s.settled_amount_paise,
             s.instrument_type,
             COALESCE(s.merchant_id, 'UNKNOWN') AS merchant_id,
-            s.settlement_date
+            s.settlement_date,
+            s.currency
         FROM bank_settlements s
         WHERE s.transaction_id IS NOT NULL AND s.settled_amount_paise IS NOT NULL
     ) s
@@ -454,14 +456,21 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
             t.reconciliation_status = '{EXCEPTION_FEE_MISMATCH}',
             t.bank_ref_id = s.bank_ref_id,
             t.instrument_type = s.instrument_type
+    WHEN MATCHED AND t.reconciliation_status NOT IN ({_terminal_not_in})
+             AND t.currency IS NOT NULL AND s.currency IS NOT NULL
+             AND t.currency <> s.currency THEN
+        UPDATE SET
+            t.reconciliation_status = '{EXCEPTION_CURRENCY_MISMATCH}',
+            t.bank_ref_id = s.bank_ref_id,
+            t.instrument_type = s.instrument_type
     WHEN MATCHED AND t.reconciliation_status NOT IN ({_terminal_not_in}) THEN
         UPDATE SET
             t.reconciliation_status = CASE WHEN ABS((t.amount_paise - ({fee_case_sql}) - ({gst_case_sql})) - s.settled_amount_paise) <= ({tolerance_sql}) THEN '{MATCHED}' ELSE '{EXCEPTION_FEE_MISMATCH}' END,
             t.bank_ref_id = s.bank_ref_id,
             t.instrument_type = s.instrument_type
     WHEN NOT MATCHED THEN
-        INSERT (transaction_id, amount_paise, gateway_status, timestamp_utc, merchant_id, reconciliation_status, bank_ref_id, instrument_type)
-        VALUES (s.transaction_id, s.settled_amount_paise, 'UNKNOWN', s.settlement_date, COALESCE(s.merchant_id, 'UNKNOWN'), '{EXCEPTION_MISSING_WEBHOOK}', s.bank_ref_id, s.instrument_type)
+        INSERT (transaction_id, amount_paise, gateway_status, timestamp_utc, merchant_id, reconciliation_status, bank_ref_id, instrument_type, currency)
+        VALUES (s.transaction_id, s.settled_amount_paise, 'UNKNOWN', s.settlement_date, COALESCE(s.merchant_id, 'UNKNOWN'), '{EXCEPTION_MISSING_WEBHOOK}', s.bank_ref_id, s.instrument_type, s.currency)
     """
 
     logger.info("Executing MERGE INTO operation")
@@ -486,6 +495,14 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
     counts["duplicate_settlement_rows"] = max(
         0, settlement_rows_total - counts["settlement_rows_deduped"]
     )
+    # A settlement that declares no currency cannot be proven comparable to a
+    # webhook that declares one, and the fee tolerance has no meaning across
+    # currencies. Counted, not assumed. Deliberately not batch_-prefixed: it is
+    # a data-quality signal, not a tile of the batch status breakdown that
+    # check_batch_drift sums.
+    counts["settlement_currency_missing_rows"] = bank_df_dedup.filter(
+        F.col("currency").isNull()
+    ).count()
     counts.update(bank_out)
     if counts["duplicate_settlement_rows"]:
         counts["batch_EXCEPTION_DUPLICATE_SETTLEMENT"] = counts["duplicate_settlement_rows"]
@@ -599,6 +616,14 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
             bank_df_dedup.unpersist()
         with contextlib.suppress(Exception):
             bank_df_valid.unpersist()
+    if counts["settlement_currency_missing_rows"]:
+        logger.warning(
+            "%d settlement row(s) declare no currency, so they are compared against "
+            "the webhook amount as if both were the same unit; see "
+            "batch_EXCEPTION_CURRENCY_MISMATCH for the rows where both sides "
+            "declared different currencies",
+            counts["settlement_currency_missing_rows"],
+        )
     _dup_mutations = counts.get("duplicate_mutations") or 0
     if _dup_mutations:
         logger.warning(

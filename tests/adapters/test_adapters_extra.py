@@ -289,5 +289,5 @@ def test_chunked_and_direct_reads_agree_on_nulls(tmp_path):
     )
     direct, _ = load_settlement_csv(str(p))
     chunked, _ = _validate_large_file(str(p), normalize_settlement_df)
-    assert direct["currency"].iloc[0] == "INR"
-    assert chunked["currency"].iloc[0] == direct["currency"].iloc[0]
+    assert pd.isna(direct["currency"].iloc[0])
+    assert pd.isna(chunked["currency"].iloc[0])

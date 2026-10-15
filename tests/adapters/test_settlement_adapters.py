@@ -24,7 +24,8 @@ def test_generic_adapter_canonical():
     assert tmp.iloc[0]["transaction_id"] == "tx_a1b2c3d4e5f6"
     assert tmp.iloc[0]["settled_amount_paise"] == 100000
     assert tmp.iloc[0]["merchant_id"] == "merch_001"
-    assert tmp.iloc[0]["currency"] == "INR"
+    # The row declared no currency, so none is asserted on its behalf.
+    assert pd.isna(tmp.iloc[0]["currency"])
 
 
 def test_razorpay_adapter_inr_conversion_and_mapping():

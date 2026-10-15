@@ -28,8 +28,12 @@ def test_merge_keyed_on_transaction_id():
     assert "ON t.transaction_id = s.transaction_id" in MERGE_SRC
 
 
-def test_merge_has_three_matched_updates_one_insert():
-    assert MERGE_SRC.count("WHEN MATCHED") == 3
+def test_merge_has_four_matched_updates_one_insert():
+    # Four WHEN MATCHED arms: placeholder-preserve, null-amount, currency
+    # conflict, and the tolerance CASE. First match wins, so the currency arm
+    # has to sit ahead of the tolerance one or a USD settlement gets priced as
+    # if it were rupees.
+    assert MERGE_SRC.count("WHEN MATCHED") == 4
     assert MERGE_SRC.count("WHEN NOT MATCHED") == 1
 
 

@@ -30,6 +30,7 @@ _WEBHOOK_COLS = [
     "bank_ref_id",
     "ingested_at",
     "instrument_type",
+    "currency",
 ]
 _DLQ_COLS = [
     "transaction_id",
@@ -311,7 +312,8 @@ def ensure_webhook_table(spark, table: str) -> None:
             ingested_at timestamp,
             instrument_type string,
             duplicate_mutation_count bigint,
-            last_duplicate_at timestamp
+            last_duplicate_at timestamp,
+            currency string
         ) USING iceberg
         PARTITIONED BY (bucket(16, transaction_id))
         TBLPROPERTIES (
@@ -329,7 +331,7 @@ def ensure_webhook_table(spark, table: str) -> None:
     # old shape, and CREATE TABLE IF NOT EXISTS above is a no-op for it.
     spark.sql(
         f"ALTER TABLE {table} ADD COLUMNS IF NOT EXISTS ("
-        "duplicate_mutation_count bigint, last_duplicate_at timestamp)"
+        "duplicate_mutation_count bigint, last_duplicate_at timestamp, currency string)"
     )
 
 

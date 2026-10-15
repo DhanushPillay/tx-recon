@@ -217,13 +217,18 @@ def test_run_reconciliation_wiring(
     using_clause = merge_sql.split("ON t.transaction_id")[0]
     assert "JOIN" not in using_clause
     assert "IS NOT NULL" in merge_sql, "null guards required on both branches"
-    assert merge_sql.count("UPDATE SET") == 3
+    assert merge_sql.count("UPDATE SET") == 4
     assert merge_sql.count("WHEN NOT MATCHED") == 1
     assert "CASE WHEN ABS(" in merge_sql, "single-pass CASE replaces double ABS eval"
     placeholder_clause = merge_sql.split("WHEN MATCHED AND t.amount_paise IS NULL")[0]
     assert "EXCEPTION_MISSING_WEBHOOK" in placeholder_clause
     assert "DELETE" not in merge_sql
     assert "EXCEPTION_LATE_UNRESOLVED" in merge_sql
+    assert "EXCEPTION_CURRENCY_MISMATCH" in merge_sql
+    # The currency arm has to be reached before the tolerance CASE, which would
+    # otherwise price a USD settlement against an INR webhook.
+    assert merge_sql.index("EXCEPTION_CURRENCY_MISMATCH") < merge_sql.index("CASE WHEN ABS(")
+    assert counts["settlement_currency_missing_rows"] == 4
     assert counts["settlement_rows_deduped"] == 4
     assert counts["MATCHED"] == 3
     assert counts["EXCEPTION_FEE_MISMATCH"] == 1

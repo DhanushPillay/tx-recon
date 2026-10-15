@@ -287,6 +287,7 @@ def test_write_batch_uses_explicit_columns(mocker):
         "bank_ref_id",
         "ingested_at",
         "instrument_type",
+        "currency",
     ]
     assert ing._DLQ_COLS == [
         "transaction_id",
