@@ -127,7 +127,12 @@ def run_daily(date_str: str | None = None) -> dict:
 
     from src.common.config import get_spark_session
     from src.common.settings import get_settings
-    from src.processing.reconcile import leg_enabled, maintain_tables, run_reconciliation
+    from src.processing.reconcile import (
+        leg_enabled,
+        maintain_tables,
+        refresh_mart,
+        run_reconciliation,
+    )
     from src.processing.wap import (
         branch_name,
         create_branch,
@@ -139,7 +144,7 @@ def run_daily(date_str: str | None = None) -> dict:
     from src.validation.validate_settlement import validate_latest_settlement
 
     settings = get_settings()
-    logger.info("Step 1/4: validating real PG settlement file")
+    logger.info("Step 1/5: validating real PG settlement file")
     curated_path = validate_latest_settlement(date_str=date_str)
     if not curated_path:
         raise RuntimeError("validation returned no curated file")
@@ -156,11 +161,11 @@ def run_daily(date_str: str | None = None) -> dict:
 
     published = False
     try:
-        logger.info("Step 2/4: running reconciliation MERGE")
+        logger.info("Step 2/5: running reconciliation MERGE")
         counts: dict = run_reconciliation(date_str=batch_date)
-        logger.info("Step 3/4: running residual second opinion")
+        logger.info("Step 3/5: running residual second opinion")
         residual_ok = _run_residual(counts)
-        logger.info("Step 4/4: verifying batch and publishing")
+        logger.info("Step 4/5: verifying batch")
         check_batch_drift(counts, ds=batch_date)
         if not residual_ok:
             raise RuntimeError("publish gate failed: residual second opinion failed")
@@ -169,6 +174,11 @@ def run_daily(date_str: str | None = None) -> dict:
                 f"publish gate failed: batch_match_rate {counts.get('batch_match_rate')} "
                 f"< SLO {os.environ.get('MATCH_RATE_SLO', 0.95)}"
             )
+        # Last, once the batch is known good: the mart is a published artifact
+        # that WAP does not branch, so rebuilding it before the gates would
+        # hand a rejected batch to every Trino and Metabase reader.
+        logger.info("Step 5/5: refreshing fact_reconciliation and publishing")
+        refresh_mart(spark if wap_on else get_spark_session("pipeline"), settings)
         published = True
     finally:
         if wap_on:

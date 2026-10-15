@@ -17,6 +17,7 @@ def test_main_runs_real_file(tmp_path, monkeypatch):
             return_value=str(tmp_path / "curated_settlement_20250402.csv"),
         ),
         patch("src.processing.reconcile.run_reconciliation", return_value=counts),
+        patch("src.processing.reconcile.refresh_mart"),
         patch("src.processing.reconcile.maintain_tables", return_value={"m": {}}),
     ):
         with patch("sys.argv", ["pipeline", "--date", "2025-04-02"]):
@@ -111,16 +112,17 @@ def _patched_daily(counts, curated_path, maintain_impl):
             return_value=curated_path,
         ),
         patch("src.processing.reconcile.run_reconciliation", return_value=counts),
+        patch("src.processing.reconcile.refresh_mart"),
         patch("src.processing.reconcile.maintain_tables", maintain_impl),
     )
 
 
 def test_run_daily_metrics_write_failure_skipped(tmp_path):
     counts = {"settlement_rows_deduped": 2, "batch_MATCHED": 2}
-    p1, p2, p3, p4 = _patched_daily(
+    p1, p2, p3, p4, p5 = _patched_daily(
         counts, str(tmp_path / "curated_settlement_20250402.csv"), lambda: {}
     )
-    with p1, p2, p3, p4, patch("os.path.dirname", return_value="/nonexistent-dir-xyz"):
+    with p1, p2, p3, p4, p5, patch("os.path.dirname", return_value="/nonexistent-dir-xyz"):
         out = run_daily(date_str="2025-04-02")
     assert out["settlement_rows_deduped"] == 2
 
@@ -131,10 +133,10 @@ def test_run_daily_maintenance_failure_skipped(tmp_path):
     def _boom():
         raise RuntimeError("expire exploded")
 
-    p1, p2, p3, p4 = _patched_daily(
+    p1, p2, p3, p4, p5 = _patched_daily(
         counts, str(tmp_path / "curated_settlement_20250402.csv"), _boom
     )
-    with p1, p2, p3, p4:
+    with p1, p2, p3, p4, p5:
         out = run_daily(date_str="2025-04-02")
     assert out["settlement_rows_deduped"] == 2
     assert "maintenance" not in out

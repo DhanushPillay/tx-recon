@@ -230,6 +230,27 @@ def _mart_table(source_table: str) -> str:
     return f"{source_table.rsplit('.', 1)[0]}.fact_reconciliation"
 
 
+def refresh_mart(spark, settings) -> None:
+    """Rebuild fact_reconciliation from whatever the webhook table holds now.
+
+    The pipeline calls this only after the drift and SLO gates pass. It used to
+    run inside run_reconciliation, which meant a batch that failed its gate had
+    already replaced the mart -- and the mart is what every Trino and Metabase
+    reader sees. WAP branched the webhook table but never this one.
+    """
+    table = _qualified_table(settings.webhook_table)
+    mart_table = _mart_table(table)
+    try:
+        mart_sql, mart_version = _load_mart_sql(settings.project_root, table, mart_table)
+        spark.sql(mart_sql)
+        logger.info(f"mart {mart_version} refreshed: {mart_table}")
+    except Exception as exc:
+        msg = f"Could not refresh fact_reconciliation table: {exc}"
+        if settings.strict_slo:
+            raise RuntimeError(msg) from exc
+        logger.warning(msg)
+
+
 _REWRITE_TARGET_BYTES = 128 * 1024 * 1024
 _REWRITE_MAX_GROUP_BYTES = 4 * 1024 * 1024 * 1024
 
@@ -434,16 +455,9 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
 
     bank_out = _run_bank_leg(spark, table, data_dir, date_str, settings)
 
-    mart_table = _mart_table(table)
-    try:
-        _mart_sql, _mart_version = _load_mart_sql(project_root, table, mart_table)
-        spark.sql(_mart_sql)
-        logger.info(f"mart {_mart_version} refreshed: {mart_table}")
-    except Exception as exc:
-        msg = f"Could not refresh fact_reconciliation table: {exc}"
-        if settings.strict_slo:
-            raise RuntimeError(msg) from exc
-        logger.warning(msg)
+    # The mart is deliberately NOT refreshed here. run_daily calls
+    # refresh_mart once the drift and SLO gates pass, so a rejected batch never
+    # reaches the readers of fact_reconciliation.
 
     counts: dict[str, int | float] = {"settlement_rows_total": settlement_rows_total}
     counts["settlement_rows_deduped"] = settlement_rows_deduped

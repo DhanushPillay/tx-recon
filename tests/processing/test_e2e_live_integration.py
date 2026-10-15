@@ -16,7 +16,7 @@ import pytest
 from src.common.config import get_spark_session
 from src.common.settings import get_settings
 from src.ingestion.ingest_webhooks import ensure_dlq_table, ensure_webhook_table
-from src.processing.reconcile import _mart_table, run_reconciliation
+from src.processing.reconcile import _mart_table, refresh_mart, run_reconciliation
 
 pytestmark = pytest.mark.integration
 
@@ -118,6 +118,10 @@ def test_live_green_batch_soaks_stable_and_builds_mart():
         assert runs[0]["settlement_rows_evaluated"] == 2
         assert runs[0]["batch_MATCHED"] == 2
         assert runs[0]["batch_match_rate"] == 1.0
+
+        # The pipeline refreshes the mart only after its gates pass, so a
+        # direct call to run_reconciliation has to ask for it explicitly.
+        refresh_mart(spark, settings)
 
         mart = spark.table(_mart_table(table))
         assert set(mart.columns) >= BI_COLUMNS

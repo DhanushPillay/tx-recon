@@ -12,6 +12,7 @@ from src.processing.reconcile import (
     build_fee_case_sql,
     maintain_tables,
     reconcile_bank_leg,
+    refresh_mart,
     run_reconciliation,
 )
 
@@ -187,8 +188,11 @@ def test_run_reconciliation_wiring(
     count_collect = [
         {"scope": "table", "st": r["reconciliation_status"], "n": r["n"]} for r in table_collect
     ] + [{"scope": "batch", "st": r["st"], "n": r["n"]} for r in batch_collect]
+    # Positional side_effect: one entry per spark.sql() call, in call order.
+    # MERGE, the late-SLA count, the late-SLA UPDATE, the counts query, the
+    # depth gauges. There is deliberately no entry for the mart -- run_daily
+    # refreshes it after the gates, not run_reconciliation.
     mock_spark.sql.side_effect = [
-        MagicMock(),
         MagicMock(),
         MagicMock(collect=MagicMock(return_value=[{"provider": "generic"}])),
         MagicMock(collect=MagicMock(return_value=[{"n": 2}])),
@@ -240,11 +244,12 @@ def test_run_reconciliation_wiring(
         if c[0][0].startswith("MERGE INTO") and "EXCEPTION_LATE_UNRESOLVED" in c[0][0]
     ]
     assert len(late_merges) == 0
+    # run_reconciliation must not touch fact_reconciliation. The mart is a
+    # published artifact that WAP never branched, so refreshing it here handed a
+    # gate-failing batch to every Trino and Metabase reader. run_daily calls
+    # refresh_mart after the gates instead; see tests/test_mart_publish_gate.py.
     mart_sqls = [c[0][0] for c in mock_spark.sql.call_args_list if "fact_reconciliation" in c[0][0]]
-    assert len(mart_sqls) == 1
-    assert "CREATE OR REPLACE TABLE" in mart_sqls[0]
-    assert "nessie.db.fact_reconciliation" in mart_sqls[0]
-    assert "FROM nessie.db.webhooks" in mart_sqls[0]
+    assert mart_sqls == []
     count_sqls = [c[0][0] for c in mock_spark.sql.call_args_list if " AS scope" in c[0][0]]
     assert len(count_sqls) == 1
     assert count_sqls[0].count("UNION ALL") == 1
@@ -485,20 +490,38 @@ def test_merge_failure_raises_a_runtime_error_naming_the_merge():
         )
 
 
+def _mart_settings(strict_slo: bool) -> MagicMock:
+    return MagicMock(
+        project_root=".",
+        webhook_table="nessie.db.webhooks",
+        strict_slo=strict_slo,
+    )
+
+
+def _mart_spark() -> MagicMock:
+    spark = MagicMock()
+    spark.sql.side_effect = ValueError("spark exploded")
+    return spark
+
+
+# These two used to run through _run_with_collects, because the mart refresh
+# lived inside run_reconciliation. It moved out to refresh_mart so it can run
+# after the publish gates; the strict/non-strict contract came with it.
 def test_mart_refresh_failure_fails_the_batch_under_strict():
     with pytest.raises(RuntimeError, match="Could not refresh fact_reconciliation"):
-        _run_with_collects(
-            batch_collect=[], table_collect=[], strict_slo=True, fail_at="CREATE OR REPLACE"
-        )
+        refresh_mart(_mart_spark(), _mart_settings(True))
 
 
 def test_mart_refresh_failure_only_warns_when_not_strict():
-    counts, _ = _run_with_collects(
-        batch_collect=[{"st": "MATCHED", "n": 1}],
-        table_collect=[{"reconciliation_status": "MATCHED", "n": 1}],
-        fail_at="CREATE OR REPLACE",
-    )
-    assert counts["batch_MATCHED"] == 1
+    refresh_mart(_mart_spark(), _mart_settings(False))
+
+
+def test_mart_refresh_issues_one_create_against_the_mart_table():
+    spark = MagicMock()
+    refresh_mart(spark, _mart_settings(True))
+    (sql,) = [c[0][0] for c in spark.sql.call_args_list]
+    assert "CREATE OR REPLACE TABLE nessie.db.fact_reconciliation" in sql
+    assert "FROM nessie.db.webhooks" in sql
 
 
 def test_late_sweep_failure_publishes_the_flag_the_alert_reads():
