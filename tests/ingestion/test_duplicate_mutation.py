@@ -15,14 +15,17 @@ foreachBatch callback and read the MERGE it emits.
 import re
 from unittest.mock import MagicMock
 
-from src.ingestion.ingest_webhooks import ensure_webhook_table
-from src.processing.reconcile import fold_status_counts
-from tests.ingestion.test_ingest_extra import (
+# Bare module name on purpose: `tests.<subpkg>` is not importable here, see
+# tests/test_import_hygiene.py.
+from test_ingest_extra import (
     _filter_stubs,
     _merge_sql,
     _mock_stream,
     _patch_ingest,
 )
+
+from src.ingestion.ingest_webhooks import ensure_webhook_table
+from src.processing.reconcile import fold_status_counts
 
 
 def _run_sink(mocker):

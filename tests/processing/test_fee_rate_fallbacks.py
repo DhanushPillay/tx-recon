@@ -15,6 +15,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
+# Bare module name on purpose: `tests.<subpkg>` is not importable here, see
+# tests/test_import_hygiene.py.
+from test_reconcile import _run_with_collects
+
 from src.processing.fee_engine import FeeEngine
 from src.processing.reconcile import (
     FEE_FALLBACK_COUNT_KEYS,
@@ -23,7 +27,6 @@ from src.processing.reconcile import (
     fold_fallback_rows,
     known_fee_merchants,
 )
-from tests.processing.test_reconcile import _run_with_collects
 
 _ALL_FOUR = sorted(FEE_FALLBACK_COUNT_KEYS.values())
 
