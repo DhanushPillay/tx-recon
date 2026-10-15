@@ -11,8 +11,8 @@ help:
 	@echo "test            - unit tests (skip integration)"
 	@echo "coverage        - unit tests with 90% branch gate"
 	@echo "integration     - live Spark + docker tests (needs 'make up')"
-	@echo "accuracy        - real-data accuracy gate (>=85% on 10k sample)"
-	@echo "regression      - accuracy gate vs baseline (accuracy only)"
+	@echo "mix             - scale + mix check over the 10k sample (not accuracy)"
+	@echo "regression      - mix gate vs baseline (mix only)"
 	@echo "regression-full - gate kafka + latency + iceberg too (needs 'make bench')"
 	@echo "bench           - full real-data bench (accuracy + kafka/pandera/iceberg/pyspark)"
 	@echo "pipeline        - run daily recon (DATE=YYYY-MM-DD, default today)"
@@ -21,16 +21,16 @@ help:
 accuracy:
 	python tests/performance/quick_perf.py
 
-# Accuracy only. --require says so out loud: the accuracy harness does not
+# Mix only. --require says so out loud: the mix harness does not
 # produce throughput or latency numbers, and the gate now fails rather than
 # warning when a required family is missing from the run.
 regression: accuracy
-	python tests/performance/check_regression.py --results tests/performance/results_accuracy.json --baseline tests/performance/baseline_real.json --require accuracy
+	python tests/performance/check_regression.py --results tests/performance/results_accuracy.json --baseline tests/performance/baseline_real.json --require mix
 
 # Full set. Run `make bench` first so results_real.json has all four suites.
 # Comparing against a partially populated artifact fails instead of skipping.
 regression-full:
-	python tests/performance/check_regression.py --results tests/performance/results_real.json --baseline tests/performance/baseline_real.json --require accuracy,kafka,kafka-latency,iceberg --hardware-policy fail
+	python tests/performance/check_regression.py --results tests/performance/results_real.json --baseline tests/performance/baseline_real.json --require mix,kafka,kafka-latency,iceberg --hardware-policy fail
 
 pipeline:
 	python -m src.pipeline --date $(DATE)

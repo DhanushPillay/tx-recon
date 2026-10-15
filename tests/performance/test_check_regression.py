@@ -24,17 +24,17 @@ def test_hardware_change_warns_not_fails():
     assert len(warn) == 1
 
 
-def test_checked_in_baseline_gates_accuracy_only():
+def test_checked_in_baseline_gates_the_mix_only():
     import json
     import os
 
     with open(os.path.join(os.path.dirname(__file__), "baseline_real.json")) as f:
         base = json.load(f)
-    assert base["accuracy"]["match_rate"] >= 0.85
-    ok, warn, compared = check({"accuracy": {"match_rate": 0.94}}, base)
+    assert base["mix"]["match_rate"] >= 0.85
+    ok, warn, compared = check({"mix": {"match_rate": 0.94}}, base)
     assert ok == []
     assert compared == set()
     assert len(warn) == len(_comparable(base))
     assert all("no comparison ran" in w for w in warn)
-    bad, _, _ = check({"accuracy": {"match_rate": 0.80}}, base)
-    assert any("accuracy gate" in f for f in bad)
+    bad, _, _ = check({"mix": {"match_rate": 0.80}}, base)
+    assert any("mix floor" in f for f in bad)

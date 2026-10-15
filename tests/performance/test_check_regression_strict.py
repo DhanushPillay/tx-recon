@@ -1,6 +1,6 @@
 """The regression gate used to warn on a missing metric and exit 0.
 
-CI passes an accuracy-only artifact, so throughput and p99 were never measured
+CI passes an mix-only artifact, so throughput and p99 were never measured
 and the step still reported success. These tests pin the new behaviour: a
 required metric the run does not supply fails, and an unusable baseline value
 cannot read as "no change".
@@ -18,7 +18,7 @@ def _kafka(tp=1000.0, p95=10.0, p99=50.0, count=None):
 
 class TestRequiredFamilies:
     def test_required_family_absent_from_the_run_fails(self):
-        cur = {"accuracy": {"match_rate": 0.94}}
+        cur = {"mix": {"match_rate": 0.94}}
         base = {"kafka": {"throughput_msgs_sec": 1000.0}}
         failures, _, _ = cr.check(cur, base, require=("kafka",))
         assert any("--require kafka" in f for f in failures)
@@ -35,7 +35,7 @@ class TestRequiredFamilies:
     def test_nothing_required_keeps_the_old_permissive_path(self):
         # Back-compat for callers that pass no scope: absence still only warns.
         base = {"kafka": {"throughput_msgs_sec": 1000.0}}
-        failures, warn, compared = cr.check({"accuracy": {"match_rate": 0.94}}, base)
+        failures, warn, compared = cr.check({"mix": {"match_rate": 0.94}}, base)
         assert failures == []
         assert warn and compared == set()
 
@@ -83,7 +83,7 @@ class TestWorkloadComparability:
         base = {
             "iceberg": {"benchmarks": {"1000k_rows_10pct_update_mor_real": {"rows_per_sec": 100.0}}}
         }
-        failures, _, _ = cr.check({"accuracy": {"match_rate": 0.94}}, base, require=("iceberg",))
+        failures, _, _ = cr.check({"mix": {"match_rate": 0.94}}, base, require=("iceberg",))
         assert any("does not" in f for f in failures)
 
 
@@ -127,26 +127,26 @@ class TestHardwarePolicy:
         assert any("hardware changed" in f for f in failures)
 
 
-class TestAccuracy:
-    def test_accuracy_artifact_without_match_rate_fails_when_required(self):
-        failures, _, _ = cr.check({"accuracy": {}}, {}, require=("accuracy",))
+class TestMix:
+    def test_mix_artifact_without_match_rate_fails_when_required(self):
+        failures, _, _ = cr.check({"mix": {}}, {}, require=("mix",))
         assert any("no match_rate" in f for f in failures)
 
-    def test_low_accuracy_fails(self):
-        failures, _, _ = cr.check({"accuracy": {"match_rate": 0.80}}, {})
-        assert any("accuracy gate failed" in f for f in failures)
+    def test_low_mix_fails(self):
+        failures, _, _ = cr.check({"mix": {"match_rate": 0.80}}, {})
+        assert any("mix floor failed" in f for f in failures)
 
-    def test_healthy_accuracy_passes(self):
-        failures, _, _ = cr.check({"accuracy": {"match_rate": 0.9463}}, {})
+    def test_healthy_mix_passes(self):
+        failures, _, _ = cr.check({"mix": {"match_rate": 0.9463}}, {})
         assert failures == []
 
 
 class TestParseRequire:
     def test_parses_comma_separated(self):
-        assert cr._parse_require("accuracy,kafka") == ["accuracy", "kafka"]
+        assert cr._parse_require("mix,kafka") == ["mix", "kafka"]
 
     def test_tolerates_spaces_and_blanks(self):
-        assert cr._parse_require(" accuracy , kafka , ") == ["accuracy", "kafka"]
+        assert cr._parse_require(" mix , kafka , ") == ["mix", "kafka"]
 
     def test_empty_gives_empty(self):
         assert cr._parse_require("") == []
@@ -165,16 +165,14 @@ class TestCheckedInBaseline:
         assert any(m.startswith("kafka") for m in measured)
         assert any(m.startswith("iceberg") for m in measured)
 
-    def test_accuracy_only_run_against_the_full_baseline_says_so(self):
+    def test_mix_only_run_against_the_full_baseline_says_so(self):
         import json
         import os
 
         path = os.path.join(os.path.dirname(__file__), "baseline_real.json")
         with open(path) as f:
             base = json.load(f)
-        failures, warn, compared = cr.check(
-            {"accuracy": {"match_rate": 0.94}}, base, require=("accuracy",)
-        )
+        failures, warn, compared = cr.check({"mix": {"match_rate": 0.94}}, base, require=("mix",))
         assert failures == []
         assert compared == set()
         assert len(warn) == len(cr._comparable(base))

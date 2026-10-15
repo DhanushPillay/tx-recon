@@ -1,7 +1,7 @@
 """Compare a benchmark run against a checked-in baseline and fail on regressions.
 
 The failure mode this replaces: a missing metric used to land in `warn` and exit
-0. CI passed an accuracy-only artifact, so throughput, p99 and every Iceberg
+0. CI passed a match-rate-only artifact, so throughput, p99 and every Iceberg
 metric were never measured and the step still reported success. Anyone reading
 the log saw a green gate covering metrics it had not looked at.
 
@@ -12,11 +12,18 @@ Two changes close that:
 - `_pct_change` returns None for an unusable baseline value instead of 0.0%, so
   a missing or zero baseline cannot read as "no change".
 
+The `mix` family is not an accuracy measurement. It is the loader's injected
+exception mix over the checked-in 10k sample, and it is scored against its own
+output; see tests/performance/recon_accuracy.py for why the ratio cannot detect
+a fee-engine defect. It floors at 85% because a collapse in the mix is still
+worth stopping for. Correctness against hand-written answers is
+tests/fixtures/recon_cases.yaml.
+
 Usage:
     python tests/performance/check_regression.py \\
         --results tests/performance/results_accuracy.json \\
         --baseline tests/performance/baseline_real.json \\
-        --require accuracy
+        --require mix
 """
 
 import argparse
@@ -29,14 +36,12 @@ P99_RISE_PCT = 20.0
 P95_RISE_PCT = 20.0
 MATCH_RATE_FLOOR = 0.85
 
-#: Families whose metrics are compared against the baseline. Accuracy has its
+#: Families whose metrics are compared against the baseline. The mix has its
 #: own absolute floor rather than a delta, so it is required but not compared.
 THROUGHPUT_FAMILIES = ("kafka", "kafka-latency", "iceberg")
 
 FAMILIES = {
-    "accuracy": lambda r: (
-        ["accuracy.match_rate"] if r.get("accuracy", {}).get("match_rate") is not None else []
-    ),
+    "mix": lambda r: ["mix.match_rate"] if r.get("mix", {}).get("match_rate") is not None else [],
     **{
         name: probe
         for name, probe in (
@@ -178,13 +183,15 @@ def check(current, baseline, require=(), hardware_policy="warn"):
             elif d < -TP_DROP_PCT:
                 failures.append(f"iceberg {bench} rows/sec dropped {d:.1f}%")
 
-    acc = current.get("accuracy", {})
-    if "match_rate" not in acc:
-        if "accuracy" in require:
-            failures.append("accuracy artifact has no match_rate")
-    elif acc["match_rate"] < MATCH_RATE_FLOOR:
+    mix = current.get("mix", {})
+    if "match_rate" not in mix:
+        if "mix" in require:
+            failures.append("mix artifact has no match_rate")
+    elif mix["match_rate"] < MATCH_RATE_FLOOR:
         failures.append(
-            f"real accuracy gate failed (match_rate {acc['match_rate']:.2%} < {MATCH_RATE_FLOOR:.0%})"
+            f"sample mix floor failed (match_rate {mix['match_rate']:.2%} < "
+            f"{MATCH_RATE_FLOOR:.0%}). This is the loader's injected mix, not an accuracy "
+            f"measurement."
         )
 
     compared = set(_comparable(current)) & set(_comparable(baseline))

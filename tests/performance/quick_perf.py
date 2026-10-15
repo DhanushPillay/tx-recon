@@ -8,25 +8,32 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 from hardware import fingerprint, get_hardware_info
-from recon_accuracy import MATCH_GATE, run
+from recon_accuracy import MATCH_GATE, mix_drift, run
 
 
 def main(out):
     rep = run()
-    ok = rep["match_rate"] >= MATCH_GATE
+    drift = mix_drift(rep)
+    if drift:
+        for line in drift:
+            print(f"mix drift: {line}", file=sys.stderr)
+    ok = rep["match_rate"] >= MATCH_GATE and not drift
     results = {
         "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
         "hardware": {**get_hardware_info(), "fingerprint": fingerprint()},
-        "accuracy": {
+        "mix": {
             "match_rate": rep["match_rate"],
             "matched": rep["matched"],
             "mismatched": rep["mismatched"],
             "orphans": rep["orphans"],
             "n": rep["n"],
             "mismatch_delta_abs": rep["mismatch_delta_abs"],
+            "measures": rep["measures"],
+            "is_not": rep["is_not"],
         },
     }
-    print(f"accuracy_match_rate={rep['match_rate']:.2%}")
+    print(f"sample_mix_match_rate={rep['match_rate']:.2%}")
+    print(f"(not an accuracy measurement: {rep['is_not']})")
     print(f"hardware_fingerprint={results['hardware']['fingerprint']}")
     with open(out, "w") as f:
         json.dump(results, f, indent=2)

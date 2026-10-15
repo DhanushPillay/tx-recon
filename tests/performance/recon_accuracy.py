@@ -1,16 +1,43 @@
+"""Scale and mix check over the checked-in 10k sample.
+
+What this measures: that the pipeline can read a ten-thousand-row batch, decide
+every row, and produce the same numbers every run. That is a real check and it
+has caught regressions.
+
+What this does not measure: reconciliation accuracy. ``run`` calls
+``FeeEngine.check_match`` and then scores its own output, so there is no
+labelled answer anywhere in this file or in the CSVs it reads. The number it
+prints reproduces exactly as ``(196 + 8617) / (9805 - 492)`` -- the arithmetic
+of ``src/adapters/real_data.py``'s ``sha256(seed|tx) % 100`` bucket plan, over a
+settlement leg that generator wrote from a hardcoded two-instrument fee table
+rather than from a bank. A fee engine that works and one that is completely
+broken produce the same 94.63%, and the gate sits ten points below it where
+only a total collapse could reach.
+
+So the gate is not dressed up as correctness. It is a floor on the mix and a
+smoke test at scale, and ``EXPECTED_MIX`` below pins the counts it can actually
+detect drift in. Correctness against hand-written answers lives in
+``tests/fixtures/recon_cases.yaml`` and ``tests/test_recon_cases.py``.
+"""
+
 import argparse
 import csv
 import os
-import statistics
+import time
 
 from src.common.schemas import EXCEPTION_FEE_MISMATCH, EXCEPTION_MISSING_WEBHOOK, MATCHED
 from src.processing.fee_engine import FeeEngine
 
 MATCH_GATE = 0.85
 
+# The checked-in sample is deterministic: src/adapters/real_data.py buckets by
+# sha256(seed|tx) % 100 with seed 7, and nothing else is random or clock-driven.
+# These counts are therefore properties of the generator plus the rate card, not
+# of a measurement. They move when one of those changes, which is exactly when
+# someone wants to be told.
+EXPECTED_MIX = {"n": 9805, "matched": 8813, "mismatched": 500, "orphans": 492}
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-FULL_HOOKS = os.path.normpath(os.path.join(HERE, "../../data/real_thiru_full_hooks.csv"))
-FULL_SETTLE = os.path.normpath(os.path.join(HERE, "../../data/real_thiru_full_settlement.csv"))
 SAMPLE_HOOKS = os.path.normpath(os.path.join(HERE, "../../data/samples/real_10k_hooks.csv"))
 SAMPLE_SETTLE = os.path.normpath(os.path.join(HERE, "../../data/samples/real_10k_settlement.csv"))
 
@@ -22,7 +49,7 @@ def _default_paths():
 def load(hooks_csv, settle_csv):
     for p in (hooks_csv, settle_csv):
         if not os.path.exists(p):
-            raise FileNotFoundError(f"real accuracy gate needs {p}")
+            raise FileNotFoundError(f"scale and mix check needs {p}")
     webhooks = {}
     with open(hooks_csv, newline="") as f:
         for row in csv.DictReader(f):
@@ -61,6 +88,7 @@ def match(webhooks, latest):
 
 def run(hooks_csv=None, settle_csv=None):
     h, s = _default_paths() if hooks_csv is None else (hooks_csv, settle_csv)
+    started = time.perf_counter()
     webhooks, latest = load(h, s)
     predicted = match(webhooks, latest)
     matched = sum(1 for v in predicted.values() if v == MATCHED)
@@ -72,11 +100,33 @@ def run(hooks_csv=None, settle_csv=None):
         "matched": matched,
         "mismatched": mismatched,
         "orphans": orphans,
+        # Orphan settlements are excluded from the denominator, which is why
+        # this reads 94.63% where the end-to-end batch reports 89.98%. Both are
+        # the same run measured two ways; docs/BENCHMARKS.md names them.
         "match_rate": round(matched / joined, 4) if joined else 0.0,
         "source": os.path.basename(h),
+        "seconds": round(time.perf_counter() - started, 1),
+        "measures": "scale and mix over the checked-in 10k sample",
+        "is_not": "reconciliation accuracy; nothing here is independently labelled",
     }
     rep["mismatch_delta_abs"] = _mismatch_spread(webhooks, latest, predicted)
     return rep
+
+
+def mix_drift(rep):
+    """What moved in the mix, or an empty list.
+
+    Only meaningful on the checked-in sample; a caller that passed --hooks is
+    looking at different data and gets an empty list back rather than a
+    confident "nothing changed".
+    """
+    if rep.get("source") != os.path.basename(SAMPLE_HOOKS):
+        return []
+    return [
+        f"{key}: expected {want}, got {rep.get(key)}"
+        for key, want in EXPECTED_MIX.items()
+        if rep.get(key) != want
+    ]
 
 
 def _mismatch_spread(webhooks, latest, predicted):
@@ -107,7 +157,17 @@ if __name__ == "__main__":
     rep = run(args.hooks, args.settlements)
     print(
         f"n={rep['n']} matched={rep['matched']} mismatched={rep['mismatched']} "
-        f"orphans={rep['orphans']} match_rate={rep['match_rate']:.2%} src={rep['source']}"
+        f"orphans={rep['orphans']} match_rate={rep['match_rate']:.2%} "
+        f"src={rep['source']} in {rep['seconds']}s"
     )
+    print(f"(scale and mix check, not accuracy: {rep['is_not']})")
+
+    drift = mix_drift(rep)
+    if drift:
+        raise SystemExit("the checked-in sample's mix moved:\n  " + "\n  ".join(drift))
     if rep["match_rate"] < MATCH_GATE:
-        raise SystemExit(f"accuracy gate failed: match_rate {rep['match_rate']:.2%} < 85%")
+        raise SystemExit(
+            f"mix floor failed: match_rate {rep['match_rate']:.2%} < {MATCH_GATE:.0%}. "
+            "This is the loader's injected mix, not a correctness measurement -- "
+            "see the module docstring."
+        )

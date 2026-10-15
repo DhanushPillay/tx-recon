@@ -1,5 +1,6 @@
 {
-  "_note": "Checked-in regression baseline (25 Sep 2026, single node, 28 cores, d2e5f67d5861). check_regression.py compares these headline numbers: kafka throughput/p99, iceberg rows_per_sec per label, accuracy match_rate. A hardware fingerprint mismatch only warns (different machine = noisy), metric movement fails.",
+  "_note": "Checked-in regression baseline (25 Sep 2026, single node, 28 cores, d2e5f67d5861). check_regression.py compares these headline numbers: kafka throughput/p99, iceberg rows_per_sec per label, and the sample mix match_rate. A hardware fingerprint mismatch only warns (different machine = noisy), metric movement fails.",
+  "_mix_note": "The `mix` block is NOT a reconciliation-accuracy measurement. recon_accuracy.py scores FeeEngine.check_match against its own output, so this number is a property of the fixture generator's sha256 bucket plan. Correctness against hand-written answers is tests/fixtures/recon_cases.yaml.",
   "hardware": {"fingerprint": "d2e5f67d5861"},
   "kafka": {
     "throughput_msgs_sec": 225123.39,
@@ -39,5 +40,5 @@
       }
     }
   },
-  "accuracy": {"match_rate": 0.9463}
+  "mix": {"match_rate": 0.9463}
 }
