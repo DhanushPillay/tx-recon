@@ -5,7 +5,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from src.common.schemas import INSTRUMENT_TYPES
-from src.processing.fee_engine import FeeEngine
+from src.processing.fee_engine import FeeEngine, bps_amount
 from src.processing.reconcile import build_fee_case_sql, build_tolerance_case_sql
 
 pytestmark = pytest.mark.unit
@@ -141,7 +141,7 @@ def _parity(engine: FeeEngine, spark) -> None:
     for r in out.collect():
         result = engine.compute_fee(r.a, r.i, r.m, r.d)
         rate = engine.get_rate_for_date(r.i, r.m, r.d)
-        want_fee_before = (r.a * result.rate_bps + 5000) // 10000
+        want_fee_before = bps_amount(r.a, result.rate_bps)
         want_gst = result.gst_paise
         want_tol = rate.get("tolerance_paise", 1)
         key = f"amt={r.a} inst={r.i} merch={r.m!r} date={r.d!r}"
@@ -267,7 +267,7 @@ def test_regression_configs_stay_in_parity(tmp_path, spark, body, amount, inst, 
         engine, amount_col="a", inst_col="i", merchant_col="m", settlement_date_col="d"
     )
     r = df.selectExpr(f"{fee_sql} AS f", f"{gst_sql} AS g").collect()[0]
-    want = (amount * result.rate_bps + 5000) // 10000
+    want = bps_amount(amount, result.rate_bps)
     assert r.f == want, f"SQL {r.f} vs engine {want}"
     assert amount - r.f - r.g == result.net_paise
 

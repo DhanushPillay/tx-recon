@@ -155,12 +155,26 @@ def fold_settlements(bank_df):
     return distinct, folded.drop("installment_rows"), partial
 
 
+def _bps_sql(value_col: str, bps: int) -> str:
+    """value_col * bps / 10000 in paise, rounded half away from zero.
+
+    Spark's `DIV` truncates toward zero, so the plain
+    `(x * bps + 5000) DIV 10000` is round-half-up only while x is positive. On a
+    negative x it lands a paisa short of the rule `fee_engine.bps_amount`
+    applies in Python, and the two halves of the same formula then disagree by
+    one paisa on almost every negative amount rather than on a rare tie.
+    """
+    return (
+        f"CASE WHEN {value_col} < 0 THEN -(((-({value_col})) * {bps} + 5000) DIV 10000) "
+        f"ELSE (({value_col} * {bps} + 5000) DIV 10000) END"
+    )
+
+
 def _append_leg(fee_cases, gst_cases, tol_cases, pred, amount_col, mdr_bps, gst_bps, tol):
-    fee_cases.append(f"WHEN {pred} THEN (({amount_col} * {mdr_bps} + 5000) DIV 10000)")
+    fee_sql = _bps_sql(amount_col, mdr_bps)
+    fee_cases.append(f"WHEN {pred} THEN {fee_sql}")
     if gst_bps > 0:
-        gst_cases.append(
-            f"WHEN {pred} THEN ((((({amount_col} * {mdr_bps} + 5000) DIV 10000) * {gst_bps} + 5000) DIV 10000))"
-        )
+        gst_cases.append(f"WHEN {pred} THEN {_bps_sql(fee_sql, gst_bps)}")
     else:
         gst_cases.append(f"WHEN {pred} THEN 0")
     tol_cases.append(f"WHEN {pred} THEN {tol}")
@@ -242,16 +256,13 @@ def _build_single_card_fee_sql(
             tol,
         )
 
-    fee_sql = (
-        "CASE "
-        + " ".join(fee_cases)
-        + f" ELSE (({amount_col} * {default_mdr} + 5000) DIV 10000) END"
-    )
+    default_fee_sql = _bps_sql(amount_col, default_mdr)
+    fee_sql = "CASE " + " ".join(fee_cases) + f" ELSE {default_fee_sql} END"
     if default_gst_bps > 0:
         gst_sql = (
             "CASE "
             + " ".join(gst_cases)
-            + f" ELSE ((((({amount_col} * {default_mdr} + 5000) DIV 10000) * {default_gst_bps} + 5000) DIV 10000)) END"
+            + f" ELSE {_bps_sql(default_fee_sql, default_gst_bps)} END"
         )
     else:
         gst_sql = "CASE " + " ".join(gst_cases) + " ELSE 0 END"

@@ -79,6 +79,28 @@ def gst_pct_to_bps(gst_pct: float | int | str) -> int:
     return int((Decimal(str(gst_pct)) * 100).to_integral_value(rounding=ROUND_HALF_UP))
 
 
+def bps_amount(amount_paise: int, bps: int) -> int:
+    """amount_paise * bps / 10000 in whole paise, ties away from zero.
+
+    The one rule for turning a basis-point rate into an integer charge. The
+    Spark side emits the same expression as ``reconcile._bps_sql``; if you change
+    one, change the other and the parity test in
+    ``tests/processing/test_fee_sql_parity.py`` will say so.
+
+    Rounding is away from zero rather than half-up because half-up is only
+    meaningful for a positive amount: ``(x * bps + 5000) // 10000`` floors a
+    negative result, so -199.5 paise becomes -200 rather than -199. That is
+    invisible while every amount is positive and quietly wrong once a refund
+    or a chargeback can reach the fee path.
+    """
+    if bps == 0:
+        return 0
+    num = amount_paise * bps
+    if num < 0:
+        return -((-num + 5000) // 10000)
+    return (num + 5000) // 10000
+
+
 class FeeEngine:
     def __init__(self, config_path: str | None = None):
         settings = get_settings()
@@ -313,9 +335,9 @@ class FeeEngine:
         mdr_bps = rate.get("mdr_rate_bps", 150)
         gst_pct = rate.get("gst_on_mdr", 18.0)
 
-        fee_before_gst = (amount_paise * mdr_bps + 5000) // 10000
+        fee_before_gst = bps_amount(amount_paise, mdr_bps)
         gst_bps = gst_pct_to_bps(gst_pct)
-        gst = (fee_before_gst * gst_bps + 5000) // 10000 if gst_bps > 0 else 0
+        gst = bps_amount(fee_before_gst, gst_bps) if gst_bps > 0 else 0
         total_fee = fee_before_gst + gst
         net = amount_paise - total_fee
 
