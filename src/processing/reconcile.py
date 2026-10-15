@@ -39,6 +39,66 @@ def _sql_str(value: str) -> str:
     return str(value).replace("\\", "\\\\").replace("'", "''")
 
 
+def known_fee_merchants(fee_engine) -> set[str]:
+    """Merchant ids that have a negotiated rate on at least one rate card."""
+    out: set[str] = set()
+    for card in getattr(fee_engine, "rate_cards", None) or []:
+        out.update(k for k in (card.get("merchants") or {}) if k)
+    return out
+
+
+def earliest_rate_card_date(fee_engine) -> str:
+    dates = [
+        c.get("effective_from")
+        for c in (getattr(fee_engine, "rate_cards", None) or [])
+        if c.get("effective_from")
+    ]
+    return min(dates) if dates else "1970-01-01"
+
+
+# Every one of these used to be a silent fallback inside the fee CASE. A row
+# that reached one still got a fee, so the batch looked clean while the amount
+# had been priced off a rate that was never agreed.
+FEE_FALLBACK_COUNT_KEYS = {
+    "card_unparseable_date": "fee_card_unparseable_date_rows",
+    "card_out_of_range": "fee_card_out_of_range_rows",
+    "merchant_unknown": "fee_merchant_unknown_rows",
+    "instrument_unknown": "fee_instrument_unknown_rows",
+}
+
+
+def fee_fallback_sql(
+    fee_engine, date_col: str = "settlement_date", merchant_col: str = "merchant_id"
+) -> str:
+    """A CASE naming which silent fee fallback each settlement row would take.
+
+    The predicates mirror _versioned_wrap and _build_single_card_fee_sql
+    deliberately: a diagnostic that drifts from the expression it describes is
+    worse than none, because it understates the problem.
+    """
+    known = ", ".join(f"'{_sql_str(m)}'" for m in sorted(known_fee_merchants(fee_engine)))
+    known = known or "''"
+    instruments = ", ".join(f"'{_sql_str(i)}'" for i in INSTRUMENT_TYPES)
+    d = f"to_date({date_col}, 'yyyy-MM-dd')"
+    first = _sql_str(earliest_rate_card_date(fee_engine))
+    return (
+        "CASE "
+        f"WHEN {d} IS NULL THEN 'card_unparseable_date' "
+        f"WHEN {d} < DATE '{first}' THEN 'card_out_of_range' "
+        f"WHEN {merchant_col} IS NOT NULL AND {merchant_col} <> 'UNKNOWN' "
+        f"AND {merchant_col} NOT IN ({known}) THEN 'merchant_unknown' "
+        f"WHEN instrument_type IS NULL OR instrument_type NOT IN ({instruments}) "
+        "THEN 'instrument_unknown' "
+        "ELSE NULL END"
+    )
+
+
+def fold_fallback_rows(rows) -> dict[str, int]:
+    """GROUP BY output of fee_fallback_sql into the four counters, all present."""
+    seen = {str(r["reason"]): int(r["n"] or 0) for r in rows}
+    return {key: seen.get(reason, 0) for reason, key in FEE_FALLBACK_COUNT_KEYS.items()}
+
+
 def _append_leg(fee_cases, gst_cases, tol_cases, pred, amount_col, mdr_bps, gst_bps, tol):
     fee_cases.append(f"WHEN {pred} THEN (({amount_col} * {mdr_bps} + 5000) DIV 10000)")
     if gst_bps > 0:
@@ -429,6 +489,28 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
         fee_engine, inst_col="s.instrument_type", merchant_col="s.merchant_id"
     )
 
+    fee_fallbacks = fold_fallback_rows(
+        spark.sql(
+            f"SELECT reason, COUNT(*) AS n FROM ("
+            f"SELECT {fee_fallback_sql(fee_engine)} AS reason FROM bank_settlements) "
+            "WHERE reason IS NOT NULL GROUP BY reason"
+        ).collect()
+    )
+    _fallback_total = sum(fee_fallbacks.values())
+    if _fallback_total:
+        logger.warning(
+            "%d settlement row(s) would be priced off a rate that was never "
+            "agreed for them (%s). Set STRICT_FEE_RATES=1 to refuse the batch "
+            "instead of counting it.",
+            _fallback_total,
+            ", ".join(f"{k}={v}" for k, v in fee_fallbacks.items() if v),
+        )
+        if os.environ.get("STRICT_FEE_RATES", "0").strip().lower() in ("1", "true", "yes"):
+            raise RuntimeError(
+                f"STRICT_FEE_RATES=1 and {_fallback_total} row(s) hit a fee fallback: "
+                + ", ".join(f"{k}={v}" for k, v in fee_fallbacks.items() if v)
+            )
+
     table = _qualified_table(settings.webhook_table)
     _placeholder_in = " OR ".join(f"t.reconciliation_status = '{s}'" for s in PLACEHOLDER_STATUSES)
     _terminal_not_in = ", ".join(f"'{s}'" for s in TERMINAL_STATUSES)
@@ -503,6 +585,10 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
     counts["settlement_currency_missing_rows"] = bank_df_dedup.filter(
         F.col("currency").isNull()
     ).count()
+    # Not batch_-prefixed for the same reason as the currency counter: these
+    # describe how the batch was priced, not how its rows are distributed, and
+    # check_batch_drift sums every batch_ int.
+    counts.update(fee_fallbacks)
     counts.update(bank_out)
     if counts["duplicate_settlement_rows"]:
         counts["batch_EXCEPTION_DUPLICATE_SETTLEMENT"] = counts["duplicate_settlement_rows"]

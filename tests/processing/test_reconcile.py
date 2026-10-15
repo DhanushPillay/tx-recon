@@ -27,6 +27,8 @@ def _run_with_collects(
     lag_n=0,
     fail_at=None,
     fail_exc=None,
+    fallback_rows=None,
+    sql_log=None,
 ):
     with (
         patch("pyspark.sql.functions.row_number"),
@@ -65,6 +67,9 @@ def _run_with_collects(
         _stages = {
             "MERGE INTO": None,
             "CREATE OR REPLACE": None,
+            "AS reason FROM bank_settlements": MagicMock(
+                collect=MagicMock(return_value=fallback_rows or [])
+            ),
             "SELECT DISTINCT provider": MagicMock(
                 collect=MagicMock(return_value=[{"provider": "generic"}])
             ),
@@ -80,6 +85,8 @@ def _run_with_collects(
         }
 
         def _sql(_query, _stages=_stages, _fail_at=fail_at, _fail_exc=fail_exc):
+            if sql_log is not None:
+                sql_log.append(_query)
             for _needle, _mock in _stages.items():
                 if _needle in _query:
                     if _fail_at is not None and _fail_at == _needle:
@@ -189,10 +196,11 @@ def test_run_reconciliation_wiring(
         {"scope": "table", "st": r["reconciliation_status"], "n": r["n"]} for r in table_collect
     ] + [{"scope": "batch", "st": r["st"], "n": r["n"]} for r in batch_collect]
     # Positional side_effect: one entry per spark.sql() call, in call order.
-    # MERGE, the late-SLA count, the late-SLA UPDATE, the counts query, the
-    # depth gauges. There is deliberately no entry for the mart -- run_daily
-    # refreshes it after the gates, not run_reconciliation.
+    # Fee-fallback scan, MERGE, the late-SLA count, the late-SLA UPDATE, the
+    # counts query, the depth gauges. There is deliberately no entry for the
+    # mart -- run_daily refreshes it after the gates, not run_reconciliation.
     mock_spark.sql.side_effect = [
+        MagicMock(collect=MagicMock(return_value=[])),
         MagicMock(),
         MagicMock(collect=MagicMock(return_value=[{"provider": "generic"}])),
         MagicMock(collect=MagicMock(return_value=[{"n": 2}])),
@@ -208,7 +216,9 @@ def test_run_reconciliation_wiring(
     dedup_df = mock_bank_df.filter.return_value.withColumn.return_value.filter.return_value.drop.return_value
     dedup_df.createOrReplaceTempView.assert_called_once_with("bank_settlements")
 
-    merge_sql = mock_spark.sql.call_args_list[0][0][0]
+    sqls = [c[0][0] for c in mock_spark.sql.call_args_list]
+    merge_sql = next(s for s in sqls if "MERGE INTO" in s)
+    assert not any("CREATE OR REPLACE" in s for s in sqls)
     assert "MERGE INTO" in merge_sql
     assert "nessie.db.webhooks" in merge_sql
     assert "bank_settlements" in merge_sql
