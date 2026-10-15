@@ -39,6 +39,13 @@ docker ps
 
 You should see: `redpanda`, `minio`, `nessie`, `trino`, `metabase`, and `minio-createbucket`.
 
+Nessie is the one without a volume, so the Iceberg catalog it serves does not outlive
+its container. After `docker compose down` and up again, MinIO still holds every data
+file, but Spark reports `Table not found` until ingest recreates the DDL
+(`python -m src.ingestion.ingest_webhooks`) and reconcile repopulates the tables for a
+date. `docker compose down -v` also wipes MinIO: that is the reset to reach for when
+you want to start from nothing.
+
 ## 3. Create virtual environment
 
 ```bash
