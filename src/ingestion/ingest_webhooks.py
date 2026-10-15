@@ -232,6 +232,15 @@ def run_ingestion():
             "t.timestamp_utc = s.timestamp_utc, t.merchant_id = s.merchant_id, "
             "t.processing_run_id = s.processing_run_id, "
             f"t.reconciliation_status = '{PENDING_RECONCILIATION}', t.ingested_at = s.ingested_at "
+            # Second WHEN MATCHED, so it only sees rows the first one declined:
+            # the terminal ones. A redelivery carrying a different amount for an
+            # already-reconciled transaction used to vanish here -- no clause
+            # fired, no DLQ row, no counter, nothing. It never overwrites the
+            # settled amount; it records that the gateway sent us a second,
+            # disagreeing number for a transaction we already closed.
+            "WHEN MATCHED THEN UPDATE SET "
+            "t.duplicate_mutation_count = COALESCE(t.duplicate_mutation_count, 0) + 1, "
+            "t.last_duplicate_at = current_timestamp() "
             f"WHEN NOT MATCHED THEN INSERT ({_cols}) VALUES ({_vals})"
         )
         inv = batch_df.filter(~F.coalesce(valid_cond, F.lit(False))).select(*_DLQ_COLS)
@@ -300,7 +309,9 @@ def ensure_webhook_table(spark, table: str) -> None:
             reconciliation_status string,
             bank_ref_id string,
             ingested_at timestamp,
-            instrument_type string
+            instrument_type string,
+            duplicate_mutation_count bigint,
+            last_duplicate_at timestamp
         ) USING iceberg
         PARTITIONED BY (bucket(16, transaction_id))
         TBLPROPERTIES (
@@ -313,6 +324,12 @@ def ensure_webhook_table(spark, table: str) -> None:
             'gc.enabled' = 'true'
         )
     """
+    )
+    # A table created before the duplicate-mutation columns existed still has the
+    # old shape, and CREATE TABLE IF NOT EXISTS above is a no-op for it.
+    spark.sql(
+        f"ALTER TABLE {table} ADD COLUMNS IF NOT EXISTS ("
+        "duplicate_mutation_count bigint, last_duplicate_at timestamp)"
     )
 
 

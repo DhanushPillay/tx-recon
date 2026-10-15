@@ -282,6 +282,27 @@ def _load_mart_sql(project_root: str, source_table: str, mart_table: str) -> tup
     )
 
 
+def fold_status_counts(rows) -> dict[str, int]:
+    """Turn the scope-tagged counts query into a counts dict.
+
+    Three scopes come back: `table` for every status in the warehouse, `batch`
+    for the statuses of the rows this settlement file touched, and `dupmut` for
+    the running total of transactions the gateway re-delivered with a different
+    amount after they were already reconciled.
+    """
+    counts: dict[str, int] = {}
+    for row in rows:
+        if row["scope"] == "table":
+            counts[row["st"]] = row["n"]
+        elif row["scope"] == "dupmut":
+            # SUM over no rows is NULL, and an absent key would read as a
+            # missing measurement rather than a real zero.
+            counts["duplicate_mutations"] = int(row["n"] or 0)
+        else:
+            counts[f"batch_{row['st']}"] = row["n"]
+    return counts
+
+
 def batch_match_rate(counts: dict) -> float | None:
     """MATCHED over the rows a settlement could legitimately account for.
 
@@ -554,19 +575,21 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
 
     try:
         # semi join so dup settlement rows cant double count the batch
-        for row in spark.sql(
+        _rows = spark.sql(
             f"SELECT 'table' AS scope, reconciliation_status AS st, COUNT(*) AS n "
             f"FROM {table} GROUP BY reconciliation_status "
             f"UNION ALL "
             f"SELECT 'batch' AS scope, t.reconciliation_status AS st, COUNT(*) AS n "
             f"FROM {table} t "
             f"WHERE t.transaction_id IN (SELECT transaction_id FROM bank_settlements) "
-            f"GROUP BY t.reconciliation_status"
-        ).collect():
-            if row["scope"] == "table":
-                counts[row["st"]] = row["n"]
-            else:
-                counts[f"batch_{row['st']}"] = row["n"]
+            f"GROUP BY t.reconciliation_status "
+            f"UNION ALL "
+            # Whole table, so this ride-along costs one column on a scan the
+            # query already makes.
+            "SELECT 'dupmut' AS scope, 'duplicate_mutations' AS st, "
+            f"COALESCE(SUM(duplicate_mutation_count), 0) AS n FROM {table}"
+        ).collect()
+        counts.update(fold_status_counts(_rows))
     except Exception as exc:
         raise RuntimeError(f"Could not fetch reconciliation counts: {exc}") from exc
     finally:
@@ -576,6 +599,13 @@ def run_reconciliation(date_str: str | None = None) -> dict[str, int | float]:
             bank_df_dedup.unpersist()
         with contextlib.suppress(Exception):
             bank_df_valid.unpersist()
+    _dup_mutations = counts.get("duplicate_mutations") or 0
+    if _dup_mutations:
+        logger.warning(
+            "%d transaction(s) were re-delivered with a different amount after they "
+            "were already reconciled; see duplicate_mutation_count on the webhook table",
+            _dup_mutations,
+        )
     logger.info(f"Reconciliation batch complete: {counts}")
 
     _rate = batch_match_rate(counts)

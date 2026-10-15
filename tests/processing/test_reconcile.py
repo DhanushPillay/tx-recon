@@ -252,9 +252,13 @@ def test_run_reconciliation_wiring(
     assert mart_sqls == []
     count_sqls = [c[0][0] for c in mock_spark.sql.call_args_list if " AS scope" in c[0][0]]
     assert len(count_sqls) == 1
-    assert count_sqls[0].count("UNION ALL") == 1
+    # three scopes: the whole table, the rows this settlement touched, and the
+    # running duplicate-mutation total riding along on the same scan
+    assert count_sqls[0].count("UNION ALL") == 2
     assert "SELECT 'table' AS scope" in count_sqls[0]
     assert "SELECT 'batch' AS scope" in count_sqls[0]
+    assert "SELECT 'dupmut' AS scope" in count_sqls[0]
+    assert "SUM(duplicate_mutation_count)" in count_sqls[0]
     assert "IN (SELECT transaction_id FROM bank_settlements)" in count_sqls[0]
     assert "JOIN bank_settlements" not in count_sqls[0]
 
