@@ -48,6 +48,8 @@ def test_merge_keyed_on_transaction_id():
 
     from src.processing import reconcile
 
+    # Only the USING frame moved into merge_using_sql(), so the decision SELECT
+    # can join the same rows. The key predicate is unchanged and still inline.
     src = inspect.getsource(reconcile.run_reconciliation)
     assert "ON t.transaction_id = s.transaction_id" in src
     # rerun must UPDATE matched rows, never duplicate-insert them

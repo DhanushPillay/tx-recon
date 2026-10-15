@@ -359,7 +359,9 @@ def test_write_batch_late_rows_rescued_by_webhook(mocker):
     assert EXCEPTION_LATE_UNRESOLVED in merge_sql
 
 
-def _run_batch(ing, mocker, captured, *, empty=False, late_n=0, select_side_effect=None):
+def _run_batch(
+    ing, mocker, captured, *, empty=False, late_n=0, select_side_effect=None, schema_ids=None
+):
     batch = MagicMock(name="batch")
     batch.isEmpty.return_value = empty
     batch.cache.return_value = batch
@@ -367,7 +369,7 @@ def _run_batch(ing, mocker, captured, *, empty=False, late_n=0, select_side_effe
         batch.select.side_effect = select_side_effect
     else:
         batch.select.return_value.distinct.return_value.collect.return_value = [
-            {"schema_id": "123"}
+            {"schema_id": i} for i in (schema_ids if schema_ids is not None else ["123"])
         ]
     valid = MagicMock(name="valid")
     valid.dropDuplicates.return_value = valid
@@ -396,7 +398,16 @@ def test_write_batch_empty_is_noop(mocker):
     assert _merge_sql(spark) is None
 
 
-def test_write_batch_schema_id_check_skipped_warns(mocker, caplog):
+def test_write_batch_refuses_a_batch_it_could_not_verify(mocker, caplog):
+    """An unreadable schema-id list is not a licence to merge.
+
+    This used to log "schema-id check skipped" and carry on. That set the id
+    list to empty, which made the drift guard below it fall through, so a batch
+    nobody could verify was merged with any new producer field dropped by the
+    MERGE. It now refuses the batch, and refuses it as retryable rather than
+    permanent: a transient collect failure should get another go, but not at the
+    cost of merging blind.
+    """
     import logging
 
     import src.ingestion.ingest_webhooks as ing
@@ -405,10 +416,30 @@ def test_write_batch_schema_id_check_skipped_warns(mocker, caplog):
     _mock_stream(spark, parsed, ws, captured)
     _patch_ingest(ing, mocker, spark)
     ing.run_ingestion()
-    with caplog.at_level(logging.WARNING, logger="src.ingestion.ingest_webhooks"):
+    with (
+        caplog.at_level(logging.ERROR, logger="src.ingestion.ingest_webhooks"),
+        pytest.raises(RuntimeError, match="boom"),
+    ):
         _run_batch(ing, mocker, captured, select_side_effect=RuntimeError("boom"))
-    assert any("schema-id check skipped" in r.message for r in caplog.records)
-    assert "MERGE INTO" in _merge_sql(spark)
+    assert any("batch not verified" in r.message for r in caplog.records)
+    assert _merge_sql(spark) is None, (
+        "the whole point: an unverifiable batch must not reach the table"
+    )
+
+
+def test_write_batch_does_not_retry_a_schema_drift(mocker):
+    """Drift is a config change, not a blip, so it must not burn five attempts."""
+    import src.ingestion.ingest_webhooks as ing
+
+    spark, parsed, ws, captured = MagicMock(), MagicMock(), MagicMock(), {}
+    _mock_stream(spark, parsed, ws, captured)
+    _patch_ingest(ing, mocker, spark)
+    ing.run_ingestion()
+    with pytest.raises(ing.PermanentIngestError, match="schema-id drift"):
+        _run_batch(ing, mocker, captured, schema_ids=["999"])
+    assert issubclass(ing.PermanentIngestError, RuntimeError), (
+        "PermanentIngestError must stay a RuntimeError so existing handlers still catch it"
+    )
 
 
 def test_write_batch_late_data_warns(mocker, caplog):

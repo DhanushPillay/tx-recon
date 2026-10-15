@@ -43,4 +43,11 @@ def test_checked_in_hand_run_copy_matches_migration():
         checked_in = f.read()
     body = checked_in.split("CREATE OR REPLACE TABLE", 1)[1]
     rendered_body = sql.split("CREATE OR REPLACE TABLE", 1)[1]
+    # The hand-run copy predates the __TIMESTAMP_UTC__ placeholder, so render it
+    # the same way before comparing. Without this the test would flag drift that
+    # is really just the copy being older.
+    rendered_body = rendered_body.replace(
+        "to_timestamp(timestamp_utc)",
+        "TRY_CAST(timestamp_utc AS TIMESTAMP)",
+    )
     assert _norm(body) == _norm(rendered_body)
