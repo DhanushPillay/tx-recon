@@ -54,7 +54,7 @@ python -m venv .venv
 # macOS/Linux: .venv/bin/pip install -e ".[dev]"
 ```
 
-## 4. Run the accuracy gate
+## 4. Run the sample-mix gate (the target is still named `accuracy`)
 
 No Docker needed for this step:
 
@@ -63,16 +63,16 @@ make accuracy
 # or: python tests/performance/quick_perf.py
 ```
 
-This runs the real-data accuracy gate (10k sample, match_rate >= 85%) and writes `tests/performance/results_accuracy.json`.
+This measures the mix of the checked-in 10k sample (`match_rate >= 0.85`) and writes `tests/performance/results_accuracy.json`. It is not an accuracy gate: nothing in the sample is labelled independently, so it can show the match mix moving and nothing more. The hand-labelled answer key is `tests/fixtures/recon_cases.yaml`.
 
 ## 5. Run the full pipeline
 
 ```bash
-# Real PG file (fail-closed, no synthesis):
+# Settlement file must already exist (fail-closed, no synthesis):
 python -m src.pipeline --date 2026-09-04
 ```
 
-The pipeline refuses to run without a real settlement CSV (`FileNotFoundError`); nothing is ever synthesized. On a fresh stack the `webhooks` table does not exist yet and the pipeline fails at WAP setup — seed it first (creates the table; opt-in because it deletes overlapping ids):
+The pipeline refuses to run without a settlement CSV (`FileNotFoundError`); nothing is ever synthesized. On a fresh stack the `webhooks` table does not exist yet and the pipeline fails at WAP setup — seed it first (creates the table; opt-in because it deletes overlapping ids):
 
 ```bash
 ALLOW_DESTRUCTIVE_SEED=1 python -c "
@@ -84,7 +84,7 @@ n = seed_real_webhooks(get_spark_session('Seed'), s.webhook_table, 'data/samples
 print('seeded', n)"
 ```
 
-The validated file is written as `curated_*.csv`; reruns merge from curated, never `quarantine_*`. To fetch a provider FAQ-real file use `data/settlement_YYYYMMDD.csv`.
+The validated file is written as `curated_*.csv`; reruns merge from curated, never `quarantine_*`. A provider file goes in as `data/settlement_YYYYMMDD.csv`, named for the date the run should read.
 
 Additional fail-closed switches (see `src/common/settings.py` and RUNBOOK):
 
@@ -99,7 +99,8 @@ This validates the settlement (PAN Luhn scan + `sha256` file registry), writes `
 ## 6. Run tests
 
 ```bash
-# Unit tests (no Docker required; Spark skipped only when py missing, not on Windows host)
+# Unit tests. With the venv active (step 3): a global interpreter starts Spark
+# workers in a different Python and they die on the socket, not on your code.
 pytest tests/ -m "not integration" -v
 
 # Integration tests (Docker required: MinIO+Nessie+Redpanda)

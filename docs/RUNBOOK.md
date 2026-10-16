@@ -138,7 +138,7 @@ Batch gauges are `batch_*` (scoped to this settlement's ids); `missing_within_la
 | :--- | :--- | :--- |
 | `docker compose up` fails with `MINIO_ROOT_PASSWORD` | Missing from `.env` | Set `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` in `.env` |
 | `RuntimeError` on `s3a://` warehouse at startup | `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` empty | Both must be set and must match the MinIO root pair; `.env.example` ships matching placeholders |
-| `FileNotFoundError` in pipeline | No settlement CSV in `data/` | Place the real PG file at `data/settlement_YYYYMMDD.csv` (pipeline never synthesizes input) |
+| `FileNotFoundError` in pipeline | No settlement CSV in `data/` | Place the settlement file at `data/settlement_YYYYMMDD.csv` (the pipeline never synthesizes input) |
 | `AnalysisException: Table not found` | Nessie namespace/table missing, including after a Nessie container recreate: it has no volume, so the catalog goes with the container while MinIO keeps the data files | Run `python -m src.ingestion.ingest_webhooks` to create DDL, then reconcile for the date you want |
 | `ValueError: run_reconciliation requires date_str` | `run_reconciliation` called directly without a date (a date-less run would merge all history) | Pass `date_str`, or use `run_daily`, which resolves it from the curated filename or `--date` |
 | `FileNotFoundError` naming `curated_settlement_<date>.csv` | Validation never ran for that date, or it quarantined rows | Run validation for the date first; `ALLOW_UNVALIDATED_SETTLEMENT=1` reads the raw drop, but then INR→paise and instrument normalization are skipped |
@@ -148,6 +148,8 @@ Batch gauges are `batch_*` (scoped to this settlement's ids); `missing_within_la
 | `ImportError: cannot import name UTC` | Python 3.10 missing `datetime.UTC` | Upgrade to Python 3.11 or set `SPARK_PYTHON` to 3.11 |
 | `pyarrow` not found | PySpark CSV read needs Arrow | `pip install pyarrow` |
 | Integration tests hang on Ivy | First run downloading jars | Wait; subsequent runs use cached jars |
+| `Python worker exited unexpectedly` / `Py4JJavaError` in a Spark test | pytest is not the project venv, so the Python worker it starts is a different interpreter and dies on the socket | Run tests as `.venv/Scripts/python.exe -m pytest ...` (LOCAL_SETUP step 3); a global interpreter reports this, not the real cause |
+| Integration tests cannot reach MinIO or Nessie | The Docker daemon is not running, so `docker compose up` did nothing | Start Docker, then `make up`, then wait for the readiness checks before rerunning |
 
 ## Querying data
 

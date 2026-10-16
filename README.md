@@ -72,7 +72,7 @@ flowchart TB
   T -.-> RO["read-only: Trino + Metabase"]
 ```
 
-`RECONCILIATION_STATUS`: `MATCHED`, `FEE_MISMATCH`, `MISSING_WEBHOOK`, `MISSING_BANK_STMT`, `LATE_UNRESOLVED`.
+`RECONCILIATION_STATUS`: `MATCHED`, `EXCEPTION_FEE_MISMATCH`, `EXCEPTION_MISSING_WEBHOOK`, `EXCEPTION_MISSING_BANK_STATEMENT`, `EXCEPTION_DUPLICATE_SETTLEMENT`, `EXCEPTION_DUPLICATE_WEBHOOK`, `EXCEPTION_INVALID`, `EXCEPTION_CURRENCY_MISMATCH`, `EXCEPTION_LATE_UNRESOLVED`, `EXCEPTION_REVERSAL`, `PENDING_RECONCILIATION`. What each one means is in [docs/DATA_DICTIONARY.md](docs/DATA_DICTIONARY.md).
 
 Two lanes, one table. Every batch lands on its own branch; nothing touches `main` until the gate passes, and a schema-id mismatch refuses the whole streaming batch.
 
@@ -129,7 +129,7 @@ Measured on real data: [thiru1711/Financial_Transactions](https://huggingface.co
 | Validation, 12.9M rows | polars **7.07M** / manual 2.93M / pandera 1.24M / pydantic 132k rows/sec |
 | Kafka producer (real ~150B records, acks=all, lz4) | **224,237 msgs/sec**; serial p50 0.75ms, p99 2.82ms |
 | Streaming ingestion (Kafka → Iceberg, 16 partitions) | **12,832 rows/sec** sustained over 120s |
-| Full accuracy, 12.9M rows | **94.71%** match rate (gate ≥85%) |
+| Full-run mix, 12.9M rows | **94.71%** match rate (mix gate ≥85%) |
 | End-to-end batch (12.6M rows: validate + MERGE + mart) | **~5 min wall** (173s validate, 105s MERGE, 89.98% end-to-end) |
 
 Record: `tests/performance/results_real.json`. The loader injects ~10% exceptions by design (health gate ≥ 85%): bench slices show ~94.7% due to tx-ordered sampling, while the full 12.6M end-to-end run reports **89.98%** (11,368,871 / 12,635,227) — both are the mix working, not matcher error.

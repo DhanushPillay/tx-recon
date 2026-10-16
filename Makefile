@@ -11,10 +11,10 @@ help:
 	@echo "test            - unit tests (skip integration)"
 	@echo "coverage        - unit tests with 90% branch gate"
 	@echo "integration     - live Spark + docker tests (needs 'make up')"
-	@echo "mix             - scale + mix check over the 10k sample (not accuracy)"
+	@echo "accuracy        - sample-mix check over the 10k sample (not accuracy)"
 	@echo "regression      - mix gate vs baseline (mix only)"
 	@echo "regression-full - gate kafka + latency + iceberg too (needs 'make bench')"
-	@echo "bench           - full real-data bench (accuracy + kafka/pandera/iceberg/pyspark)"
+	@echo "bench           - full real-data bench (mix + kafka/pandera/iceberg/pyspark)"
 	@echo "pipeline        - run daily recon (DATE=YYYY-MM-DD, default today)"
 	@echo "clean           - remove pycache/pyc (portable, no Unix find)"
 

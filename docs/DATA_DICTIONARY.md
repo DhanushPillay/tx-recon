@@ -79,11 +79,11 @@ Malformed or invalid webhooks (corrupt Avro decode, `amount_paise <= 0`, or `tra
 | `link_tx` | `string` | `TXN\d{6,}` from narration, or `NULL`. |
 | `narration` | `string` | `transaction_details` + `extra_details` (≤256c). |
 
- Evidence for a settlement is an exact `link_tx = transaction_id` OR (`ABS(bank.amount - settled) ≤ 1` AND `ABS(DATEDIFF(bank.value_date, settlement_date)) ≤ lag_days`). See `src/processing/reconcile.py: build_bank_leg_sql`.
+ Evidence for a settlement is an exact `link_tx = transaction_id` OR (`link_tx IS NULL` AND `ABS(bank.amount - settled) ≤ 1` AND `ABS(DATEDIFF(bank.value_date, settlement_date)) ≤ lag_days`). The amount-and-date arm is open only to a statement that names no transaction, because a linked line is evidence about the transaction it names. Both directions read the same relation: a statement already linked elsewhere, and matched by nothing, is counted as an orphan. See `src/processing/reconcile.py: build_bank_leg_sql` and `_bank_orphan_where`.
 
-## Terminal statuses
+## Reconciliation statuses
 
-Written to `reconciliation_status` by the MERGE in `src/processing/reconcile.py` (and the bank leg). These are terminal: once set, only a subsequent MERGE/bank leg run can change the status.
+Written to `reconciliation_status` by the MERGE in `src/processing/reconcile.py`, by the bank leg, and by ingestion. Only `MATCHED` and `EXCEPTION_MISSING_BANK_STATEMENT` are terminal (`src/common/schemas.py: TERMINAL_STATUSES`); the rest can be refreshed by a later run, which is how a corrected settlement promotes a mismatch back to `MATCHED` without an operator.
 
 | Status | Meaning | Set by |
 | :--- | :--- | :--- |
@@ -95,6 +95,9 @@ Written to `reconciliation_status` by the MERGE in `src/processing/reconcile.py`
 | `EXCEPTION_DUPLICATE_WEBHOOK` | Multiple webhooks for the same `transaction_id`. | Defined in `schemas.py`; streaming `dropDuplicates` + watermark prevents this at ingest. |
 | `EXCEPTION_INVALID` | Failed schema validation or quarantine (`quarantine_*.csv` / DLQ). | Defined in `schemas.py`; Pandera quarantine + DLQ path. |
 | `EXCEPTION_LATE_UNRESOLVED` | `MISSING_WEBHOOK` or `PENDING_RECONCILIATION` older than the `LATE_SLA_DAYS` window (default 7). Terminal for the batch MERGE, which preserves it (status untouched; only `bank_ref_id` and `instrument_type` refresh) so re-runs stay idempotent; only a late-arriving webhook heals it via ingestion MERGE. | Late-SLA sweep in `reconcile.py` (single-table `UPDATE` over the target, so it ages rows from earlier batches too); preserved by the batch MERGE's 1st `WHEN MATCHED` clause, which is shared with `EXCEPTION_MISSING_WEBHOOK`. |
+| `EXCEPTION_CURRENCY_MISMATCH` | Both sides exist but name different currencies, so the two paise amounts are not the same unit and no fee comparison is meaningful. | Batch MERGE decision tree, before the tolerance arm (`currency_mismatch_guard` in `reconcile.py`); counted as `batch_EXCEPTION_CURRENCY_MISMATCH`. |
+| `EXCEPTION_REVERSAL` | A webhook whose `amount_paise <= 0`: a refund or a reversal. The settlement contract carries no direction field yet, so the row is parked here rather than matched or thrown away. | Ingestion status assignment (`src/ingestion/ingest_webhooks.py`); counted as `table_EXCEPTION_REVERSAL` in the next batch's counts. |
+| `PENDING_RECONCILIATION` | A webhook ingested and waiting for its settlement. Not a placeholder: a fresh row still reaches the tolerance arm. | Ingestion, on insert and on a late-arriving webhook's heal; the batch MERGE refreshes these rows rather than overwriting their status. |
 
 ## Instrument types
 
