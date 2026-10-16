@@ -99,6 +99,23 @@ Written to `reconciliation_status` by the MERGE in `src/processing/reconcile.py`
 | `EXCEPTION_REVERSAL` | A webhook whose `amount_paise <= 0`: a refund or a reversal. The settlement contract carries no direction field yet, so the row is parked here rather than matched or thrown away. | Ingestion status assignment (`src/ingestion/ingest_webhooks.py`); counted as `table_EXCEPTION_REVERSAL` in the next batch's counts. |
 | `PENDING_RECONCILIATION` | A webhook ingested and waiting for its settlement. Not a placeholder: a fresh row still reaches the tolerance arm. | Ingestion, on insert and on a late-arriving webhook's heal; the batch MERGE refreshes these rows rather than overwriting their status. |
 
+## Reversal and refund vocabulary
+
+Single source of truth: `src/common/schemas.py:REVERSAL_GATEWAY_STATUSES`. Gateways disagree on the spelling, so this is the vocabulary this repo reads as money moving backwards, not a provider's specification. Compared case-insensitively after trimming.
+
+| Value | |
+| :--- | :--- |
+| `REFUND` | Provider-reported refund. |
+| `REFUNDED` | Refund already completed at the gateway. |
+| `REFUND_PENDING` | Refund requested, not yet settled. |
+| `PARTIAL_REFUND` | Some of the original amount came back. |
+| `REVERSED` | The authorisation was pulled. |
+| `REVERSAL` | The transfer was pulled. |
+| `CHARGEBACK` | The issuer took the money back. |
+| `DISPUTE` | The holder opened a dispute. |
+
+The predicate in `src/ingestion/ingest_webhooks.py` needs both conditions: a non-positive `amount_paise` **and** one of these statuses. A webhook with a non-positive amount and a forward status satisfies neither the reversal nor the forward predicate, so it reaches the table as neither. Extend this list when you integrate the provider whose spelling is missing.
+
 ## Instrument types
 
 Single source of truth: `src/common/schemas.py:INSTRUMENT_TYPES`. Keys in `config/fee_rates.yaml`. The MERGE generates a `CASE WHEN` per instrument.
@@ -145,3 +162,25 @@ END
 ```
 
 Per-merchant negotiated rates override instrument rates within each card. The MERGE checks `merchant_id` before `instrument_type`.
+
+## Batch metrics file
+
+`data/metrics_YYYYMMDD.json` records what one batch run did, and is checked in as the run's own account of itself. `batch_date` is the date it read; the rest sits under `counts`.
+
+| Key | Meaning |
+| :--- | :--- |
+| `settlement_rows_total` | Settlement rows that passed validation, before the duplicate collapse. |
+| `settlement_rows_deduped` | Rows after that collapse: one row per transaction, with split instalments summed into the single payout they add up to. |
+| `settlement_rows_evaluated` | Deduped rows with a non-null `settled_amount_paise`. The match rate is computed over this. |
+| `duplicate_settlement_rows` | `total` minus `deduped`, and the same number under `batch_EXCEPTION_DUPLICATE_SETTLEMENT`. |
+| `MATCHED`, `EXCEPTION_*` | Row counts per status after the MERGE and the bank leg. |
+| `batch_*` | The same counts in the shape the SLO gate and the drift check read, plus `batch_match_rate` = `MATCHED / settlement_rows_evaluated`. |
+| `late_unresolved_marked` | Rows this run aged to `EXCEPTION_LATE_UNRESOLVED` for being past the provider's SLA window (`config/providers.yaml`, `lag_days`, default 2). |
+| `missing_within_lag` | Rows in `EXCEPTION_MISSING_WEBHOOK` whose settlement date is still inside that window, so the webhook can still arrive. |
+| `dlq_depth`, `late_unresolved_total` | Table-wide counts, reported as 0 when the table does not exist yet. |
+| `residual` | Rows left after the residual pass. |
+| `bank_statement` | Bank-leg counter, 0 when no statement file was supplied. |
+
+One rule ties the file together: every `batch_`-prefixed integer has to sum to `settlement_rows_evaluated`, which is what `check_batch_drift` in `src/pipeline.py` enforces. A run that adds a status without adding its mirror fails that check instead of quietly publishing a rate over part of its own rows.
+
+`data/metrics_20260904.json` is the shipped example: 10,000 settlement rows, 9,805 after the collapse, 8,813 matched, `batch_match_rate` 0.8988.
