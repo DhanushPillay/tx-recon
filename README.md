@@ -85,8 +85,8 @@ files and the Metabase database with it. Nessie is on no volume at all, so even 
 ## Architecture
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"fontFamily": "Inter, Segoe UI, system-ui, sans-serif", "fontSize": "14px", "primaryColor": "#FFFFFF", "primaryTextColor": "#0F172A", "primaryBorderColor": "#E2E8F0", "lineColor": "#CBD5E1", "secondaryColor": "#F8FAFC", "tertiaryColor": "#F1F5F9", "clusterBkg": "#FCFCFD", "clusterBorder": "#EEF2F7", "edgeLabelBackground": "#FFFFFF", "mainBkg": "#FFFFFF", "titleColor": "#0F172A"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 54, "padding": 12, "useMaxWidth": true}}}%%
-flowchart TB
+%%{init: {"theme": "base", "look": "classic", "layout": "dagre", "themeVariables": {"fontSize": "14px", "primaryColor": "#FFFFFF", "primaryTextColor": "#0F172A", "primaryBorderColor": "#E2E8F0", "lineColor": "#CBD5E1", "secondaryColor": "#F8FAFC", "tertiaryColor": "#F1F5F9", "clusterBkg": "#FCFCFD", "clusterBorder": "#EEF2F7", "edgeLabelBackground": "#FFFFFF", "mainBkg": "#FFFFFF", "titleColor": "#0F172A", "useGradient": false}, "flowchart": {"curve": "basis", "nodeSpacing": 30, "rankSpacing": 76, "padding": 14, "useMaxWidth": true}}}%%
+flowchart LR
   subgraph SL["Streaming lane · always on"]
     direction LR
     K(["Kafka · gateway_webhooks"]):::ing --> D["Decode<br/>magic byte, then Avro"] --> DD["Dedup + drift<br/>schema-id must match"] --> H["Heal or insert<br/>pending_reconciliation"]
@@ -103,7 +103,7 @@ flowchart TB
   M --> T
 
   AR --> G{"SLO gate<br/>match rate + residual"}:::gate
-  G -->|"pass"| P["Publish by fast-forward<br/>ingest/YYYY-MM-DD to main"]:::publish
+  G -->|"pass"| P["Publish by fast-forward<br/>branch merged to main"]:::publish
   P --> MT["Iceberg maintenance<br/>expire, rewrite, manifests"]
   G -->|"fail"| X["Drop the branch<br/>never reaches main"]:::dead
 
@@ -116,8 +116,8 @@ flowchart TB
   classDef publish fill:#ECFDF5,stroke:#047857,color:#064E3B,stroke-width:1px;
   classDef dead fill:#FEF2F2,stroke:#B91C1C,color:#7F1D1D,stroke-width:1px;
   classDef serve fill:#F1F5F9,stroke:#94A3B8,color:#334155,stroke-width:1px;
-  style SL fill:#FCFCFD,stroke:#EEF2F7,stroke-width:1px;
-  style BL fill:#FCFCFD,stroke:#EEF2F7,stroke-width:1px;
+  style SL fill:#F8FAFC,stroke:#D8DEE6,stroke-width:1px;
+  style BL fill:#F8FAFC,stroke:#D8DEE6,stroke-width:1px;
   linkStyle default stroke:#CBD5E1,stroke-width:1.1px;
 ```
 
