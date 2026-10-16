@@ -13,12 +13,13 @@ tx-recon has three data legs that converge on a single Iceberg table:
 3. **Bank evidence** (independent truth): Bank statement MT940 files are parsed via the `mt-940` package (never hand-rolled) into `bank_statements` and joined to settlements. MATCHED rows without bank evidence demote to `EXCEPTION_MISSING_BANK_STATEMENT` — without this third leg, a gateway-consistent error is invisible.
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "Inter, Segoe UI, system-ui, sans-serif", "fontSize": "14px", "primaryColor": "#FFFFFF", "primaryTextColor": "#0F172A", "primaryBorderColor": "#E2E8F0", "lineColor": "#CBD5E1", "secondaryColor": "#F8FAFC", "tertiaryColor": "#F1F5F9", "clusterBkg": "#FCFCFD", "clusterBorder": "#EEF2F7", "edgeLabelBackground": "#FFFFFF", "mainBkg": "#FFFFFF", "titleColor": "#0F172A"}, "flowchart": {"curve": "basis", "nodeSpacing": 44, "rankSpacing": 46, "padding": 12, "useMaxWidth": true}}}%%
 flowchart LR
-  L1["LEG 01 · STREAMING<br/>Gateway webhooks<br/>Kafka + Avro, continuous"]
-  L2["LEG 02 · BATCH<br/>Curated settlement<br/>validated CSV, once per day"]
-  L3["LEG 03 · BANK<br/>MT940 statement<br/>credit evidence"]
+  L1(["Leg 01 · streaming<br/>Gateway webhooks<br/>Kafka + Avro, continuous"]):::ing
+  L2(["Leg 02 · batch<br/>Curated settlement<br/>validated CSV, once per day"]):::ing
+  L3(["Leg 03 · bank<br/>MT940 statement<br/>credit evidence"]):::serve
 
-  T["nessie.db.webhooks<br/>one row per transaction_id<br/>the MERGE is the only writer<br/>MATCHED or an EXCEPTION"]
+  T[("nessie.db.webhooks<br/>one row per transaction_id<br/>the MERGE is the only writer<br/>MATCHED or an EXCEPTION")]:::store
 
   L1 -->|"may insert rows"| T
   L2 -->|"may insert rows"| T
@@ -30,7 +31,12 @@ flowchart LR
   RS -.->|"downgrade only"| T
 
   T --> RO["read-only"]
-  RO --> BI["Trino + Metabase<br/>the BI layer"]
+  RO --> BI["Trino + Metabase<br/>the BI layer"]:::serve
+
+  classDef ing fill:#0F766E,stroke:#0B5F58,color:#FFFFFF,stroke-width:1px;
+  classDef store fill:#F8FAFC,stroke:#CBD5E1,color:#0F172A,stroke-width:1px;
+  classDef serve fill:#F1F5F9,stroke:#94A3B8,color:#334155,stroke-width:1px;
+  linkStyle default stroke:#CBD5E1,stroke-width:1.1px;
 ```
 
 Only two legs may insert. The bank leg has no insert arm, so it can never create a row. Both the bank leg and the residual scorer only ever demote; nothing promotes a row back to MATCHED.
@@ -40,23 +46,32 @@ Only two legs may insert. The bank leg has no insert arm, so it can never create
 The batch MERGE in `reconcile.py` evaluates rows in this order. The tree below hoists the existence check first for readability; in SQL the three `WHEN MATCHED` arms (placeholder-preserve, null-amount, tolerance CASE gated on non-terminal status) come first and `WHEN NOT MATCHED` last — first matching clause wins either way.
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "Inter, Segoe UI, system-ui, sans-serif", "fontSize": "14px", "primaryColor": "#FFFFFF", "primaryTextColor": "#0F172A", "primaryBorderColor": "#E2E8F0", "lineColor": "#CBD5E1", "secondaryColor": "#F8FAFC", "tertiaryColor": "#F1F5F9", "clusterBkg": "#FCFCFD", "clusterBorder": "#EEF2F7", "edgeLabelBackground": "#FFFFFF", "mainBkg": "#FFFFFF", "titleColor": "#0F172A"}, "flowchart": {"curve": "basis", "nodeSpacing": 40, "rankSpacing": 44, "padding": 11, "useMaxWidth": true}}}%%
 flowchart TD
   IN["curated rows<br/>validated CSV only"] --> DD["dedup<br/>keep row 1 per txn id"]
 
-  DD --> C1{"no matching row?"}
-  C1 -->|yes| ARM1["INSERT · MISSING_WEBHOOK<br/>gateway_status = UNKNOWN<br/>the only arm that creates a row"]
-  C1 -->|no| C2{"status is a placeholder?"}
-  C2 -->|yes| ARM2["UPDATE · keep status<br/>enrich bank_ref + instrument"]
-  C2 -->|no| C3{"amount_paise is null?"}
-  C3 -->|yes| ARM3["UPDATE · FEE_MISMATCH<br/>settled amount missing"]
-  C3 -->|no| C4{"status not terminal?"}
-  C4 -->|yes| ARM4["UPDATE · tolerance case<br/>amount - fee - gst vs settled"]
-  C4 -->|no| FROZEN["no UPDATE arm matches<br/>terminal status frozen"]
+  DD --> C1{"no matching row?"}:::gate
+  C1 -->|"yes"| ARM1["INSERT · MISSING_WEBHOOK<br/>gateway_status = UNKNOWN<br/>the only arm that creates a row"]:::insert
+  C1 -->|"no"| C2{"status is a placeholder?"}:::gate
+  C2 -->|"yes"| ARM2["UPDATE · keep status<br/>enrich bank_ref + instrument"]
+  C2 -->|"no"| C3{"amount_paise is null?"}:::gate
+  C3 -->|"yes"| ARM3["UPDATE · FEE_MISMATCH<br/>settled amount missing"]
+  C3 -->|"no"| C4{"status not terminal?"}:::gate
+  C4 -->|"yes"| ARM4["UPDATE · tolerance case<br/>amount - fee - gst vs settled"]:::warn
+  C4 -->|"no"| FROZEN["no UPDATE arm matches<br/>terminal status frozen"]:::frozen
 
-  subgraph POST["POST-MERGE · SAME JOB, BEFORE PUBLISH"]
+  subgraph POST["post-MERGE · same job, before publish"]
     direction LR
-    PM1["Residual demotion<br/>downgrade-only scorer"] --> PM2["Late-SLA ageing<br/>unresolved rows age out"] --> PM3["Publish gate<br/>match-rate decides fast-forward"]
+    PM1["Residual demotion<br/>downgrade-only scorer"] --> PM2["Late-SLA ageing<br/>unresolved rows age out"] --> PM3["Publish gate<br/>match-rate decides fast-forward"]:::publish
   end
+
+  classDef gate fill:#FFFBEB,stroke:#B45309,color:#78350F,stroke-width:1px;
+  classDef insert fill:#0F766E,stroke:#0B5F58,color:#FFFFFF,stroke-width:1px;
+  classDef warn fill:#FEF3C7,stroke:#D97706,color:#78350F,stroke-width:1px;
+  classDef frozen fill:#F1F5F9,stroke:#94A3B8,color:#475569,stroke-width:1px;
+  classDef publish fill:#ECFDF5,stroke:#047857,color:#064E3B,stroke-width:1px;
+  style POST fill:#FCFCFD,stroke:#EEF2F7,stroke-width:1px;
+  linkStyle default stroke:#CBD5E1,stroke-width:1.1px;
 ```
 
 First matching clause wins. There is no DELETE arm: a row is never removed. Duplicate settlement rows are counted in `batch_EXCEPTION_DUPLICATE_SETTLEMENT`, not silently merged away.

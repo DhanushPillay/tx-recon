@@ -85,28 +85,40 @@ files and the Metabase database with it. Nessie is on no volume at all, so even 
 ## Architecture
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "Inter, Segoe UI, system-ui, sans-serif", "fontSize": "14px", "primaryColor": "#FFFFFF", "primaryTextColor": "#0F172A", "primaryBorderColor": "#E2E8F0", "lineColor": "#CBD5E1", "secondaryColor": "#F8FAFC", "tertiaryColor": "#F1F5F9", "clusterBkg": "#FCFCFD", "clusterBorder": "#EEF2F7", "edgeLabelBackground": "#FFFFFF", "mainBkg": "#FFFFFF", "titleColor": "#0F172A"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 54, "padding": 12, "useMaxWidth": true}}}%%
 flowchart TB
-  subgraph SL["STREAMING LANE · always on"]
+  subgraph SL["Streaming lane · always on"]
     direction LR
-    K["Kafka topic<br/>gateway_webhooks"] --> D["Decode guard<br/>magic byte, then Avro"] --> DD["Dedup + drift<br/>schema-id must match"] --> H["Heal-or-insert<br/>PENDING_RECONCILIATION"]
-    D -.->|undecodable or invalid| DQ["webhooks_dlq"]
+    K(["Kafka · gateway_webhooks"]):::ing --> D["Decode<br/>magic byte, then Avro"] --> DD["Dedup + drift<br/>schema-id must match"] --> H["Heal or insert<br/>pending_reconciliation"]
+    D -.->|"undecodable or invalid"| DQ(["webhooks_dlq"]):::dead
   end
 
-  subgraph BL["DAILY BATCH LANE · on WAP branch ingest/YYYY-MM-DD"]
+  subgraph BL["Daily batch lane · branch ingest/YYYY-MM-DD"]
     direction LR
-    V["Validate<br/>quarantine, or raise"] --> OB["Open branch<br/>drop, then recreate"] --> M["MERGE<br/>three legs converge"] --> AR["Age + residual<br/>late-SLA, then demote"]
+    V["Validate<br/>quarantine or raise"] --> OB["Open the branch"] --> M["MERGE<br/>three legs converge"]:::merge --> AR["Age + residual<br/>late-SLA, then demote"]
   end
 
-  T["nessie.db.webhooks<br/>one row per transaction_id · Iceberg on Nessie"]
-
+  T[("nessie.db.webhooks<br/>one row per transaction_id")]:::store
   H --> T
   M --> T
-  AR --> G{"SLO gate<br/>match-rate + residual"}
-  G -->|pass| P["Publish by fast-forward<br/>ingest/YYYY-MM-DD → main"]
-  P --> MT["Iceberg maintenance<br/>expire, rewrite, manifests"]
-  G -->|fail| X["Drop the branch<br/>never reaches main"]
 
-  T -.-> RO["read-only: Trino + Metabase"]
+  AR --> G{"SLO gate<br/>match rate + residual"}:::gate
+  G -->|"pass"| P["Publish by fast-forward<br/>ingest/YYYY-MM-DD to main"]:::publish
+  P --> MT["Iceberg maintenance<br/>expire, rewrite, manifests"]
+  G -->|"fail"| X["Drop the branch<br/>never reaches main"]:::dead
+
+  T -.-> RO["Read only · Trino + Metabase"]:::serve
+
+  classDef ing fill:#0F766E,stroke:#0B5F58,color:#FFFFFF,stroke-width:1px;
+  classDef merge fill:#0F172A,stroke:#0F172A,color:#FFFFFF,stroke-width:1px;
+  classDef store fill:#F8FAFC,stroke:#CBD5E1,color:#0F172A,stroke-width:1px;
+  classDef gate fill:#FFFBEB,stroke:#B45309,color:#78350F,stroke-width:1px;
+  classDef publish fill:#ECFDF5,stroke:#047857,color:#064E3B,stroke-width:1px;
+  classDef dead fill:#FEF2F2,stroke:#B91C1C,color:#7F1D1D,stroke-width:1px;
+  classDef serve fill:#F1F5F9,stroke:#94A3B8,color:#334155,stroke-width:1px;
+  style SL fill:#FCFCFD,stroke:#EEF2F7,stroke-width:1px;
+  style BL fill:#FCFCFD,stroke:#EEF2F7,stroke-width:1px;
+  linkStyle default stroke:#CBD5E1,stroke-width:1.1px;
 ```
 
 `RECONCILIATION_STATUS`: `MATCHED`, `EXCEPTION_FEE_MISMATCH`, `EXCEPTION_MISSING_WEBHOOK`, `EXCEPTION_MISSING_BANK_STATEMENT`, `EXCEPTION_DUPLICATE_SETTLEMENT`, `EXCEPTION_DUPLICATE_WEBHOOK`, `EXCEPTION_INVALID`, `EXCEPTION_CURRENCY_MISMATCH`, `EXCEPTION_LATE_UNRESOLVED`, `EXCEPTION_REVERSAL`, `PENDING_RECONCILIATION`. What each one means is in [docs/DATA_DICTIONARY.md](docs/DATA_DICTIONARY.md).
