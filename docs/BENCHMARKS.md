@@ -55,7 +55,7 @@ Why the percentage form was dropped: the previous gate reported `match_rate = 94
 - **Run:** `make accuracy` (which is `python tests/performance/quick_perf.py`), or `pytest tests/performance/test_recon_accuracy.py -v`.
 - **Result:** `match_rate=94.63%` (8813 matched / 500 mismatched / 492 orphans on 9805 settlement ids).
 - **Correction to the previous revision of this file,** which claimed "No synthetic breaks, no answer key". That was wrong. `src/adapters/real_data.py:44-46` injects breaks by `sha256(seed|tx) % 100`: 5% deliberate mismatch, 2% plus or minus 1 paise noise, 5% orphan, 2% duplicate settlement row. There is an answer key, and the generator is it.
-- **Full-file result (9 Oct 2026):** 94.71% on 12,635,227 rows in 244s. Same caveat at larger scale. Source: `tests/performance/results_accuracy_full.json`.
+- **Full-file result (9 Oct 2026):** 94.71% on 12,635,227 rows in 244s. Same caveat at larger scale. The run wrote `tests/performance/results_accuracy_full.json`, which is gitignored, so nobody else can obtain it. That figure is unarchived and sits in the provenance table below with the rest.
 
 ## Which denominator
 
@@ -67,6 +67,25 @@ Two match rates are in circulation for the same batch, and they are not intercha
 | Joined match rate | `matched / (matched + mismatched)`, orphans excluded | **94.71%** | `recon_accuracy.py` and the benchmark tables below |
 
 A transaction with no gateway row cannot be matched, so including it measures settlement-to-webhook coverage rather than fee correctness. The SLO gate uses the end-to-end figure; the benchmark tables use the joined one. A comparison between the two is meaningless.
+
+## Where each number comes from
+
+These figures are quoted in several places, so this is the one place that says which artifact holds each one. "Checked in" means the artifact is in the repository and you can recompute the figure from it. "Unarchived" means the measurement was real but the run left no committed result file, so the figure here is the only record of it.
+
+| Figure | Value | Artifact | Status |
+| :--- | :--- | :--- | :--- |
+| End-to-end match rate, 12.6M run (9 Oct 2026) | 89.98% | none; computed from the injected-count table in `docs/REAL_DATA.md` | unarchived. The run's `tests/performance/results_real.json` holds no pipeline match rate, so it is not the source |
+| Shipped pipeline rate, 10k sample (4 Sep 2026) | 89.88% | `data/metrics_20260904.json`, `batch_match_rate` 0.8988 = 8,813 / 9,805 | checked in, reproducible |
+| Sample mix, 10k sample | 94.63% | `tests/performance/baseline_real.json`, `mix.match_rate` | checked in, and reproducible from the generator's sha256 buckets |
+| Iceberg MERGE bench slices | 94.66% to 94.71% | `tests/performance/baseline_real.json`, `iceberg.benchmarks.*.match_rate` | checked in |
+| Full-file validation, 12.6M rows | 94.71% | `tests/performance/results_accuracy_full.json` | unarchived, gitignored |
+| Kafka producer, 9 Oct 2026 run | 224,237 msgs/sec, p50 0.75 / p95 1.17 / p99 2.82 ms | `tests/performance/results_kafka_real.json` | unarchived, gitignored |
+| Kafka producer, 25 Sep 2026 run, the one the gate compares | 225,123 msgs/sec, p50 0.65 / p99 3.97 ms | `tests/performance/baseline_real.json` | checked in |
+| Unit-suite branch coverage of `src/` | 94.4% | `make coverage`, against the 90% floor | measured 16 Oct 2026 |
+
+The two Kafka rows are two different runs, not two views of one. `make regression` compares this week's run against the September baseline, so the gate's numbers are the older pair and will differ from the prose above by the margin noted there.
+
+Two figures in circulation have no artifact anywhere, tracked or untracked: the 89.98% end-to-end rate, which rests on a count table rather than a result file, and a 91.7% coverage claim in `docs/INTERVIEW_STORY.md`, now replaced by the number `make coverage` reproduces. Neither was adjusted to look better. Both are labelled instead.
 
 ## Kafka producer
 

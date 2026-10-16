@@ -169,7 +169,7 @@ Measured on real data: [thiru1711/Financial_Transactions](https://huggingface.co
 | Full-run mix, 12.9M rows | **94.71%** match rate (mix gate ≥85%) |
 | End-to-end batch (12.6M rows: validate + MERGE + mart) | **~5 min wall** (173s validate, 105s MERGE, 89.98% end-to-end) |
 
-Record: `tests/performance/results_real.json`. The loader injects ~10% exceptions by design (health gate ≥ 85%): bench slices show ~94.7% due to tx-ordered sampling, while the full 12.6M end-to-end run reports **89.98%** (11,368,871 / 12,635,227) — both are the mix working, not matcher error.
+Record: the provenance table in [docs/BENCHMARKS.md](docs/BENCHMARKS.md) names the artifact behind every figure above and says which ones no longer have one. The loader injects ~10% exceptions by design (health gate ≥ 85%): bench slices show ~94.7% due to tx-ordered sampling, while the full 12.6M end-to-end run reports **89.98%** (11,368,871 / 12,635,227) — both are the mix working, not matcher error.
 Synthetic regression baselines are archived in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## Project structure

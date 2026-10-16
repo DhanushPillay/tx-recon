@@ -12,7 +12,10 @@
 5. **Prove it.** The 10k real sample joins through `FeeEngine.check_match`:
    94.6% match with orphans visible, gated at >= 85% — a drop means fee
    miscalibration or drift, not a bad seed.
-   `make accuracy` runs it in ~10 seconds, no infra. Real thiru scale (12.6M, 89.98% on ~10% mix, 91.7% coverage) proves it at size.
+   `make accuracy` runs it in ~10 seconds, no infra. Real thiru scale proves it at
+   size: 12.6M rows end-to-end at 89.98% on a ~10% exception mix. The provenance of
+   every number quoted here is in [docs/BENCHMARKS.md](BENCHMARKS.md); one figure that
+   had no artifact behind it was removed rather than kept.
 
 ## Live demo (clean checkout, <5 min with docker)
 

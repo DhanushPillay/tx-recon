@@ -43,10 +43,10 @@ Speed means nothing if the matches are wrong, so correctness is tested first:
 
 - **End-to-end batch (12.6M rows, real thiru card data, 15.8 GB RAM, 8g driver):** ~5 minutes wall — 173 s validation (12.9M clean) + 105 s MERGE + mart (89.98% match on the injected ~10% exception mix, health gate ≥ 85%).
 - **MERGE slices (real data, 128 shuffles ≥5M):** 1M 50% 11.21 s, 5M 50% 19.81 s, **12M 50% 34.32 s** (slices show ~94.7% due to tx-ordered sampling; see `docs/REAL_DATA.md`).
-- **File checking (12.9M rows, same box):** polars 7.07M / manual 2.93M / pandera 1.24M / pydantic 132k rows/s (`results_pandera_real.json`).
+- **File checking (12.9M rows, same box):** polars 7.07M / manual 2.93M / pandera 1.24M / pydantic 132k rows/s (run artifact `results_pandera_real.json`).
 - **Queue (real ~150B Avro, acks=all, lz4, Redpanda):** 224,237 msgs/sec, serial p50 0.75 ms / p95 1.17 ms / p99 2.82 ms.
 - **Streaming ingestion (Kafka → Iceberg):** 12,832 rows/sec sustained over 120s.
-- **Full accuracy (12.9M rows):** 94.71% match rate, gate ≥85%.
+- **Full-file validation (12.6M rows):** 94.71% match rate on the joined denominator, which is a mix check and not accuracy; nothing in that sample is independently labelled.
 - All suites run on real data; `docs/BENCHMARKS.md` holds the full method and the real-data suite is the cited scale proof.
 
 ## Honest limits
