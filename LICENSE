@@ -1,0 +1,16 @@
+Creative Commons Attribution 4.0 International (CC BY 4.0)
+Copyright (c) 2026 DhanushPillay
+
+This repository's original artifacts — source code, documentation,
+figures in docs/fig/, and aggregate metrics in data/metrics_20260904.json —
+are licensed under CC BY 4.0. You may share and adapt them with attribution.
+
+Full legal code: https://creativecommons.org/licenses/by/4.0/legalcode
+Human-readable summary: https://creativecommons.org/licenses/by/4.0/
+
+Excluded from this license: files derived from the third-party dataset
+thiru1711/Financial_Transactions (Hugging Face, no license card — see
+SECURITY.md and docs/REAL_DATA.md), namely data/real_thiru_full_*,
+data/samples/real_10k_*, data/settlement_*.csv and data/curated_*.csv.
+Those files are NOT covered by this license and are NOT part of any
+public archive; only aggregate counts derived from them are published.

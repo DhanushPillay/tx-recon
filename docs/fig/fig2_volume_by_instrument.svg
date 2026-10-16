@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="380" viewBox="0 0 640 380" font-family="Inter, Arial, sans-serif">
+<title>Volume by instrument</title>
+<text x="24" y="36" font-size="20" font-weight="700" fill="#2B2B2B">Volume by instrument — settlement sample</text>
+<text x="24" y="58" font-size="13" fill="#8A8A8A">10,000 settlement rows · real card_type mapping (only 2 methods exist)</text>
+<rect x="80" y="100" width="110" height="200" fill="#7FBFBF"/>
+<text x="135" y="92" font-size="13" fill="#2B2B2B" text-anchor="middle">6,889</text>
+<text x="135" y="320" font-size="13" fill="#2B2B2B" text-anchor="middle">DEBIT_CARD</text>
+<rect x="310" y="210" width="110" height="90" fill="#7FBFBF"/>
+<text x="365" y="202" font-size="13" fill="#2B2B2B" text-anchor="middle">3,111</text>
+<text x="365" y="320" font-size="13" fill="#2B2B2B" text-anchor="middle">CREDIT_CARD</text>
+<text x="24" y="150" font-size="12" fill="#8A8A8A">rows</text>
+<text x="24" y="340" font-size="13" fill="#2B2B2B">DEBIT_CARD: Rs 306,654 · CREDIT_CARD: Rs 176,716</text>
+<text x="628" y="370" font-size="11" fill="#8A8A8A" text-anchor="end">tx-recon · data/samples/real_10k_settlement.csv</text>
+</svg>

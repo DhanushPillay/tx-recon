@@ -215,4 +215,9 @@ Not built: Kubernetes manifests. Compose is the supported deployment path.
 
 ## License
 
-No license is granted. This is a private portfolio project.
+CC BY 4.0 — see [LICENSE](LICENSE). Original code, docs, figures
+(`docs/fig/`) and aggregate metrics are yours to share/adapt with
+attribution. Excluded: third-party-derived data files
+(`data/real_thiru_full_*`, `data/samples/real_10k_*`,
+`data/settlement_*.csv`, `data/curated_*.csv`) — unlicensed upstream,
+never redistributed (see `SECURITY.md`); only aggregate counts are published.

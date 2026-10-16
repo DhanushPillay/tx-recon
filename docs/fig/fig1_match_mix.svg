@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360" font-family="Inter, Arial, sans-serif">
+<title>Match mix</title>
+<text x="24" y="36" font-size="20" font-weight="700" fill="#2B2B2B">Match mix — 10k real sample</text>
+<text x="24" y="58" font-size="13" fill="#8A8A8A">n=9,805 deduped settlement rows · batch 2026-09-04</text>
+<circle cx="200" cy="170" r="95" fill="none" stroke="#E8B93E" stroke-width="52" stroke-dasharray="536.5 60.4" stroke-dashoffset="-0.0" transform="rotate(-90 200 170)"/>
+<circle cx="200" cy="170" r="95" fill="none" stroke="#7BAF4B" stroke-width="52" stroke-dasharray="30.4 566.5" stroke-dashoffset="-536.5" transform="rotate(-90 200 170)"/>
+<circle cx="200" cy="170" r="95" fill="none" stroke="#9B7EBD" stroke-width="52" stroke-dasharray="30.0 567.0" stroke-dashoffset="-567.0" transform="rotate(-90 200 170)"/>
+<text x="200" y="166" font-size="30" font-weight="700" fill="#2B2B2B" text-anchor="middle">9,805</text>
+<text x="200" y="188" font-size="12" fill="#8A8A8A" text-anchor="middle">TOTAL</text>
+<rect x="360" y="108" width="14" height="14" fill="#E8B93E"/>
+<text x="382" y="120" font-size="14" fill="#2B2B2B">MATCHED</text>
+<text x="600" y="120" font-size="14" fill="#2B2B2B" text-anchor="end">8,813 · 89.88%</text>
+<rect x="360" y="142" width="14" height="14" fill="#7BAF4B"/>
+<text x="382" y="154" font-size="14" fill="#2B2B2B">EXCEPTION_FEE_MISMATCH</text>
+<text x="600" y="154" font-size="14" fill="#2B2B2B" text-anchor="end">500 · 5.10%</text>
+<rect x="360" y="176" width="14" height="14" fill="#9B7EBD"/>
+<text x="382" y="188" font-size="14" fill="#2B2B2B">EXCEPTION_LATE_UNRESOLVED</text>
+<text x="600" y="188" font-size="14" fill="#2B2B2B" text-anchor="end">492 · 5.02%</text>
+<text x="24" y="330" font-size="12" fill="#8A8A8A">MATCHED rows reconciled gateway↔settlement within fee tolerance; LATE = missing webhook past SLA.</text>
+<text x="628" y="350" font-size="11" fill="#8A8A8A" text-anchor="end">tx-recon · data/metrics_20260904.json</text>
+</svg>

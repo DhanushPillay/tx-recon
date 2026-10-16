@@ -75,3 +75,6 @@ integration: wait
 
 bench: accuracy
 	python tests/performance/run_benchmarks.py --suite all
+
+figures:
+	python scripts/make_figures.py

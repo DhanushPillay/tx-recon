@@ -1,0 +1,14 @@
+{
+  "title": "tx-recon: local lakehouse for payment reconciliation (tech report artifacts)",
+  "creators": [{ "name": "DhanushPillay" }],
+  "license": "cc-by-4.0",
+  "keywords": [
+    "reconciliation",
+    "apache-iceberg",
+    "trino",
+    "data-engineering",
+    "fintech"
+  ],
+  "description": "Reproducibility artifacts for tx-recon: Metabase dashboard SQL (sql/questions), paper-ready SVG figures (docs/fig, via make figures), aggregate 10k-sample metrics (data/metrics_20260904.json), fee engine and pipeline source. Excludes third-party-derived row data (thiru1711/Financial_Transactions, no license card); only aggregate counts are published. See docs/ZENODO.md for the file list.",
+  "access_right": "open"
+}

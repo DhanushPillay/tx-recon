@@ -1,7 +1,16 @@
 # Dashboard tour
 
+> Paper/Zenodo version: `docs/fig/fig1_match_mix.svg` (89.88% mix),
+> `fig2_volume_by_instrument.svg`, `fig3_daily_settlement_volume.svg`,
+> `fig4_top_merchants_settlement.svg` — regenerated from the archived
+> 10k sample via `make figures` (`scripts/make_figures.py`, stdlib only,
+> no Metabase chrome). Use these in the report, not screenshots.
+
 Metabase (`http://localhost:3001/dashboard/2`) over Trino (`nessie.db`) over the
-Iceberg `webhooks` table. Full screenshot:
+Iceberg `webhooks` table. Layout is a grid, not a stack: 4 KPIs share row 0,
+pie + daily-match share a row, volume + mismatch share a row, merchant +
+top-mismatch share a row (see `LAYOUT` in `scripts/refresh_dashboard.py`).
+Full screenshot:
 
 ![Full dashboard](dashboard.png)
 

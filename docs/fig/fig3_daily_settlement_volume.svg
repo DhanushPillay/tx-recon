@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="380" viewBox="0 0 640 380" font-family="Inter, Arial, sans-serif">
+<title>Daily settlement volume</title>
+<text x="24" y="36" font-size="20" font-weight="700" fill="#2B2B2B">Daily settlement volume — sample window</text>
+<text x="24" y="58" font-size="13" fill="#8A8A8A">2010-01-01 → 2010-01-04 · 10,000 rows</text>
+<rect x="60" y="100" width="90" height="200" fill="#E0787A"/>
+<text x="105" y="92" font-size="13" fill="#2B2B2B" text-anchor="middle">3,319</text>
+<text x="105" y="320" font-size="13" fill="#2B2B2B" text-anchor="middle">01-01</text>
+<rect x="190" y="124" width="90" height="176" fill="#E0787A"/>
+<text x="235" y="116" font-size="13" fill="#2B2B2B" text-anchor="middle">2,928</text>
+<text x="235" y="320" font-size="13" fill="#2B2B2B" text-anchor="middle">01-02</text>
+<rect x="320" y="107" width="90" height="193" fill="#E0787A"/>
+<text x="365" y="99" font-size="13" fill="#2B2B2B" text-anchor="middle">3,209</text>
+<text x="365" y="320" font-size="13" fill="#2B2B2B" text-anchor="middle">01-03</text>
+<rect x="450" y="268" width="90" height="32" fill="#E0787A"/>
+<text x="495" y="260" font-size="13" fill="#2B2B2B" text-anchor="middle">544</text>
+<text x="495" y="320" font-size="13" fill="#2B2B2B" text-anchor="middle">01-04</text>
+<text x="24" y="340" font-size="13" fill="#2B2B2B">2010-01-01: Rs 153,875 · 2010-01-02: Rs 154,710 · 2010-01-03: Rs 151,662 · 2010-01-04: Rs 23,123</text>
+<text x="628" y="370" font-size="11" fill="#8A8A8A" text-anchor="end">tx-recon · data/samples/real_10k_settlement.csv</text>
+</svg>

@@ -25,6 +25,59 @@ DISP = {
     "exceptions_by_merchant": "table",
     "top_mismatches": "table",
 }
+# (row, col, size_x, size_y): KPI strip shares one row, pairs share rows.
+LAYOUT = {
+    "kpi_match_rate": (0, 0, 6, 4),
+    "kpi_volume_rupees": (0, 6, 6, 4),
+    "kpi_at_risk_rupees": (0, 12, 6, 4),
+    "dlq_depth": (0, 18, 6, 4),
+    "match_rate": (4, 0, 8, 6),
+    "daily_match_rate": (4, 8, 16, 6),
+    "daily_trend": (10, 0, 24, 6),
+    "volume_by_instrument": (16, 0, 12, 6),
+    "mismatch_by_instrument": (16, 12, 12, 6),
+    "exceptions_by_merchant": (22, 0, 12, 6),
+    "top_mismatches": (22, 12, 12, 6),
+}
+
+VIZ = {
+    "kpi_match_rate": {
+        "scalar.field": "match_rate_pct",
+        "column_settings": {"['name','match_rate_pct']": {"number_style": "percent"}},
+    },
+    "kpi_volume_rupees": {
+        "column_settings": {
+            "['name','volume_rupees']": {"currency": "INR", "number_style": "currency"}
+        }
+    },
+    "kpi_at_risk_rupees": {
+        "column_settings": {
+            "['name','at_risk_rupees']": {"currency": "INR", "number_style": "currency"}
+        }
+    },
+    "dlq_depth": {},
+    "match_rate": {
+        "pie.show_legend": True,
+        "pie.show_total": True,
+        "pie.percent_visibility": "legend",
+    },
+    "daily_match_rate": {
+        "graph.show_goal": False,
+        "line.style": "line",
+        "graph.metrics": ["total", "matched"],
+    },
+    "daily_trend": {"graph.show_goal": False, "stackable.stack_type": "stacked"},
+    "volume_by_instrument": {"graph.show_values": True},
+    "mismatch_by_instrument": {"graph.show_values": True},
+    "exceptions_by_merchant": {
+        "table.columns": [
+            {"name": "merchant_id"},
+            {"name": "mismatches"},
+            {"name": "rupees_at_risk"},
+        ]
+    },
+    "top_mismatches": {},
+}
 ORDER = [
     "kpi_match_rate",
     "kpi_volume_rupees",
@@ -72,7 +125,7 @@ def main() -> None:
             "name": n,
             "dataset_query": {"database": db, "type": "native", "native": {"query": sql}},
             "display": DISP[n],
-            "visualization_settings": {},
+            "visualization_settings": VIZ.get(n, {}),
         }
         if n in existing:
             cid = existing[n]
@@ -87,10 +140,10 @@ def main() -> None:
         {
             "id": -i,
             "card_id": ids[n],
-            "row": (i - 1) * 4,
-            "col": 0,
-            "size_x": 24,
-            "size_y": 4,
+            "row": LAYOUT[n][0],
+            "col": LAYOUT[n][1],
+            "size_x": LAYOUT[n][2],
+            "size_y": LAYOUT[n][3],
             "series": [],
             "visualization_settings": {},
             "parameter_mappings": [],
