@@ -155,3 +155,44 @@ def test_the_env_scan_is_reading_the_code(folder):
     base = os.path.join(ROOT, folder)
     assert os.path.isdir(base), f"{folder}/ is gone; this scan no longer knows where to look"
     assert any(name.endswith(".py") for name in os.listdir(base))
+
+
+def _mermaid_inits():
+    """Every %%{init}%% line in the shipped markdown, with where it lives."""
+    found = []
+    for path in _docs():
+        for lineno, line in enumerate(_read(path).splitlines(), 1):
+            if "%%{init:" in line:
+                found.append((os.path.relpath(path, ROOT), lineno, line))
+    return found
+
+
+def test_the_diagrams_do_not_lock_a_theme():
+    """A locked theme breaks dark mode, and it did: lanes rendered near-black.
+
+    GitHub adjusts an unlocked diagram for the reader's mode, but a diagram that
+    names its own theme keeps those colours everywhere. The init may pin the
+    renderer (look, layout) and the blocks may colour their own nodes, because an
+    explicit fill travels with its explicit text colour. What it may not do is
+    name a theme, carry themeVariables, or fill a lane: those are page-dependent
+    and belong to the reader's mode, not the diagram.
+    """
+    inits = _mermaid_inits()
+    assert len(inits) >= 3, f"only {len(inits)} mermaid init lines found, so this check is asleep"
+    for rel, lineno, line in inits:
+        assert '"theme"' not in line, (
+            f"{rel}:{lineno} locks a mermaid theme, which disables the reader's "
+            "dark-mode adjustment"
+        )
+        assert "themeVariables" not in line, (
+            f"{rel}:{lineno} carries themeVariables, which are fixed light colours on a dark page"
+        )
+    lanes = []
+    for path in _docs():
+        for lineno, line in enumerate(_read(path).splitlines(), 1):
+            if re.match(r"\s*style\s+(SL|BL|POST)\b", line):
+                lanes.append(f"{os.path.relpath(path, ROOT)}:{lineno}")
+    assert not lanes, (
+        "lane fills are page-dependent !important paint; they stay light while the "
+        f"page goes dark: {lanes}"
+    )

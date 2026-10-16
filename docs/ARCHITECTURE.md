@@ -13,7 +13,7 @@ tx-recon has three data legs that converge on a single Iceberg table:
 3. **Bank evidence** (independent truth): Bank statement MT940 files are parsed via the `mt-940` package (never hand-rolled) into `bank_statements` and joined to settlements. MATCHED rows without bank evidence demote to `EXCEPTION_MISSING_BANK_STATEMENT` — without this third leg, a gateway-consistent error is invisible.
 
 ```mermaid
-%%{init: {"theme": "base", "look": "classic", "layout": "dagre", "themeVariables": {"fontSize": "14px", "primaryColor": "#FFFFFF", "primaryTextColor": "#0F172A", "primaryBorderColor": "#E2E8F0", "lineColor": "#CBD5E1", "secondaryColor": "#F8FAFC", "tertiaryColor": "#F1F5F9", "clusterBkg": "#FCFCFD", "clusterBorder": "#EEF2F7", "edgeLabelBackground": "#FFFFFF", "mainBkg": "#FFFFFF", "titleColor": "#0F172A", "useGradient": false}, "flowchart": {"curve": "basis", "nodeSpacing": 34, "rankSpacing": 80, "padding": 14, "useMaxWidth": true}}}%%
+%%{init: {"look": "classic", "layout": "dagre", "flowchart": {"curve": "basis", "nodeSpacing": 34, "rankSpacing": 80, "padding": 14, "useMaxWidth": true}}}%%
 flowchart LR
   L1(["Leg 01 · streaming<br/>Gateway webhooks<br/>Kafka + Avro, continuous"]):::ing
   L2(["Leg 02 · batch<br/>Curated settlement<br/>validated CSV, once per day"]):::ing
@@ -45,7 +45,7 @@ Only two legs may insert. The bank leg has no insert arm, so it can never create
 The batch MERGE in `reconcile.py` evaluates rows in this order. The tree below hoists the existence check first for readability; in SQL the three `WHEN MATCHED` arms (placeholder-preserve, null-amount, tolerance CASE gated on non-terminal status) come first and `WHEN NOT MATCHED` last — first matching clause wins either way.
 
 ```mermaid
-%%{init: {"theme": "base", "look": "classic", "layout": "dagre", "themeVariables": {"fontSize": "14px", "primaryColor": "#FFFFFF", "primaryTextColor": "#0F172A", "primaryBorderColor": "#E2E8F0", "lineColor": "#CBD5E1", "secondaryColor": "#F8FAFC", "tertiaryColor": "#F1F5F9", "clusterBkg": "#FCFCFD", "clusterBorder": "#EEF2F7", "edgeLabelBackground": "#FFFFFF", "mainBkg": "#FFFFFF", "titleColor": "#0F172A", "useGradient": false}, "flowchart": {"curve": "basis", "nodeSpacing": 30, "rankSpacing": 66, "padding": 13, "useMaxWidth": true}}}%%
+%%{init: {"look": "classic", "layout": "dagre", "flowchart": {"curve": "basis", "nodeSpacing": 30, "rankSpacing": 66, "padding": 13, "useMaxWidth": true}}}%%
 flowchart LR
   IN["curated rows<br/>validated CSV only"] --> DD["dedup<br/>keep row 1 per txn id"]
 
@@ -69,7 +69,6 @@ flowchart LR
   classDef warn fill:#FEF3C7,stroke:#D97706,color:#78350F,stroke-width:1px;
   classDef frozen fill:#F1F5F9,stroke:#94A3B8,color:#475569,stroke-width:1px;
   classDef publish fill:#ECFDF5,stroke:#047857,color:#064E3B,stroke-width:1px;
-  style POST fill:#F8FAFC,stroke:#D8DEE6,stroke-width:1px;
   linkStyle default stroke:#CBD5E1,stroke-width:1.1px;
 ```
 
