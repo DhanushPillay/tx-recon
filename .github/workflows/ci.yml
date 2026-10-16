@@ -113,9 +113,9 @@ jobs:
           PYTHONPATH: .
           PROJECT_ROOT: ${{ github.workspace }}
         run: |
-          # This job runs the accuracy harness only, so the gate covers accuracy
-          # only. --require makes that explicit: a required family the run does
-          # not supply is a failure, not a warning, so the step cannot report
+          # This job runs the sample-mix harness only, so the gate covers the mix
+          # family only. --require makes that explicit: a required family the run
+          # does not supply is a failure, not a warning, so the step cannot report
           # success while skipping the metrics it appears to be checking.
           #
           # Throughput, p95 and p99 are covered by benchmark-nightly, which
@@ -128,7 +128,7 @@ jobs:
           python tests/performance/check_regression.py \
             --results tests/performance/results_accuracy.json \
             --baseline tests/performance/baseline_real.json \
-            --require accuracy
+            --require mix
 
       - name: Run Pytest with Coverage
         env:

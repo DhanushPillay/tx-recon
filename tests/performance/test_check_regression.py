@@ -38,3 +38,35 @@ def test_checked_in_baseline_gates_the_mix_only():
     assert all("no comparison ran" in w for w in warn)
     bad, _, _ = check({"mix": {"match_rate": 0.80}}, base)
     assert any("mix floor" in f for f in bad)
+
+
+def test_every_required_family_is_one_the_gate_knows():
+    """The gate rejects a family it does not know, so somebody has to check the names.
+
+    Renaming the family from `accuracy` to `mix` left the workflow requiring the old
+    name, which turned the regression gate into a step that failed on every push and
+    nothing caught it. The workflow and the Makefile are the only two places that ask
+    for a family by name, so this reads them both.
+    """
+    import re
+    from pathlib import Path
+
+    import check_regression as cr
+
+    root = Path(__file__).resolve().parents[2]
+    found = 0
+    for name in (".github/workflows/ci.yml", "Makefile"):
+        # Comments do not run. A comment that mentions --require describes nothing.
+        for line in (root / name).read_text(encoding="utf-8").splitlines():
+            if line.lstrip().startswith("#"):
+                continue
+            for arg in re.findall(r"--require[= ]([A-Za-z0-9_,\-]+)", line):
+                for family in arg.split(","):
+                    assert family in cr.FAMILIES, (
+                        f"{name} requires metric family {family!r}; the gate knows "
+                        f"{sorted(cr.FAMILIES)}. A name it does not know fails the step."
+                    )
+                    found += 1
+    assert found >= 3, (
+        f"the scan read {found} --require values, so it is not reading the lines that run"
+    )
