@@ -52,7 +52,7 @@ Why the percentage form was dropped: the previous gate reported `match_rate = 94
 - **Gate:** `tests/performance/test_recon_accuracy.py` requires the checked-in 9,805-row sample to still produce the counts it was checked in with, 8813 matched, 500 mismatched, 492 orphans. It also fails if the mix drifts, so a regenerated fixture fails loudly instead of quietly redefining the gate.
 - **Method:** gateway rows joined through `FeeEngine.check_match`; dedup latest-wins mirrors the `row_number() ORDER BY settlement_date DESC` in `reconcile.py`.
 - **What it establishes:** the sample still loads, still folds, and the fee engine still agrees with the rate the generator used. That is a smoke test with teeth, not an accuracy measurement.
-- **Run:** `python tests/performance/quick_perf.py`, `make mix`, or `pytest tests/performance/test_recon_accuracy.py -v`.
+- **Run:** `make accuracy` (which is `python tests/performance/quick_perf.py`), or `pytest tests/performance/test_recon_accuracy.py -v`.
 - **Result:** `match_rate=94.63%` (8813 matched / 500 mismatched / 492 orphans on 9805 settlement ids).
 - **Correction to the previous revision of this file,** which claimed "No synthetic breaks, no answer key". That was wrong. `src/adapters/real_data.py:44-46` injects breaks by `sha256(seed|tx) % 100`: 5% deliberate mismatch, 2% plus or minus 1 paise noise, 5% orphan, 2% duplicate settlement row. There is an answer key, and the generator is it.
 - **Full-file result (9 Oct 2026):** 94.71% on 12,635,227 rows in 244s. Same caveat at larger scale. Source: `tests/performance/results_accuracy_full.json`.
