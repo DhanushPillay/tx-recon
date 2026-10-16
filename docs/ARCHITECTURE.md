@@ -42,12 +42,12 @@ Only two legs may insert. The bank leg has no insert arm, so it can never create
 
 ## MERGE decision tree
 
-The batch MERGE in `reconcile.py` evaluates rows in this order. The tree below hoists the existence check first for readability; in SQL the three `WHEN MATCHED` arms (placeholder-preserve, null-amount, tolerance CASE gated on non-terminal status) come first and `WHEN NOT MATCHED` last — first matching clause wins either way.
+The batch MERGE in `reconcile.py` evaluates rows in this order. The tree below hoists the existence check first for readability; in SQL the four `WHEN MATCHED` arms (placeholder-preserve, null-amount, currency-mismatch, tolerance CASE gated on non-terminal status) come first and `WHEN NOT MATCHED` last — first matching clause wins either way.
 
 ```mermaid
 %%{init: {"look": "classic", "layout": "dagre", "flowchart": {"curve": "basis", "nodeSpacing": 30, "rankSpacing": 66, "padding": 13, "useMaxWidth": true}}}%%
 flowchart LR
-  IN["curated rows<br/>validated CSV only"] --> DD["dedup<br/>keep row 1 per txn id"]
+  IN["curated rows<br/>validated CSV only"] --> DD["dedup<br/>collapse + sum instalments"]
 
   DD --> C1{"no matching row?"}:::gate
   C1 -->|"yes"| ARM1["INSERT · MISSING_WEBHOOK<br/>gateway_status = UNKNOWN<br/>the only arm that creates a row"]:::insert
@@ -55,13 +55,15 @@ flowchart LR
   C2 -->|"yes"| ARM2["UPDATE · keep status<br/>enrich bank_ref + instrument"]
   C2 -->|"no"| C3{"amount_paise is null?"}:::gate
   C3 -->|"yes"| ARM3["UPDATE · FEE_MISMATCH<br/>settled amount missing"]
-  C3 -->|"no"| C4{"status not terminal?"}:::gate
+  C3 -->|"no"| CC{"currencies differ?"}:::gate
+  CC -->|"yes"| ARMC["UPDATE · CURRENCY_MISMATCH<br/>paise are not the same unit"]
+  CC -->|"no"| C4{"status not terminal?"}:::gate
   C4 -->|"yes"| ARM4["UPDATE · tolerance case<br/>amount - fee - gst vs settled"]:::warn
   C4 -->|"no"| FROZEN["no UPDATE arm matches<br/>terminal status frozen"]:::frozen
 
   subgraph POST["post-MERGE · same job, before publish"]
     direction LR
-    PM1["Residual demotion<br/>downgrade-only scorer"] --> PM2["Late-SLA ageing<br/>unresolved rows age out"] --> PM3["Publish gate<br/>match-rate decides fast-forward"]:::publish
+    PM1["Residual demotion<br/>downgrade-only scorer"] --> PM2["Late-SLA ageing<br/>unresolved rows age out"] --> PM3["SLO + publish gate<br/>rate and residual decide"]:::publish
   end
 
   classDef gate fill:#FFFBEB,stroke:#B45309,color:#78350F,stroke-width:1px;
@@ -76,7 +78,7 @@ First matching clause wins. There is no DELETE arm: a row is never removed. Dupl
 
 The fee and tolerance in the tolerance-case arm are computed per-row via a `CASE` expression that selects the correct rate card by instrument type, merchant ID, and settlement date. See "Versioned rate cards" below.
 
-That is the whole batch MERGE: **3 `UPDATE SET` clauses and 1 `WHEN NOT MATCHED` INSERT, no DELETE**. `tests/processing/test_reconcile.py::test_run_reconciliation_wiring` pins exactly that shape.
+That is the whole batch MERGE: **4 `UPDATE SET` clauses and 1 `WHEN NOT MATCHED` INSERT, no DELETE**. `tests/processing/test_reconcile.py::test_run_reconciliation_wiring` pins exactly that shape.
 
 Rows already marked `LATE_UNRESOLVED` by the late-SLA pass (`LATE_SLA_DAYS`, default 7) hit the shared placeholder-preserve clause first (they are placeholders, not terminal rows), so the batch never demotes them on re-run and stays idempotent; only a late-arriving webhook heals them via the ingestion MERGE. Genuinely terminal rows (`MATCHED`, `MISSING_BANK_STATEMENT`) are frozen by the `NOT IN TERMINAL` guard on the tolerance arm.
 
@@ -198,7 +200,7 @@ src/
   adapters/        PG settlement normalizers (Razorpay/Cashfree/PayU/Generic) + bank_statement (MT940) + real_data (thiru 13.3M)
   common/          Settings (strict flags, *_FILE secrets), Spark session, domain contracts
   ingestion/       Spark streaming Kafka -> Iceberg (+DLQ, schema-id drift, late-data, bucket 16)
-  processing/      FeeEngine + MERGE reconciliation (3×UPDATE/1×INSERT) + residual scorer + batches (provider windows) + wap (branches) + corrections (journal)
+  processing/      FeeEngine + MERGE reconciliation (4×UPDATE/1×INSERT) + residual scorer + batches (provider windows) + wap (branches) + corrections (journal)
   validation/      Pandera schemas + quarantine + pan_guard (Luhn) + file_registry (sha256)
   pipeline.py      validate (PAN/registry/curated) -> reconcile (bank leg, WAP branch, metrics) -> metrics_<YYYYMMDD>.json + maintenance (real data only, fail-closed)
 config/

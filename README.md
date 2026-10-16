@@ -95,7 +95,7 @@ flowchart LR
 
   subgraph BL["Daily batch lane · branch ingest/YYYY-MM-DD"]
     direction LR
-    V["Validate<br/>quarantine or raise"] --> OB["Open the branch"] --> M["MERGE<br/>three legs converge"]:::merge --> AR["Age + residual<br/>late-SLA, then demote"]
+    V["Validate<br/>quarantine or raise"] --> OB["Open the branch"] --> M["MERGE<br/>settlement vs webhooks"]:::merge --> AR["Age + residual<br/>late-SLA, then demote"]
   end
 
   T[("nessie.db.webhooks<br/>one row per transaction_id")]:::store
