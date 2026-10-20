@@ -44,7 +44,7 @@ jobs:
           # uv.lock is the record of the resolved set, so gate it. Run
           # `uv lock` locally to refresh. uv itself is pinned because an
           # unpinned resolver silently changes what "frozen" means.
-          pip install uv==0.10.6
+          pip install uv==0.13.3
           uv lock --check
 
       - name: Install dependencies from the lock
@@ -251,7 +251,7 @@ jobs:
           # Same lock-driven install as test-and-lint. Mutation results only
           # mean something against the dependency set the tests pass on, so
           # this job used to install differently from the one that runs them.
-          pip install uv==0.10.6
+          pip install uv==0.13.3
           uv lock --check
           uv export --frozen --extra dev --no-emit-project --no-hashes -o "$RUNNER_TEMP/ci-requirements.txt"
           pip install -r "$RUNNER_TEMP/ci-requirements.txt"
