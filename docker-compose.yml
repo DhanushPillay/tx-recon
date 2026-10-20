@@ -28,10 +28,17 @@ services:
       retries: 5
 
   minio:
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    # Upstream stopped publishing free MinIO images in October 2025; both
+    # Docker Hub and Quay now refuse anonymous pulls. Chainguard rebuilds the
+    # same upstream source and publishes it free. Digest-pinned so the tag
+    # cannot move under CI.
+    image: cgr.dev/chainguard/minio@sha256:cff197fef764642223ef9f4444c903d51aee9b544a7be8bc007fef6b7b00d136
     container_name: minio
     security_opt:
       - no-new-privileges:true
+    # Chainguard images default to uid 65532, but Docker creates the named
+    # volume root-owned. The old upstream image ran as root too, so keep it.
+    user: "0:0"
     environment:
       - MINIO_ROOT_USER=${MINIO_ROOT_USER:-admin}
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
@@ -41,27 +48,19 @@ services:
       - "127.0.0.1:9001:9001"
     volumes:
       - minio_data:/data
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
   minio-createbucket:
-    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+    # The Chainguard client image has no shell, so the alias comes from
+    # MC_HOST_* and the bucket is a single command. restart: on-failure
+    # retries until MinIO answers; buckets are private by default.
+    image: cgr.dev/chainguard/minio-client@sha256:0d96f662c23c9823874b47b6598cd7352edd9037891cba302d8fd3323dad295b
     depends_on:
       minio:
-        condition: service_healthy
+        condition: service_started
+    restart: on-failure
     environment:
-      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-admin}
-      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
-    entrypoint: >
-      /bin/sh -c "
-      until (/usr/bin/mc alias set myminio http://minio:9000 $${MINIO_ROOT_USER:-admin} $${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}) do echo '...waiting for minio...' && sleep 1; done;
-      /usr/bin/mc mb myminio/lakehouse || true;
-      /usr/bin/mc anonymous set private myminio/lakehouse;
-      exit 0;
-      "
+      - MC_HOST_myminio=http://${MINIO_ROOT_USER:-admin}:${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}@minio:9000
+    entrypoint: ["/usr/bin/mc", "mb", "--ignore-existing", "myminio/lakehouse"]
 
   nessie:
     image: ghcr.io/projectnessie/nessie:0.107.9-java
@@ -100,7 +99,7 @@ services:
       JAVA_OPTS: ${TRINO_JAVA_OPTS:--Xmx4G}
     depends_on:
       minio:
-        condition: service_healthy
+        condition: service_started
       nessie:
         condition: service_healthy
 
