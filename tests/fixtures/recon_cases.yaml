@@ -289,7 +289,7 @@ expected_counts:
   fee_card_out_of_range_rows: 1         # i_out_of_range
   fee_card_unparseable_date_rows: 1     # i_unparseable_date
   fee_instrument_unknown_rows: 1        # i_unknown_instrument
-  table_EXCEPTION_REVERSAL: 1           # m_refund, the only one of its kind
+  EXCEPTION_REVERSAL: 1                 # m_refund, the only one of its kind
 
 # --------------------------------------------------------------------------
 # Bank evidence, driven through the real build_bank_leg_sql. amount_paise is

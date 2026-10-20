@@ -70,7 +70,7 @@ def _write_curated(data_dir: str) -> str:
     """
     from src.adapters.settlement import CANONICAL_COLS
 
-    fields = list(CANONICAL_COLS) + ["provider"]
+    fields = list(CANONICAL_COLS)
     path = os.path.join(data_dir, f"curated_settlement_{STAMP}.csv")
     with open(path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=fields)
@@ -79,7 +79,7 @@ def _write_curated(data_dir: str) -> str:
             rec = dict(row)
             rec["transaction_id"] = row["tx"]
             rec["provider"] = "gateway"
-            writer.writerow({c: ("null" if rec.get(c) is None else rec.get(c)) for c in fields})
+            writer.writerow({c: ("" if rec.get(c) is None else rec.get(c)) for c in fields})
     return path
 
 

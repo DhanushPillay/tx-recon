@@ -390,7 +390,7 @@ def _counters(frame, spark) -> dict[str, int]:
             "duplicate_settlement_rows": frame["settlements"].count() - frame["distinct"].count(),
             "partial_settlement_txns": frame["partial"],
             "settlement_currency_missing_rows": frame["folded"].filter("currency IS NULL").count(),
-            "table_EXCEPTION_REVERSAL": frame["hooks"]
+            "EXCEPTION_REVERSAL": frame["hooks"]
             .filter(f"reconciliation_status = '{EXCEPTION_REVERSAL}'")
             .count(),
         }

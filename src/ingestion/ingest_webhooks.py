@@ -305,7 +305,7 @@ def run_ingestion():
                 f"at {EXCEPTION_REVERSAL}. The settlement contract has no direction field yet "
                 "(`settlement_schema.Check.gt(0)` still quarantines a negative settled amount), "
                 "so these wait for the matching debit rather than being reconciled. They surface "
-                "as table_EXCEPTION_REVERSAL in the next batch's reconciliation counts."
+                "as EXCEPTION_REVERSAL in the next batch's reconciliation counts."
             )
         v = batch_df.filter(accepted_cond).dropDuplicates(["transaction_id"])
         v = (
