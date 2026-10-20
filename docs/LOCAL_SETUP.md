@@ -8,6 +8,36 @@ How to run tx-recon on your machine.
 - Docker and Docker Compose
 - Java 17 (JDK) for PySpark
 
+## Make targets
+
+`make help` prints this list from the Makefile itself.
+
+| Command | What it does |
+| --- | --- |
+| `make install` | `uv sync --extra dev`, so the venv matches `uv.lock` |
+| `make lock` | re-resolve `uv.lock` from `pyproject.toml` |
+| `make up` | `docker compose up -d`: redpanda, minio, nessie, trino, metabase |
+| `make wait` | block until minio, nessie and trino answer |
+| `make down` | `docker compose down -v`, which deletes the named volumes |
+| `make format` | `ruff format` over `src/ tests/ dags/` |
+| `make lint` | `ruff check` over the same three |
+| `make typecheck` | `mypy src/` |
+| `make test` | unit suite, `-m "not integration"`, xdist |
+| `make coverage` | the same suite with the 90% branch gate |
+| `make integration` | docker-backed integration suite; waits for the services first |
+| `make pipeline` | one daily batch, `DATE=YYYY-MM-DD`, today by default |
+| `make accuracy` | sample-mix check over the checked-in 10k sample (not an accuracy gate) |
+| `make regression` | gate that run against `tests/performance/baseline_real.json`, mix family only |
+| `make bench` | the four real-data benchmark suites |
+| `make regression-full` | gate kafka, latency and iceberg too; run `make bench` first |
+| `make figures` | regenerate the four paper figures in `docs/fig/` from the archived 10k sample |
+| `make clean` | remove `__pycache__` and `.pyc` |
+| `make help` | the list above |
+
+`make down` is the full reset: it takes redpanda's topics, MinIO's objects, Trino's local
+files and the Metabase database with it. Nessie is on no volume at all, so even a plain
+`docker compose down` loses the Iceberg catalog and the pipeline has to re-run ingest.
+
 ## 1. Configure environment
 
 ```bash

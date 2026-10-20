@@ -114,14 +114,18 @@ def test_the_make_targets_the_docs_name_exist():
 
 
 def test_every_make_target_is_written_down():
-    """The README's table is a map of the Makefile, so it may not fall behind it."""
+    """Every target the Makefile defines must be written down for the reader.
+
+    The table lives in LOCAL_SETUP.md, so the scan covers every reader-facing
+    doc. A target nobody can find is a target nobody runs.
+    """
     defined = _make_targets()
     assert len(defined) >= 15, f"only found {len(defined)} targets, so this is asleep"
-    readme = _read(os.path.join(ROOT, "README.md"))
-    missing = [name for name in sorted(defined) if f"`make {name}`" not in readme]
+    docs = "\n".join(_read(path) for path in _docs())
+    missing = [name for name in sorted(defined) if f"`make {name}`" not in docs]
     assert not missing, (
-        f"the Makefile defines {missing} and README.md never names them: a target "
-        "nobody can find from the front door is a target nobody runs"
+        f"the Makefile defines {missing} and no doc names them: a target "
+        "nobody can find from the docs is a target nobody runs"
     )
 
 
