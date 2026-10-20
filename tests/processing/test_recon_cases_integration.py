@@ -28,7 +28,7 @@ from src.processing.reconcile import run_reconciliation
 pytestmark = pytest.mark.integration
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FIXTURE = os.path.join(HERE, "tests", "fixtures", "recon_cases.yaml")
+FIXTURE = os.path.join(HERE, "fixtures", "recon_cases.yaml")
 
 # The fixture's batch date, and the file stem _settlement_source looks for.
 STAMP = "20250610"
@@ -107,14 +107,14 @@ def batch():
         f"('{w['id']}', {_lit(w['amount_paise'])}, '{w['gateway_status']}', "
         f"'{w['timestamp_utc']}', {_lit(w['merchant_id'])}, 'recon-cases', "
         f"'{_ingestion_status(w)}', NULL, {_lit(w['instrument_type'])}, "
-        f"{_lit(w['currency'])}, current_timestamp())"
+        f"{_lit(w['currency'])}, current_timestamp(), NULL, NULL)"
         for w in _fx()["webhooks"]
     )
     spark.sql(
         f"INSERT INTO {settings.webhook_table} ("
         "transaction_id, amount_paise, gateway_status, timestamp_utc, merchant_id, "
         "processing_run_id, reconciliation_status, bank_ref_id, instrument_type, "
-        f"currency, ingested_at) VALUES {values}"
+        f"currency, ingested_at, duplicate_mutation_count, last_duplicate_at) VALUES {values}"
     )
 
     data_dir = os.path.join(settings.project_root, "data")

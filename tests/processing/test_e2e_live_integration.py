@@ -51,13 +51,14 @@ def _write_curated(data_dir, stamp, rows):
 def _seed_webhooks(spark, table, rows):
     vals = ",".join(
         f"('{t}', {a}, 'SUCCESS', '{ts}', 'UNKNOWN', 'live-seed', "
-        f"'PENDING_SETTLEMENT', NULL, current_timestamp(), '{i}')"
+        f"'PENDING_SETTLEMENT', NULL, current_timestamp(), '{i}', NULL, NULL, 'INR')"
         for t, a, ts, i in rows
     )
     spark.sql(
         f"INSERT INTO {table} (transaction_id, amount_paise, gateway_status, "
         f"timestamp_utc, merchant_id, processing_run_id, reconciliation_status, "
-        f"bank_ref_id, ingested_at, instrument_type) VALUES {vals}"
+        f"bank_ref_id, ingested_at, instrument_type, duplicate_mutation_count, "
+        f"last_duplicate_at, currency) VALUES {vals}"
     )
 
 
@@ -237,16 +238,22 @@ def test_live_dlq_replay_moves_rows_and_purge_journals():
     ensure_webhook_table(spark, settings.webhook_table)
     ensure_dlq_table(spark, settings.dlq_table)
     spark.sql(
-        f"INSERT INTO {settings.dlq_table} VALUES "
-        "('tx_dlq_001', 1000, 'SUCCESS', '1999-04-04T00:00:00', 'UNKNOWN', 'run-dlq'),"
-        "(NULL, -5, 'SUCCESS', '1999-04-04T00:00:00', 'UNKNOWN', 'run-dlq')"
+        f"INSERT INTO {settings.dlq_table} (transaction_id, amount_paise, gateway_status, "
+        "timestamp_utc, merchant_id, processing_run_id, payload_hash) VALUES "
+        "('tx_dlq_001', 1000, 'SUCCESS', '1999-04-04T00:00:00', 'UNKNOWN', 'run-dlq', NULL),"
+        "(NULL, -5, 'SUCCESS', '1999-04-04T00:00:00', 'UNKNOWN', 'run-dlq', NULL)"
     )
     journal = _journal_path(settings)
     before = _journal_lines(journal)
     try:
         with patch.object(sys, "argv", ["replay_dlq.py"]):
             out = replay_dlq.main()
-        assert out == {"replayable": 1, "inserted": 1, "deleted": False}
+        assert out == {
+            "replayable": 1,
+            "inserted": 1,
+            "deleted": False,
+            "reversal_stranded": 0,
+        }
         pending = spark.sql(
             f"SELECT reconciliation_status FROM {settings.webhook_table} "
             "WHERE transaction_id = 'tx_dlq_001'"
@@ -281,9 +288,10 @@ def test_live_dlq_replay_refuses_pan_row():
     spark = get_spark_session("LiveE2ETest")
     ensure_dlq_table(spark, settings.dlq_table)
     spark.sql(
-        f"INSERT INTO {settings.dlq_table} VALUES "
+        f"INSERT INTO {settings.dlq_table} (transaction_id, amount_paise, gateway_status, "
+        "timestamp_utc, merchant_id, processing_run_id, payload_hash) VALUES "
         "('tx_dlq_pan', 1000, 'SUCCESS', '1999-04-04T00:00:00', "
-        "'4111111111111111', 'run-pan')"
+        "'4111111111111111', 'run-pan', NULL)"
     )
     try:
         with (
