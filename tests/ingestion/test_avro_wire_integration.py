@@ -97,7 +97,7 @@ def test_avro_type_change_fails_closed_on_read():
     spark = get_spark_session("AvroWireTest")
     df = _rows_df(
         spark,
-        [("tx_wire_020", 500, "SUCCESS", "2025-04-02T00:00:00Z", "m", None)],
+        [("tx_wire_020", 500, "SUCCESS", "2025-04-02T00:00:00Z", "m", None, None)],
     )
     wire = df.select(to_avro(F.struct(*COLS)).alias("value"))
     breaking = {

@@ -157,7 +157,7 @@ def test_the_dlq_rows_are_deduplicated_on_the_key():
 def test_the_dlq_table_carries_and_backfills_the_column():
     src = inspect.getsource(iw.ensure_dlq_table)
     assert "payload_hash string" in src
-    assert "ADD COLUMN IF NOT EXISTS payload_hash string" in src
+    assert "ADD COLUMN payload_hash string" in src
 
 
 def test_the_webhook_dedup_still_keys_on_the_transaction_id():

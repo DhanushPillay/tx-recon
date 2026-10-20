@@ -463,6 +463,7 @@ def test_ensure_webhook_table_issues_no_write_ordering(mocker, caplog):
     import src.ingestion.ingest_webhooks as ing
 
     spark = MagicMock()
+    spark.table.return_value.columns = []
     with caplog.at_level(logging.WARNING, logger="src.ingestion.ingest_webhooks"):
         ing.ensure_webhook_table(spark, "nessie.db.webhooks")
     issued = [c.args[0] for c in spark.sql.call_args_list if c.args and c.args[0]]
@@ -472,6 +473,7 @@ def test_ensure_webhook_table_issues_no_write_ordering(mocker, caplog):
 
 def test_ensure_webhook_table_bucket_partitions_join_key():
     spark = MagicMock()
+    spark.table.return_value.columns = []
     import src.ingestion.ingest_webhooks as ing
 
     ing.ensure_webhook_table(spark, "nessie.db.webhooks")

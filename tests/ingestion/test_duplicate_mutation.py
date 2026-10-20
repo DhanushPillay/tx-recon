@@ -82,13 +82,27 @@ def test_existing_tables_get_the_columns_added():
     # a warehouse created before these columns existed keeps the old shape
     # unless something alters it.
     spark = MagicMock()
+    spark.table.return_value.columns = []
     ensure_webhook_table(spark, "nessie.db.webhooks")
     alters = [c[0][0] for c in spark.sql.call_args_list if c[0][0].startswith("ALTER TABLE")]
     assert alters == [
-        "ALTER TABLE nessie.db.webhooks ADD COLUMN IF NOT EXISTS duplicate_mutation_count bigint",
-        "ALTER TABLE nessie.db.webhooks ADD COLUMN IF NOT EXISTS last_duplicate_at timestamp",
-        "ALTER TABLE nessie.db.webhooks ADD COLUMN IF NOT EXISTS currency string",
+        "ALTER TABLE nessie.db.webhooks ADD COLUMN duplicate_mutation_count bigint",
+        "ALTER TABLE nessie.db.webhooks ADD COLUMN last_duplicate_at timestamp",
+        "ALTER TABLE nessie.db.webhooks ADD COLUMN currency string",
     ]
+
+
+def test_an_up_to_date_table_gets_no_alters():
+    spark = MagicMock()
+    spark.table.return_value.columns = [
+        "transaction_id",
+        "duplicate_mutation_count",
+        "last_duplicate_at",
+        "currency",
+    ]
+    ensure_webhook_table(spark, "nessie.db.webhooks")
+    alters = [c[0][0] for c in spark.sql.call_args_list if c[0][0].startswith("ALTER TABLE")]
+    assert alters == []
 
 
 # --- the merge ---------------------------------------------------------------

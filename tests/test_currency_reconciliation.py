@@ -194,3 +194,5 @@ class _MagicSpark:
         from unittest.mock import MagicMock
 
         self.sql = MagicMock()
+        self.table = MagicMock()
+        self.table.return_value.columns = []
