@@ -8,7 +8,7 @@ The pipeline separates bad data from good data rather than failing the entire pr
 
 ### Webhook dead-letter queue (DLQ)
 
-The ingestion path (`ingest_webhooks.py`) splits each micro-batch into valid and invalid rows. Invalid rows (corrupt Avro decode, `amount_paise <= 0`, `transaction_id IS NULL`) are appended to the DLQ table (`nessie.db.webhooks_dlq`).
+The ingestion path (`ingest_webhooks.py`) splits each micro-batch into valid and invalid rows. Invalid rows (corrupt Avro decode, a non-positive amount that is not a recognised reversal status, or `transaction_id IS NULL`) are appended to the DLQ table (`nessie.db.webhooks_dlq`). Refunds and reversals with a non-positive amount are accepted into `webhooks` and parked at `EXCEPTION_REVERSAL`.
 
 **Querying the DLQ:**
 

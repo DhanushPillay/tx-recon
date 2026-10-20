@@ -154,7 +154,8 @@ def test_seed_real_webhooks_wiring(monkeypatch):
     assert n == 42
     sqls = [c[0][0] for c in spark.sql.call_args_list]
     assert any("MERGE INTO nessie.db.webhooks" in s for s in sqls)
-    assert any("INSERT INTO nessie.db.webhooks" in s for s in sqls)
+    insert = next(s for s in sqls if "INSERT INTO nessie.db.webhooks" in s)
+    assert "duplicate_mutation_count, last_duplicate_at, currency" in insert
     assert any("2020-01-01T00:00:00" in s for s in sqls)
 
 

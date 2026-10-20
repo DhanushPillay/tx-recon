@@ -198,11 +198,11 @@ def seed_real_webhooks(spark, table: str, staging_csv: str, batch_date: str) -> 
     cols = (
         "transaction_id, amount_paise, gateway_status, timestamp_utc, merchant_id, "
         "processing_run_id, reconciliation_status, bank_ref_id, ingested_at, "
-        "instrument_type"
+        "instrument_type, duplicate_mutation_count, last_duplicate_at, currency"
     )
     spark.sql(
         f"INSERT INTO {table} ({cols}) SELECT transaction_id, amount_paise, 'SUCCESS', "
         f"'{batch_date}T00:00:00', merchant_id, NULL, '{PENDING_RECONCILIATION}', "
-        "NULL, current_timestamp(), instrument_type FROM real_hooks"
+        "NULL, current_timestamp(), instrument_type, NULL, NULL, NULL FROM real_hooks"
     )
     return n

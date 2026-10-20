@@ -4,7 +4,7 @@ Schema reference for the core data structures in tx-recon. Every column, type, a
 
 ## Webhook table (`nessie.db.webhooks`)
 
-Ingested from Kafka by `src/ingestion/ingest_webhooks.py`. The Avro wire format carries 6 fields; the Iceberg table adds 4 enrichment columns at ingest time and is `PARTITIONED BY bucket(16, transaction_id)` so MERGE join keys are colocated.
+Ingested from Kafka by `src/ingestion/ingest_webhooks.py`. The Avro wire format carries 7 fields (the last, `currency`, optional); the Iceberg table adds 4 enrichment columns and 2 duplicate-audit columns, for 13 total, and is `PARTITIONED BY bucket(16, transaction_id)` so MERGE join keys are colocated.
 
 | Column | Type | Source | Nullable | Description |
 | :--- | :--- | :--- | :--- | :--- |
@@ -18,10 +18,13 @@ Ingested from Kafka by `src/ingestion/ingest_webhooks.py`. The Avro wire format 
 | `bank_ref_id` | `string` | Enriched | yes | Bank reference ID from the settlement file. `NULL` until reconciliation populates it. |
 | `ingested_at` | `timestamp` | Enriched | yes | Spark `current_timestamp()` at ingest time. |
 | `instrument_type` | `string` | Enriched | yes | PG instrument, populated by batch MERGE (canonical `INSTRUMENT_TYPES` + `UNKNOWN` quarantine path). |
+| `duplicate_mutation_count` | `bigint` | Enriched | yes | Number of later webhook deliveries for an already-terminal transaction whose amount disagreed. The settled amount is never overwritten; only this counter and `last_duplicate_at` change. |
+| `last_duplicate_at` | `timestamp` | Enriched | yes | When the most recent disagreeing duplicate arrived. `NULL` until the first one. |
+| `currency` | `string` | Avro | yes | ISO 4217 code declared by the gateway. `NULL` when the gateway did not declare one; deliberately not defaulted to INR. |
 
 ### DLQ table (`nessie.db.webhooks_dlq`)
 
-Malformed or invalid webhooks (corrupt Avro decode, `amount_paise <= 0`, or `transaction_id IS NULL`). 6 columns, no enrichment fields.
+Malformed or invalid webhooks (corrupt Avro decode, a non-positive amount that is not a recognised reversal status, or `transaction_id IS NULL`). 7 columns, no enrichment fields; `payload_hash` is a derived content key.
 
 | Column | Type | Nullable |
 | :--- | :--- | :--- |
@@ -31,6 +34,9 @@ Malformed or invalid webhooks (corrupt Avro decode, `amount_paise <= 0`, or `tra
 | `timestamp_utc` | `string` | yes |
 | `merchant_id` | `string` | yes |
 | `processing_run_id` | `string` | yes |
+| `payload_hash` | `string` | yes |
+
+`payload_hash` is a SHA-256 over the six payload columns, with `NULL` coalesced to the empty string. It is the MERGE key, so replaying the same poison row lands once even when `transaction_id` is `NULL`.
 
 ## Settlement CSV (`data/settlement_YYYYMMDD.csv`)
 
@@ -96,7 +102,7 @@ Written to `reconciliation_status` by the MERGE in `src/processing/reconcile.py`
 | `EXCEPTION_INVALID` | Failed schema validation or quarantine (`quarantine_*.csv` / DLQ). | Defined in `schemas.py`; Pandera quarantine + DLQ path. |
 | `EXCEPTION_LATE_UNRESOLVED` | `MISSING_WEBHOOK` or `PENDING_RECONCILIATION` older than the `LATE_SLA_DAYS` window (default 7). Terminal for the batch MERGE, which preserves it (status untouched; only `bank_ref_id` and `instrument_type` refresh) so re-runs stay idempotent; only a late-arriving webhook heals it via ingestion MERGE. | Late-SLA sweep in `reconcile.py` (single-table `UPDATE` over the target, so it ages rows from earlier batches too); preserved by the batch MERGE's 1st `WHEN MATCHED` clause, which is shared with `EXCEPTION_MISSING_WEBHOOK`. |
 | `EXCEPTION_CURRENCY_MISMATCH` | Both sides exist but name different currencies, so the two paise amounts are not the same unit and no fee comparison is meaningful. | Batch MERGE decision tree, before the tolerance arm (`currency_mismatch_guard` in `reconcile.py`); counted as `batch_EXCEPTION_CURRENCY_MISMATCH`. |
-| `EXCEPTION_REVERSAL` | A webhook whose `amount_paise <= 0`: a refund or a reversal. The settlement contract carries no direction field yet, so the row is parked here rather than matched or thrown away. | Ingestion status assignment (`src/ingestion/ingest_webhooks.py`); counted as `EXCEPTION_REVERSAL` in the next batch's counts. |
+| `EXCEPTION_REVERSAL` | A webhook with a non-positive amount and a gateway status in `REVERSAL_GATEWAY_STATUSES`: a refund or a reversal. The settlement contract carries no direction field yet, so the row is parked here rather than matched or thrown away. | Ingestion status assignment (`src/ingestion/ingest_webhooks.py`); counted as `EXCEPTION_REVERSAL` in the next batch's counts. |
 | `PENDING_RECONCILIATION` | A webhook ingested and waiting for its settlement. Not a placeholder: a fresh row still reaches the tolerance arm. | Ingestion, on insert and on a late-arriving webhook's heal; the batch MERGE refreshes these rows rather than overwriting their status. |
 
 ## Reversal and refund vocabulary

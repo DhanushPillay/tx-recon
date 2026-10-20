@@ -57,10 +57,11 @@ assessment. Expect an initial response within 7 days.
 - Deps are range-pinned (`pyproject.toml`); reproduce exact builds with
   `uv lock` and run `pip-audit`. CI installs from the lock (`uv export
   --frozen`) rather than re-resolving from PyPI, and gates blocking on
-  `pip-audit` with 97 ignores: 96 in `.github/pip-audit-ignore.txt` plus one
-  inline in `ci.yml`. Each carries a one-line reason, and the file's
-  `REVIEW_BY` date is enforced by a CI step that fails the build once it
-  passes. The transitive floors under `apache-airflow` (PyJWT, Werkzeug,
+  `pip-audit` with a reviewed, dated ignore list in
+  `.github/pip-audit-ignore.txt`; each entry carries a one-line reason, CI
+  expands the list into `--ignore-vuln` flags, and the file's `REVIEW_BY` date
+  is enforced by a CI step that fails the build once it passes. The
+  transitive floors under `apache-airflow` (PyJWT, Werkzeug,
   urllib3, multidict, fsspec) are declared in `pyproject.toml` rather than
   ignored, so airflow's next minor bump picks the fixes up on its own.
   Override rules live in `ci.yml` and the baseline file, not in docs.
