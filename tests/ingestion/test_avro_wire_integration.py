@@ -34,6 +34,7 @@ _ROWS_SCHEMA = StructType(
         StructField("timestamp_utc", StringType(), True),
         StructField("merchant_id", StringType(), True),
         StructField("processing_run_id", StringType(), True),
+        StructField("currency", StringType(), True),
     ]
 )
 
@@ -45,8 +46,16 @@ def _rows_df(spark, rows):
 def test_avro_wire_roundtrip_preserves_all_fields():
     spark = get_spark_session("AvroWireTest")
     rows = [
-        ("tx_wire_001", 100000, "SUCCESS", "2025-04-02T00:00:00Z", "merch_001", "run-1"),
-        ("tx_wire_002", 1, "SUCCESS", "2025-04-02T00:00:01Z", "UNKNOWN", None),
+        (
+            "tx_wire_001",
+            100000,
+            "SUCCESS",
+            "2025-04-02T00:00:00Z",
+            "merch_001",
+            "run-1",
+            "INR",
+        ),
+        ("tx_wire_002", 1, "SUCCESS", "2025-04-02T00:00:01Z", "UNKNOWN", None, None),
     ]
     df = _rows_df(spark, rows)
     wire = df.select(to_avro(F.struct(*COLS), WEBHOOK_AVRO_SCHEMA).alias("value"))
@@ -64,16 +73,16 @@ def test_avro_reader_with_old_schema_ignores_new_optional_field():
         "name": "WebhookEvent",
         "fields": [
             *WEBHOOK_AVRO_SCHEMA_DICT["fields"],
-            {"name": "currency", "type": ["null", "string"], "default": None},
+            {"name": "routing_hint", "type": ["null", "string"], "default": None},
         ],
     }
     rows = _rows_df(
         spark,
-        [("tx_wire_010", 500, "SUCCESS", "2025-04-02T00:00:00Z", "m", None)],
-    ).withColumn("currency", F.lit("INR"))
+        [("tx_wire_010", 500, "SUCCESS", "2025-04-02T00:00:00Z", "m", None, None)],
+    ).withColumn("routing_hint", F.lit("hint"))
     wire = rows.select(
         to_avro(
-            F.struct(*[*COLS, "currency"]),
+            F.struct(*[*COLS, "routing_hint"]),
             json.dumps(evolved),
         ).alias("value")
     )
@@ -81,7 +90,7 @@ def test_avro_reader_with_old_schema_ignores_new_optional_field():
     got = back.collect()[0]
     assert got["transaction_id"] == "tx_wire_010"
     assert got["amount_paise"] == 500
-    assert "currency" not in back.columns
+    assert "routing_hint" not in back.columns
 
 
 def test_avro_type_change_fails_closed_on_read():

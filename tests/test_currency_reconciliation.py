@@ -62,9 +62,9 @@ def test_the_table_ddl_declares_and_backfills_currency():
     iw.ensure_webhook_table(spark, "nessie.db.webhooks")
     stmts = [c[0][0] for c in spark.sql.call_args_list]
     create = next(s for s in stmts if s.lstrip().startswith("CREATE TABLE"))
-    alter = next(s for s in stmts if s.lstrip().startswith("ALTER TABLE"))
+    alters = "\n".join(s for s in stmts if s.lstrip().startswith("ALTER TABLE"))
     assert "currency string" in create
-    assert "currency string" in alter
+    assert "currency string" in alters
 
 
 # --- the settlement side ---------------------------------------------------

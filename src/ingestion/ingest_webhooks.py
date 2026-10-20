@@ -434,11 +434,15 @@ def ensure_webhook_table(spark, table: str) -> None:
     """
     )
     # A table created before the duplicate-mutation columns existed still has the
-    # old shape, and CREATE TABLE IF NOT EXISTS above is a no-op for it.
-    spark.sql(
-        f"ALTER TABLE {table} ADD COLUMNS IF NOT EXISTS ("
-        "duplicate_mutation_count bigint, last_duplicate_at timestamp, currency string)"
-    )
+    # old shape, and CREATE TABLE IF NOT EXISTS above is a no-op for it. Spark
+    # has no ADD COLUMNS IF NOT EXISTS; Iceberg's extension takes one column at
+    # a time and is idempotent with IF NOT EXISTS.
+    for column in (
+        "duplicate_mutation_count bigint",
+        "last_duplicate_at timestamp",
+        "currency string",
+    ):
+        spark.sql(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column}")
 
 
 def ensure_dlq_table(spark, table: str) -> None:
@@ -466,7 +470,7 @@ def ensure_dlq_table(spark, table: str) -> None:
         )
     """
     )
-    spark.sql(f"ALTER TABLE {table} ADD COLUMNS IF NOT EXISTS (payload_hash string)")
+    spark.sql(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS payload_hash string")
 
 
 if __name__ == "__main__":

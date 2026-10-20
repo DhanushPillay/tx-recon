@@ -56,7 +56,10 @@ def test_reconciliation_is_idempotent():
             reconciliation_status string,
             bank_ref_id string,
             ingested_at timestamp,
-            instrument_type string
+            instrument_type string,
+            duplicate_mutation_count bigint,
+            last_duplicate_at timestamp,
+            currency string
         ) USING iceberg"""
     )
 
@@ -66,12 +69,14 @@ def test_reconciliation_is_idempotent():
         f"""INSERT INTO {settings.webhook_table} (
             transaction_id, amount_paise, gateway_status, timestamp_utc,
             merchant_id, processing_run_id, reconciliation_status,
-            bank_ref_id, ingested_at, instrument_type
+            bank_ref_id, ingested_at, instrument_type,
+            duplicate_mutation_count, last_duplicate_at, currency
         ) VALUES
         {
             ",".join(
                 f"('{tx}', {amt}, 'SUCCESS', '{dt}T00:00:00', 'UNKNOWN', "
-                f"'idem-seed', 'PENDING_SETTLEMENT', NULL, current_timestamp(), 'UPI')"
+                f"'idem-seed', 'PENDING_SETTLEMENT', NULL, current_timestamp(), 'UPI', "
+                f"NULL, NULL, 'INR')"
                 for _, tx, amt, dt in SEED_TXNS
             )
         }

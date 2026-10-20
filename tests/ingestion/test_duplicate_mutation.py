@@ -85,8 +85,9 @@ def test_existing_tables_get_the_columns_added():
     ensure_webhook_table(spark, "nessie.db.webhooks")
     alters = [c[0][0] for c in spark.sql.call_args_list if c[0][0].startswith("ALTER TABLE")]
     assert alters == [
-        "ALTER TABLE nessie.db.webhooks ADD COLUMNS IF NOT EXISTS "
-        "(duplicate_mutation_count bigint, last_duplicate_at timestamp, currency string)"
+        "ALTER TABLE nessie.db.webhooks ADD COLUMN IF NOT EXISTS duplicate_mutation_count bigint",
+        "ALTER TABLE nessie.db.webhooks ADD COLUMN IF NOT EXISTS last_duplicate_at timestamp",
+        "ALTER TABLE nessie.db.webhooks ADD COLUMN IF NOT EXISTS currency string",
     ]
 
 
