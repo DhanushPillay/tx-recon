@@ -96,6 +96,10 @@ def batch():
     # obscure the arms under test.
     previous = os.environ.get("LATE_SLA_DAYS")
     os.environ["LATE_SLA_DAYS"] = "100000"
+    # The fixture deliberately mixes matched and exception cases, so its rate
+    # is below the production gate; the statuses are what this module asserts.
+    previous_slo = os.environ.get("MATCH_RATE_SLO")
+    os.environ["MATCH_RATE_SLO"] = "0.0"
 
     settings = get_settings()
     spark = get_spark_session("ReconCasesIntegration")
@@ -134,6 +138,10 @@ def batch():
             os.environ.pop("LATE_SLA_DAYS", None)
         else:
             os.environ["LATE_SLA_DAYS"] = previous
+        if previous_slo is None:
+            os.environ.pop("MATCH_RATE_SLO", None)
+        else:
+            os.environ["MATCH_RATE_SLO"] = previous_slo
 
     return {
         "statuses": {r["transaction_id"]: r["reconciliation_status"] for r in rows},
