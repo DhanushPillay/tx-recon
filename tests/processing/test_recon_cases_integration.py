@@ -104,7 +104,7 @@ def batch():
     scope = _scope()
     spark.sql(f"DELETE FROM {settings.webhook_table} WHERE {scope}")
     values = ",".join(
-        f"('{w['id']}', {_lit(w['amount_paise'])}, '{w['gateway_status']}', "
+        f"('{w['id']}', CAST({_lit(w['amount_paise'])} AS BIGINT), '{w['gateway_status']}', "
         f"'{w['timestamp_utc']}', {_lit(w['merchant_id'])}, 'recon-cases', "
         f"'{_ingestion_status(w)}', NULL, {_lit(w['instrument_type'])}, "
         f"{_lit(w['currency'])}, current_timestamp(), NULL, NULL)"
