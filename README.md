@@ -75,6 +75,7 @@ cannot ship undocumented.
 | `make regression` | gate that run against `tests/performance/baseline_real.json`, mix family only |
 | `make bench` | the four real-data benchmark suites |
 | `make regression-full` | gate kafka, latency and iceberg too; run `make bench` first |
+| `make figures` | regenerate the four paper figures in `docs/fig/` from the archived 10k sample |
 | `make clean` | remove `__pycache__` and `.pyc` |
 | `make help` | the list above |
 
