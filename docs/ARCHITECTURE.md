@@ -13,65 +13,80 @@ tx-recon has three data legs that converge on a single Iceberg table:
 3. **Bank evidence** (independent truth): Bank statement MT940 files are parsed via the `mt-940` package (never hand-rolled) into `bank_statements` and joined to settlements. MATCHED rows without bank evidence demote to `EXCEPTION_MISSING_BANK_STATEMENT` — without this third leg, a gateway-consistent error is invisible.
 
 ```mermaid
-%%{init: {"look": "classic", "layout": "dagre", "flowchart": {"curve": "basis", "nodeSpacing": 34, "rankSpacing": 80, "padding": 14, "useMaxWidth": true}}}%%
-flowchart LR
-  L1(["Leg 01 · streaming<br/>Gateway webhooks<br/>Kafka + Avro, continuous"]):::ing
-  L2(["Leg 02 · batch<br/>Curated settlement<br/>validated CSV, once per day"]):::ing
-  L3(["Leg 03 · bank<br/>MT940 statement<br/>credit evidence, or a demotion"]):::serve
-  RS["Residual scorer<br/>second opinion ≥ 0.9"]
+%%{init: {"look": "classic", "layout": "dagre", "flowchart": {"curve": "basis", "nodeSpacing": 34, "rankSpacing": 76, "padding": 14, "useMaxWidth": true}}}%%
+flowchart TB
+  accTitle: Three legs, one table
+  accDescr: Streaming and settlement legs insert or update, the bank leg only demotes, and Trino reads.
 
-  T[("nessie.db.webhooks<br/>one row per transaction_id<br/>the MERGE is the only writer<br/>MATCHED or an EXCEPTION")]:::store
-  RO["read-only"]
-  BI["Trino + Metabase<br/>the BI layer"]:::serve
+  W["Streaming<br/>Kafka · Avro"]:::ing
+  S["Settlement<br/>validated CSV"]:::ing
+  B["Bank<br/>MT940"]:::bank
+  T[("webhooks<br/>one row per transaction_id")]:::store
+  BI["Trino + Metabase"]:::serve
 
-  L1 -->|"may insert rows"| T
-  L2 -->|"may insert rows"| T
-  L3 -->|"evidence, else demote"| T
-  RS -.->|"downgrade only"| T
-
-  T --> RO
-  RO --> BI
+  W -->|"insert or heal"| T
+  S -->|"insert or update"| T
+  B -.->|"evidence, else demote"| T
+  T -->|"read-only"| BI
 
   classDef ing fill:#0F766E,stroke:#0B5F58,color:#FFFFFF,stroke-width:1px;
-  classDef store fill:#F8FAFC,stroke:#CBD5E1,color:#0F172A,stroke-width:1px;
-  classDef serve fill:#F1F5F9,stroke:#94A3B8,color:#334155,stroke-width:1px;
-  linkStyle default stroke:#CBD5E1,stroke-width:1.1px;
+  classDef bank fill:#4338CA,stroke:#312E81,color:#FFFFFF,stroke-width:1px;
+  classDef store fill:#F8FAFC,stroke:#64748B,color:#0F172A,stroke-width:1px;
+  classDef serve fill:#F1F5F9,stroke:#64748B,color:#334155,stroke-width:1px;
+  linkStyle default stroke:#64748B,stroke-width:1.4px;
 ```
 
-Only two legs may insert. The bank leg has no insert arm, so it can never create a row. Both the bank leg and the residual scorer only ever demote; nothing promotes a row back to MATCHED.
+Every write is a MERGE. Only two legs may insert; the bank leg has no insert arm, so it can never create a row. Both the bank leg and the residual scorer only ever demote; nothing promotes a row back to MATCHED.
 
 ## MERGE decision tree
 
 The batch MERGE in `reconcile.py` evaluates rows in this order. The tree below hoists the existence check first for readability; in SQL the four `WHEN MATCHED` arms (placeholder-preserve, null-amount, currency-mismatch, tolerance CASE gated on non-terminal status) come first and `WHEN NOT MATCHED` last — first matching clause wins either way.
 
 ```mermaid
-%%{init: {"look": "classic", "layout": "dagre", "flowchart": {"curve": "basis", "nodeSpacing": 30, "rankSpacing": 66, "padding": 13, "useMaxWidth": true}}}%%
-flowchart LR
-  IN["curated rows<br/>validated CSV only"] --> DD["dedup<br/>collapse + sum instalments"]
+%%{init: {"look": "classic", "layout": "dagre", "flowchart": {"curve": "basis", "nodeSpacing": 28, "rankSpacing": 44, "padding": 13, "useMaxWidth": true}}}%%
+flowchart TB
+  accTitle: MERGE decision tree
+  accDescr: Rows without a webhook insert a missing-webhook row; existing rows update by placeholder, missing amount, currency, or tolerance; then late-SLA, residual, and the publish gate decide.
 
-  DD --> C1{"no matching row?"}:::gate
-  C1 -->|"yes"| ARM1["INSERT · MISSING_WEBHOOK<br/>gateway_status = UNKNOWN<br/>the only arm that creates a row"]:::insert
-  C1 -->|"no"| C2{"status is a placeholder?"}:::gate
-  C2 -->|"yes"| ARM2["UPDATE · keep status<br/>enrich bank_ref + instrument"]
-  C2 -->|"no"| C3{"amount_paise is null?"}:::gate
-  C3 -->|"yes"| ARM3["UPDATE · FEE_MISMATCH<br/>settled amount missing"]
-  C3 -->|"no"| CC{"currencies differ?"}:::gate
-  CC -->|"yes"| ARMC["UPDATE · CURRENCY_MISMATCH<br/>paise are not the same unit"]
-  CC -->|"no"| C4{"status not terminal?"}:::gate
-  C4 -->|"yes"| ARM4["UPDATE · tolerance case<br/>amount - fee - gst vs settled"]:::warn
-  C4 -->|"no"| FROZEN["no UPDATE arm matches<br/>terminal status frozen"]:::frozen
+  IN["curated rows<br/>validated CSV"]:::process --> DD["dedup<br/>collapse + sum instalments"]:::process
+  DD --> C1{"row exists?"}:::decision
 
-  subgraph POST["post-MERGE · same job, before publish"]
-    direction LR
-    PM1["Residual demotion<br/>downgrade-only scorer"] --> PM2["Late-SLA ageing<br/>unresolved rows age out"] --> PM3["SLO + publish gate<br/>rate and residual decide"]:::publish
-  end
+  C1 -->|"no"| A1["INSERT<br/>EXCEPTION_MISSING_WEBHOOK<br/>gateway_status = UNKNOWN"]:::insert
+  C1 -->|"yes"| C2{"placeholder status?"}:::decision
+
+  C2 -->|"yes"| A2["UPDATE<br/>keep status<br/>enrich bank_ref + instrument"]:::process
+  C2 -->|"no"| C3{"amount null?"}:::decision
+
+  C3 -->|"yes"| A3["UPDATE<br/>EXCEPTION_FEE_MISMATCH<br/>settled amount missing"]:::warn
+  C3 -->|"no"| C4{"currencies differ?"}:::decision
+
+  C4 -->|"yes"| A4["UPDATE<br/>EXCEPTION_CURRENCY_MISMATCH"]:::warn
+  C4 -->|"no"| C5{"status terminal?"}:::decision
+
+  C5 -->|"yes"| A5["no change<br/>terminal status frozen"]:::frozen
+  C5 -->|"no"| A6["UPDATE · tolerance<br/>MATCHED or FEE_MISMATCH"]:::warn
+
+  A1 --> DONE["one arm applied"]:::junction
+  A2 --> DONE
+  A3 --> DONE
+  A4 --> DONE
+  A5 --> DONE
+  A6 --> DONE
+
+  DONE --> L["Late-SLA<br/>age unresolved"]:::process --> RS["Residual<br/>demote only"]:::process --> G{"Publish gate"}:::gate
+  G -->|"pass"| P["Fast-forward main"]:::publish
+  G -->|"fail"| X["Drop branch<br/>main untouched"]:::dead
 
   classDef gate fill:#FFFBEB,stroke:#B45309,color:#78350F,stroke-width:1px;
   classDef insert fill:#0F766E,stroke:#0B5F58,color:#FFFFFF,stroke-width:1px;
   classDef warn fill:#FEF3C7,stroke:#D97706,color:#78350F,stroke-width:1px;
-  classDef frozen fill:#F1F5F9,stroke:#94A3B8,color:#475569,stroke-width:1px;
+  classDef frozen fill:#F1F5F9,stroke:#64748B,color:#475569,stroke-width:1px;
+  classDef junction fill:#F8FAFC,stroke:#64748B,color:#0F172A,stroke-width:1px;
+  classDef process fill:#F1F5F9,stroke:#64748B,color:#0F172A,stroke-width:1px;
+  classDef decision fill:#F8FAFC,stroke:#475569,color:#0F172A,stroke-width:1px;
   classDef publish fill:#ECFDF5,stroke:#047857,color:#064E3B,stroke-width:1px;
-  linkStyle default stroke:#CBD5E1,stroke-width:1.1px;
+  classDef dead fill:#FEF2F2,stroke:#B91C1C,color:#7F1D1D,stroke-width:1px;
+  linkStyle default stroke:#64748B,stroke-width:1.4px;
 ```
 
 First matching clause wins. There is no DELETE arm: a row is never removed. Duplicate settlement rows are counted in `batch_EXCEPTION_DUPLICATE_SETTLEMENT`, not silently merged away.

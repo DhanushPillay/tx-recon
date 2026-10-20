@@ -35,43 +35,53 @@ If the settlement file says Rs.976.40, the transaction is `MATCHED`. If it says 
 ## How it works
 
 ```mermaid
-%%{init: {"look": "classic", "layout": "dagre", "flowchart": {"curve": "basis", "nodeSpacing": 30, "rankSpacing": 76, "padding": 14, "useMaxWidth": true}}}%%
-flowchart LR
-  subgraph SL["Streaming lane · always on"]
-    direction LR
-    K(["Kafka · gateway_webhooks"]):::ing --> D["Decode<br/>magic byte, then Avro"] --> DD["Dedup + drift<br/>schema-id must match"] --> H["Heal or insert<br/>pending_reconciliation"]
-    D -.->|"undecodable or invalid"| DQ(["webhooks_dlq"]):::dead
-  end
+%%{init: {"look": "classic", "layout": "dagre", "flowchart": {"curve": "basis", "nodeSpacing": 34, "rankSpacing": 70, "padding": 14, "useMaxWidth": true}}}%%
+flowchart TB
+  accTitle: Three legs, one table
+  accDescr: Gateway webhooks and settlement files write to one Iceberg table, bank statements add evidence, and Trino reads it.
 
-  subgraph BL["Daily batch lane · branch ingest/YYYY-MM-DD"]
-    direction LR
-    V["Validate<br/>quarantine or raise"] --> OB["Open the branch"] --> M["MERGE<br/>settlement vs webhooks"]:::merge --> AR["Age + residual<br/>late-SLA, then demote"]
-  end
-
+  W["Webhooks<br/>Kafka · Avro"]:::ing
+  S["Settlement files<br/>CSV · Pandera"]:::ing
+  B["Bank statements<br/>MT940 evidence"]:::bank
   T[("nessie.db.webhooks<br/>one row per transaction_id")]:::store
-  H --> T
-  M --> T
+  BI["Trino + Metabase"]:::serve
 
-  AR --> G{"SLO gate<br/>match rate + residual"}:::gate
-  G -->|"pass"| P["Publish by fast-forward<br/>branch merged to main"]:::publish
-  P --> MT["Iceberg maintenance<br/>expire, rewrite, manifests"]
-  G -->|"fail"| X["Drop the branch<br/>never reaches main"]:::dead
+  W -->|"upsert or heal"| T
+  S -->|"MERGE"| T
+  B -.->|"evidence, else demote"| T
+  T -->|"read-only"| BI
 
-  T -.-> RO["Read only · Trino + Metabase"]:::serve
+  classDef ing fill:#0F766E,stroke:#0B5F58,color:#FFFFFF,stroke-width:1px;
+  classDef bank fill:#4338CA,stroke:#312E81,color:#FFFFFF,stroke-width:1px;
+  classDef store fill:#F8FAFC,stroke:#64748B,color:#0F172A,stroke-width:1px;
+  classDef serve fill:#F1F5F9,stroke:#64748B,color:#334155,stroke-width:1px;
+  linkStyle default stroke:#64748B,stroke-width:1.4px;
+```
+
+Two writers and one evidence leg converge on one table. The streaming lane decodes webhooks, deduplicates them, refuses a batch when the producer's schema id drifts, and parks undecodable rows in a DLQ. The daily batch validates the settlement file, opens a WAP branch, runs the MERGE, ages unresolved rows, and publishes to `main` only when the match-rate and residual gates pass. A failed gate drops the branch.
+
+Gateway webhooks say what was collected, settlement files say what the provider will pay out, and MT940 bank statements provide independent evidence that the money actually arrived. Without the bank leg, a gateway-consistent error can look `MATCHED` and still be wrong.
+
+```mermaid
+%%{init: {"look": "classic", "layout": "dagre", "flowchart": {"curve": "basis", "nodeSpacing": 28, "rankSpacing": 46, "padding": 14, "useMaxWidth": true}}}%%
+flowchart TB
+  accTitle: Batch lifecycle
+  accDescr: Validation opens a WAP branch, the MERGE and demotions run, and the gate decides whether main advances.
+
+  V["Validate<br/>WAP branch<br/>PAN · registry · Pandera"]:::ing --> M["MERGE<br/>settlement vs webhooks"]:::merge
+  M --> LR["Late-SLA<br/>age, then residual"]:::process
+  LR --> G{"Publish gate"}:::gate
+  G -->|"pass"| P["Fast-forward main<br/>expire · rewrite"]:::publish
+  G -->|"fail"| X["Drop branch<br/>main untouched"]:::dead
 
   classDef ing fill:#0F766E,stroke:#0B5F58,color:#FFFFFF,stroke-width:1px;
   classDef merge fill:#0F172A,stroke:#0F172A,color:#FFFFFF,stroke-width:1px;
-  classDef store fill:#F8FAFC,stroke:#CBD5E1,color:#0F172A,stroke-width:1px;
+  classDef process fill:#F1F5F9,stroke:#64748B,color:#0F172A,stroke-width:1px;
   classDef gate fill:#FFFBEB,stroke:#B45309,color:#78350F,stroke-width:1px;
   classDef publish fill:#ECFDF5,stroke:#047857,color:#064E3B,stroke-width:1px;
   classDef dead fill:#FEF2F2,stroke:#B91C1C,color:#7F1D1D,stroke-width:1px;
-  classDef serve fill:#F1F5F9,stroke:#94A3B8,stroke-width:1px;
-  linkStyle default stroke:#CBD5E1,stroke-width:1.1px;
+  linkStyle default stroke:#64748B,stroke-width:1.4px;
 ```
-
-Two lanes, one table. The streaming lane decodes webhooks, deduplicates them, refuses a batch when the producer's schema id drifts, and parks undecodable rows in a DLQ. The daily batch validates the settlement file, opens a WAP branch, runs the MERGE, ages unresolved rows, and publishes to `main` only when the match-rate and residual gates pass. A failed gate drops the branch.
-
-Three legs converge on one table. Gateway webhooks say what was collected, settlement files say what the provider will pay out, and MT940 bank statements provide independent evidence that the money actually arrived. Without the bank leg, a gateway-consistent error can look `MATCHED` and still be wrong.
 
 Every batch is a branch. Writes land on `ingest/YYYY-MM-DD`; readers only see `main` after the gate passes. All merges are idempotent, so re-runs converge instead of duplicating. Bucket partitioning keeps both sides of the MERGE join in the same bucket.
 
